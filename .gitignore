@@ -1,0 +1,16 @@
+ZLB-apiKey-*.csv
+RAM.txt
+*.key
+.env
+.venv/
+.venv312/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.data/
+backend/uploads/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts

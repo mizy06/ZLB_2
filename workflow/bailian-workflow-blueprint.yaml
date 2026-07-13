@@ -1,0 +1,99 @@
+name: ZLB Knowledge Map MVP
+version: 0.1.0
+purpose: >
+  百炼低代码画布的复刻蓝图。模型节点只产生候选节点和候选关系，
+  归一、校验和图数据库写入由外部 graph-service API 负责。
+
+inputs:
+  - name: document
+    type: file
+    required: true
+  - name: model
+    type: string
+    default: qwen3.7-plus
+
+outputs:
+  - name: task_id
+    type: string
+  - name: nodes
+    type: array
+  - name: edges
+    type: array
+  - name: quality
+    type: object
+
+nodes:
+  - id: start
+    type: start
+    outputs: [document, model]
+
+  - id: parse_document
+    type: document_parser
+    input: ${start.document}
+    note: 保留页码、幻灯片编号、标题层级和表格文本。
+
+  - id: create_chunks
+    type: api
+    method: POST
+    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/chunks
+    body:
+      document: ${parse_document.output}
+      max_chars: 1800
+      overlap_chars: 240
+
+  - id: extract_candidates
+    type: batch
+    items: ${create_chunks.chunks}
+    concurrency: 4
+    child:
+      type: llm
+      model: ${start.model}
+      system_prompt_file: prompts/extract-candidates.system.txt
+      user_template: |
+        章节：{{item.heading}}
+        Chunk ID：{{item.id}}
+        原文：
+        {{item.text}}
+      output_schema_file: schemas/chunk-extraction.schema.json
+
+  - id: normalize_and_validate
+    type: api
+    method: POST
+    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/graph/normalize
+    body:
+      document_id: ${parse_document.document_id}
+      chunks: ${create_chunks.chunks}
+      extractions: ${extract_candidates.output}
+
+  - id: quality_gate
+    type: condition
+    expression: >
+      normalize_and_validate.quality.evidence_coverage >= 0.8
+      and normalize_and_validate.quality.conflict_count == 0
+    true_next: commit_graph
+    false_next: review_queue
+
+  - id: review_queue
+    type: api
+    method: POST
+    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/reviews
+    body: ${normalize_and_validate.output}
+
+  - id: commit_graph
+    type: api
+    method: POST
+    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/graph/commit
+    body: ${normalize_and_validate.output}
+
+  - id: end
+    type: end
+    outputs:
+      task_id: ${normalize_and_validate.task_id}
+      nodes: ${normalize_and_validate.nodes}
+      edges: ${normalize_and_validate.edges}
+      quality: ${normalize_and_validate.quality}
+
+notes:
+  - 这是一份节点蓝图，不冒充百炼控制台导出的官方 DSL。
+  - 百炼官方 DSL 应在控制台搭建后导出，以避免平台版本字段不兼容。
+  - DeepSeek Key 建议作为服务端环境变量或 API 节点鉴权配置，不写入 DSL。
