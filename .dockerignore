@@ -1,0 +1,12 @@
+.git
+.data
+.superpowers
+.venv
+.venv312
+frontend/node_modules
+frontend/dist
+backend/uploads
+ZLB-apiKey-*.csv
+RAM.txt
+*.pyc
+__pycache__

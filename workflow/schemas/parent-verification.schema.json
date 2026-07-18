@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "parent",
+    "child",
+    "classification",
+    "verifier_score",
+    "reason"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "parent": { "type": "string" },
+    "child": { "type": "string" },
+    "classification": {
+      "enum": [
+        "direct_parent",
+        "ancestor_only",
+        "sibling",
+        "cross_link",
+        "unrelated",
+        "uncertain"
+      ]
+    },
+    "verifier_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reason": { "type": "string" }
+  }
+}

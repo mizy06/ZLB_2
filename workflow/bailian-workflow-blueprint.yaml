@@ -1,23 +1,41 @@
-name: ZLB Knowledge Map MVP
-version: 0.1.0
+name: ZLB Mind Map C+ Validation
+version: 0.2.0
 purpose: >
-  百炼低代码画布的复刻蓝图。模型节点只产生候选节点和候选关系，
-  归一、校验和图数据库写入由外部 graph-service API 负责。
+  百炼低代码画布组装蓝图。百炼负责文档解析、模型推理、批处理、条件分支与 API 调用；
+  外部 mindmap-engine 负责多模态资产渲染裁剪、稳定归一、Top-k 父候选、
+  CP-SAT 主树求解、硬校验和质量报告。
 
 inputs:
   - name: document
     type: file
     required: true
-  - name: model
+  - name: generator_model
     type: string
     default: qwen3.7-plus
+  - name: verifier_model
+    type: string
+    default: deepseek-v4-flash
+  - name: mode
+    type: string
+    default: standard
+    enum: [standard, precision]
+
+secrets:
+  - name: GRAPH_SERVICE_URL
+    example: https://mindmap-engine.example.com
+  - name: GRAPH_SERVICE_TOKEN
+    usage: API 节点 Authorization Bearer Token
 
 outputs:
-  - name: task_id
+  - name: root_id
     type: string
   - name: nodes
     type: array
-  - name: edges
+  - name: tree_edges
+    type: array
+  - name: cross_links
+    type: array
+  - name: review_items
     type: array
   - name: quality
     type: object
@@ -25,75 +43,250 @@ outputs:
 nodes:
   - id: start
     type: start
-    outputs: [document, model]
+    outputs: [document, generator_model, verifier_model, mode]
 
   - id: parse_document
     type: document_parser
     input: ${start.document}
-    note: 保留页码、幻灯片编号、标题层级和表格文本。
+    note: >
+      保留文档标题、页码/幻灯片号、标题路径和正文。
+      百炼内置大文档解析节点适合留在画布。
+
+  - id: map_parser_output
+    type: script
+    language: python
+    input: ${parse_document.output}
+    output:
+      document:
+        document_id: string
+        filename: string
+        file_type: string
+        title: string
+        blocks: array
+    note: >
+      将百炼解析器输出映射为外部引擎 ParsedDocument。
+      这里只做字段转换，不安装第三方包。
 
   - id: create_chunks
     type: api
     method: POST
-    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/chunks
+    endpoint: ${GRAPH_SERVICE_URL}/v1/chunks
+    headers:
+      Authorization: Bearer ${GRAPH_SERVICE_TOKEN}
+    timeout_seconds: 60
     body:
-      document: ${parse_document.output}
+      document: ${map_parser_output.document}
       max_chars: 1800
       overlap_chars: 240
 
-  - id: extract_candidates
+  - id: render_visual_pages
+    type: api
+    method: POST
+    endpoint: ${GRAPH_SERVICE_URL}/v1/mindmap/visuals/render
+    headers:
+      Authorization: Bearer ${GRAPH_SERVICE_TOKEN}
+    content_type: multipart/form-data
+    timeout_seconds: 600
+    form:
+      file: ${start.document}
+    on_error: continue_with_empty_visuals
+
+  - id: analyze_visual_pages
+    type: batch
+    items: ${render_visual_pages.pages}
+    concurrency: 3
+    child:
+      type: image_understanding
+      model: ${start.generator_model}
+      image_url: ${item.url}
+      system_prompt_file: prompts/analyze-visual-page.system.txt
+      user_template: |
+        当前页码/幻灯片号：{{item.page}}
+        请识别知识性视觉区域并输出归一化 bbox。
+      output_schema_file: schemas/visual-page-analysis.schema.json
+
+  - id: flatten_visual_regions
+    type: script
+    language: python
+    input: ${analyze_visual_pages.output}
+    output:
+      regions: array
+    note: >
+      过滤 ignore_decoration，将批处理输出的 regions 拉平。
+
+  - id: crop_visual_regions
+    type: api
+    method: POST
+    endpoint: ${GRAPH_SERVICE_URL}/v1/mindmap/visuals/crop
+    headers:
+      Authorization: Bearer ${GRAPH_SERVICE_TOKEN}
+    timeout_seconds: 120
+    body:
+      render_id: ${render_visual_pages.render_id}
+      regions: ${flatten_visual_regions.regions}
+    on_error: continue_with_native_visuals
+
+  - id: summarize_sections
     type: batch
     items: ${create_chunks.chunks}
     concurrency: 4
     child:
       type: llm
-      model: ${start.model}
-      system_prompt_file: prompts/extract-candidates.system.txt
+      model: ${start.generator_model}
+      system_prompt: >
+        用不超过 120 字概括当前课程文本块的教学主题、关键概念和步骤。
+        保留 chunk_id，不扩写原文没有的信息。
       user_template: |
-        章节：{{item.heading}}
         Chunk ID：{{item.id}}
+        章节：{{item.heading}}
         原文：
         {{item.text}}
-      output_schema_file: schemas/chunk-extraction.schema.json
 
-  - id: normalize_and_validate
+  - id: plan_global_themes
+    type: llm
+    model: ${start.generator_model}
+    system_prompt_file: prompts/plan-themes.system.txt
+    user_template: |
+      文档标题：${map_parser_output.document.title}
+      章节摘要：${summarize_sections.output}
+      重要视觉摘要：${analyze_visual_pages.output}
+    output_schema_file: schemas/theme-plan.schema.json
+
+  - id: extract_branch_nodes
+    type: batch
+    items: ${create_chunks.chunks}
+    concurrency: 4
+    child:
+      type: llm
+      model: ${start.generator_model}
+      system_prompt_file: prompts/extract-node-claims.system.txt
+      user_template: |
+        Chunk ID：{{item.id}}
+        章节：{{item.heading}}
+        页码：{{item.page_start}}-{{item.page_end}}
+        幻灯片：{{item.slide_start}}-{{item.slide_end}}
+        原文：
+        {{item.text}}
+      output_schema_file: schemas/node-claims.schema.json
+
+  - id: build_draft_nodes
+    type: script
+    language: python
+    inputs:
+      theme_plan: ${plan_global_themes.output}
+      chunk_nodes: ${extract_branch_nodes.output}
+      native_visuals: ${render_visual_pages.native_visuals}
+      cropped_visuals: ${crop_visual_regions.output}
+    output:
+      nodes: array
+    note: >
+      将根候选标为 is_root_candidate=true、origin=synthesized_root；
+      将一级主题标为 role=branch_topic、origin=abstractive；
+      拉平 chunk nodes，并把 standalone_node/decompose 视觉区域转为 visual_knowledge 节点。
+
+  - id: normalize_draft
     type: api
     method: POST
-    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/graph/normalize
+    endpoint: ${GRAPH_SERVICE_URL}/v1/mindmap/normalize
+    headers:
+      Authorization: Bearer ${GRAPH_SERVICE_TOKEN}
+    timeout_seconds: 120
     body:
-      document_id: ${parse_document.document_id}
-      chunks: ${create_chunks.chunks}
-      extractions: ${extract_candidates.output}
+      document_id: ${map_parser_output.document.document_id}
+      document_title: ${map_parser_output.document.title}
+      nodes: ${build_draft_nodes.nodes}
+      parent_candidates: []
+      cross_links: []
+      max_parents_per_node: 8
+
+  - id: verify_parent_candidates
+    type: batch
+    items: ${normalize_draft.parent_candidates}
+    concurrency: 8
+    child:
+      type: llm
+      model: ${start.verifier_model}
+      system_prompt_file: prompts/verify-parent.system.txt
+      user_template: |
+        parent：{{item.parent_id}}
+        child：{{item.child_id}}
+        候选分数：{{item.score}}
+        父节点：{{lookup(normalize_draft.nodes, item.parent_id)}}
+        子节点：{{lookup(normalize_draft.nodes, item.child_id)}}
+      output_schema_file: schemas/parent-verification.schema.json
+
+  - id: merge_parent_votes
+    type: script
+    language: python
+    inputs:
+      draft_candidates: ${normalize_draft.parent_candidates}
+      verifier_votes: ${verify_parent_candidates.output}
+    output:
+      parent_candidates: array
+    note: >
+      按 parent/child 合并候选分数和 verifier_score。
+      precision 模式可在此增加第二个校验模型与仲裁分支。
+
+  - id: assemble_mindmap
+    type: api
+    method: POST
+    endpoint: ${GRAPH_SERVICE_URL}/v1/mindmap/assemble
+    headers:
+      Authorization: Bearer ${GRAPH_SERVICE_TOKEN}
+    timeout_seconds: 120
+    body:
+      document_id: ${map_parser_output.document.document_id}
+      document_title: ${map_parser_output.document.title}
+      nodes: ${build_draft_nodes.nodes}
+      parent_candidates: ${merge_parent_votes.parent_candidates}
+      cross_links: []
+      max_parents_per_node: 8
+      mode: ${start.mode}
+      max_depth: 6
+      time_limit_seconds: 5
 
   - id: quality_gate
     type: condition
     expression: >
-      normalize_and_validate.quality.evidence_coverage >= 0.8
-      and normalize_and_validate.quality.conflict_count == 0
-    true_next: commit_graph
-    false_next: review_queue
+      assemble_mindmap.quality.topology_valid == true
+      and assemble_mindmap.quality.evidence_coverage == 1
+      and assemble_mindmap.quality.provisional_edge_count == 0
+    true_next: end
+    false_next: review_output
 
-  - id: review_queue
-    type: api
-    method: POST
-    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/reviews
-    body: ${normalize_and_validate.output}
-
-  - id: commit_graph
-    type: api
-    method: POST
-    endpoint_placeholder: ${GRAPH_SERVICE_URL}/v1/graph/commit
-    body: ${normalize_and_validate.output}
+  - id: review_output
+    type: script
+    language: python
+    input: ${assemble_mindmap.output}
+    output:
+      result: object
+    note: >
+      保留合法主树，同时将 review_items 和 warnings 暴露给调用方；
+      低代码验证阶段不在画布里实现持久化人工工作台。
 
   - id: end
     type: end
     outputs:
-      task_id: ${normalize_and_validate.task_id}
-      nodes: ${normalize_and_validate.nodes}
-      edges: ${normalize_and_validate.edges}
-      quality: ${normalize_and_validate.quality}
+      root_id: ${assemble_mindmap.root_id}
+      nodes: ${assemble_mindmap.nodes}
+      tree_edges: ${assemble_mindmap.tree_edges}
+      cross_links: ${assemble_mindmap.cross_links}
+      review_items: ${assemble_mindmap.review_items}
+      quality: ${assemble_mindmap.quality}
+
+external_engine_endpoints:
+  - POST /v1/chunks
+  - POST /v1/mindmap/normalize
+  - POST /v1/mindmap/solve
+  - POST /v1/mindmap/validate
+  - POST /v1/mindmap/assemble
+  - POST /v1/mindmap/visuals/render
+  - POST /v1/mindmap/visuals/crop
+  - GET /v1/mindmap/assets/{render_id}/{filename}
 
 notes:
-  - 这是一份节点蓝图，不冒充百炼控制台导出的官方 DSL。
-  - 百炼官方 DSL 应在控制台搭建后导出，以避免平台版本字段不兼容。
-  - DeepSeek Key 建议作为服务端环境变量或 API 节点鉴权配置，不写入 DSL。
+  - 这是一份控制台组装蓝图，不冒充百炼官方导出 DSL。
+  - API 节点最长等待 600 秒；本蓝图把求解拆成短时同步调用。
+  - 代码节点只做字段映射和数组拉平，不承担第三方依赖、状态持久化或图算法。
+  - GRAPH_SERVICE_TOKEN 只配置在 API 节点鉴权中，不写入导出的共享文件。
+  - 完成画布搭建后，应从百炼控制台导出官方 DSL 作为后续基准。

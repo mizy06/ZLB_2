@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["regions"],
+  "additionalProperties": false,
+  "properties": {
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "page",
+          "bbox",
+          "visual_kind",
+          "action",
+          "summary",
+          "knowledge_claims"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "page": { "type": "integer", "minimum": 1 },
+          "bbox": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "visual_kind": { "type": "string" },
+          "action": {
+            "enum": [
+              "standalone_node",
+              "attach_as_media",
+              "decompose",
+              "ignore_decoration"
+            ]
+          },
+          "ocr_text": { "type": "string" },
+          "summary": { "type": "string" },
+          "knowledge_claims": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

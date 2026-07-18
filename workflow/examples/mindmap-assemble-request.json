@@ -1,0 +1,71 @@
+{
+  "document_id": "doc_machine_learning",
+  "document_title": "机器学习基础",
+  "mode": "standard",
+  "max_depth": 6,
+  "time_limit_seconds": 5,
+  "max_parents_per_node": 8,
+  "nodes": [
+    {
+      "temp_id": "root_1",
+      "name": "机器学习基础",
+      "type": "root_topic",
+      "role": "root_topic",
+      "definition": "课程的中心主题",
+      "origin": "synthesized_root",
+      "confidence": 0.95,
+      "optional": false,
+      "activation_cost": 0,
+      "is_root_candidate": true,
+      "support_unit_ids": ["chunk_1", "chunk_2"]
+    },
+    {
+      "temp_id": "branch_1",
+      "name": "学习范式",
+      "type": "branch_topic",
+      "role": "branch_topic",
+      "definition": "按照训练信号划分的学习方式",
+      "origin": "abstractive",
+      "confidence": 0.9,
+      "optional": false,
+      "activation_cost": 0,
+      "is_root_candidate": false,
+      "support_unit_ids": ["chunk_1", "chunk_2"]
+    },
+    {
+      "temp_id": "node_1",
+      "name": "监督学习",
+      "type": "concept",
+      "role": "concept",
+      "definition": "使用带标签样本学习输入到输出的映射",
+      "origin": "explicit",
+      "confidence": 0.92,
+      "optional": false,
+      "activation_cost": 0,
+      "is_root_candidate": false,
+      "evidence": [
+        {
+          "chunk_id": "chunk_1",
+          "excerpt": "监督学习使用带标签样本"
+        }
+      ]
+    }
+  ],
+  "parent_candidates": [
+    {
+      "parent": "root_1",
+      "child": "branch_1",
+      "score": 0.96,
+      "classification": "direct_parent",
+      "verifier_score": 0.95
+    },
+    {
+      "parent": "branch_1",
+      "child": "node_1",
+      "score": 0.94,
+      "classification": "direct_parent",
+      "verifier_score": 0.94
+    }
+  ],
+  "cross_links": []
+}

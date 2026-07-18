@@ -32,6 +32,11 @@ class Settings:
     deepseek_api_key: str
     deepseek_base_url: str
     deepseek_model: str
+    external_engine_token: str
+    asset_public_base_url: str
+    asset_access_token: str
+    mindmap_data_dir: Path
+    solver_timeout_seconds: float = 5.0
     max_chunk_chars: int = 1800
     chunk_overlap_chars: int = 240
     extraction_concurrency: int = 4
@@ -43,6 +48,7 @@ class Settings:
 
 def load_settings() -> Settings:
     csv_values = _read_workspace_csv()
+    external_engine_token = os.getenv("EXTERNAL_ENGINE_TOKEN", "")
     return Settings(
         api_key=os.getenv("DASHSCOPE_API_KEY", csv_values.get("apiKey", "")),
         openai_base_url=os.getenv(
@@ -61,6 +67,21 @@ def load_settings() -> Settings:
             "https://api.deepseek.com",
         ).rstrip("/"),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        external_engine_token=external_engine_token,
+        asset_public_base_url=os.getenv("ASSET_PUBLIC_BASE_URL", "").rstrip("/"),
+        asset_access_token=os.getenv(
+            "ASSET_ACCESS_TOKEN",
+            external_engine_token,
+        ),
+        mindmap_data_dir=Path(
+            os.getenv(
+                "MINDMAP_DATA_DIR",
+                str(PROJECT_ROOT / ".data" / "mindmap_engine"),
+            )
+        ).resolve(),
+        solver_timeout_seconds=float(
+            os.getenv("MINDMAP_SOLVER_TIMEOUT_SECONDS", "5")
+        ),
     )
 
 

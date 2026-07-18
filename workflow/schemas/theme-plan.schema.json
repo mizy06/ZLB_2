@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["root_candidates", "branch_topics"],
+  "additionalProperties": false,
+  "properties": {
+    "root_candidates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "branch_topics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": [
+        "temp_id",
+        "name",
+        "definition",
+        "support_unit_ids",
+        "confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "temp_id": { "type": "string" },
+        "name": { "type": "string", "minLength": 2 },
+        "definition": { "type": "string" },
+        "support_unit_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}

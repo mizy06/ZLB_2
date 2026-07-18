@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .bailian import BailianClient, DeepSeekClient
 from .config import PROJECT_ROOT, settings
 from .document_parser import SUPPORTED_TYPES
+from .mindmap_engine.router import router as mindmap_engine_router
 from .pipeline import run_pipeline
 from .schemas import JobView
 
@@ -27,6 +28,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(mindmap_engine_router)
 
 jobs: dict[str, JobView] = {}
 jobs_lock = Lock()
