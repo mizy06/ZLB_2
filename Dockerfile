@@ -22,8 +22,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN sed -i \
-        -e 's|http://deb.debian.org/debian-security|https://mirrors.cloud.tencent.com/debian-security|g' \
-        -e 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' \
+        -e 's|http://deb.debian.org/debian-security|http://mirrors.cloud.tencent.com/debian-security|g' \
+        -e 's|http://deb.debian.org/debian|http://mirrors.cloud.tencent.com/debian|g' \
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
