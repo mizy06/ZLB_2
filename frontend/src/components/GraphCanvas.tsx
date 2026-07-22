@@ -1,6 +1,13 @@
 import cytoscape, { type Core } from "cytoscape";
-import { Download, Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
-import { useEffect, useRef } from "react";
+import {
+  AlertTriangle,
+  Download,
+  Maximize2,
+  Minus,
+  Plus,
+  RotateCcw,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import type { AnalysisResult } from "../types";
 
@@ -40,6 +47,15 @@ const layoutOptions = (rootId: string) =>
     maximal: true,
   }) as const;
 
+const runTreeLayout = (graph: Core, rootId: string) => {
+  const crossLinks = graph.edges(".cross-link").remove();
+  try {
+    graph.layout(layoutOptions(rootId)).run();
+  } finally {
+    crossLinks.restore();
+  }
+};
+
 export function GraphCanvas({
   result,
   selectedNodeId,
@@ -48,12 +64,16 @@ export function GraphCanvas({
 }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Core | null>(null);
+  const [renderError, setRenderError] = useState("");
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const graph = cytoscape({
-      container: containerRef.current,
-      elements: [
+    setRenderError("");
+    let graph: Core | null = null;
+    try {
+      graph = cytoscape({
+        container: containerRef.current,
+        elements: [
         ...result.nodes.map((node) => {
           const isRoot = node.id === result.root_id;
           const isBranch = node.role === "branch_topic";
@@ -96,8 +116,8 @@ export function GraphCanvas({
           },
           classes: "cross-link",
         })),
-      ],
-      style: [
+        ],
+        style: [
         {
           selector: "node",
           style: {
@@ -190,15 +210,23 @@ export function GraphCanvas({
             "text-rotation": "autorotate",
           },
         },
-      ],
-      layout: layoutOptions(result.root_id),
-      minZoom: 0.25,
-      maxZoom: 2.4,
-    });
-    graph.on("tap", "node", (event) => onSelectNode(event.target.id()));
-    graph.on("tap", (event) => {
-      if (event.target === graph) onSelectNode(null);
-    });
+        ],
+        layout: { name: "preset" },
+        minZoom: 0.25,
+        maxZoom: 2.4,
+      });
+      runTreeLayout(graph, result.root_id);
+      graph.on("tap", "node", (event) => onSelectNode(event.target.id()));
+      graph.on("tap", (event) => {
+        if (event.target === graph) onSelectNode(null);
+      });
+    } catch (error) {
+      graph?.destroy();
+      setRenderError(
+        error instanceof Error ? error.message : "导图画布初始化失败",
+      );
+      return;
+    }
     graphRef.current = graph;
     return () => {
       graph.destroy();
@@ -216,6 +244,14 @@ export function GraphCanvas({
   return (
     <div className="graph-shell">
       <div ref={containerRef} className="graph-canvas" aria-label="课程思维导图" />
+      {renderError && (
+        <div className="graph-render-error" role="alert">
+          <AlertTriangle size={26} />
+          <strong>导图画布加载失败</strong>
+          <span>结果已经保存，可切换到节点表或下载 JSON、PNG。</span>
+          <small>{renderError}</small>
+        </div>
+      )}
       <div className="graph-controls" aria-label="导图缩放工具">
         <button
           type="button"
@@ -238,7 +274,8 @@ export function GraphCanvas({
           title="重新布局"
           aria-label="重新布局"
           onClick={() =>
-            graphRef.current?.layout(layoutOptions(result.root_id)).run()
+            graphRef.current &&
+            runTreeLayout(graphRef.current, result.root_id)
           }
         >
           <RotateCcw size={16} />

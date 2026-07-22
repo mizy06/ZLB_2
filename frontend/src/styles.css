@@ -797,6 +797,36 @@ input:focus-visible,
   height: 100%;
 }
 
+.graph-render-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 32px;
+  color: #7f1d1d;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.graph-render-error strong {
+  color: #991b1b;
+  font-size: 16px;
+}
+
+.graph-render-error span {
+  color: #526174;
+  font-size: 12px;
+}
+
+.graph-render-error small {
+  max-width: 560px;
+  color: #7f1d1d;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
 .graph-controls {
   display: flex;
   position: absolute;
