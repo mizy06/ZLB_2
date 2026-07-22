@@ -96,8 +96,8 @@ class AnalysisResult(BaseModel):
     nodes: list[KnowledgeNode]
     edges: list[KnowledgeEdge]
     quality: QualityReport
-    extraction_mode: Literal["bailian", "deepseek", "heuristic", "mixed"]
-    provider: Literal["bailian", "deepseek", "heuristic"]
+    extraction_mode: Literal["kimi", "heuristic", "mixed"]
+    provider: Literal["kimi", "heuristic"]
     model: str | None = None
     warnings: list[str] = Field(default_factory=list)
 

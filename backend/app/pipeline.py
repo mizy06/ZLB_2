@@ -6,12 +6,7 @@ from typing import Awaitable, Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from .bailian import (
-    BailianClient,
-    DeepSeekClient,
-    ModelProviderError,
-    OpenAICompatibleClient,
-)
+from .kimi_provider import KimiClient, ModelProviderError, OpenAICompatibleClient
 from .chunking import chunk_document
 from .config import settings
 from .document_parser import parse_document
@@ -50,9 +45,9 @@ class PipelineState(TypedDict, total=False):
 
 
 def provider_client(provider: str) -> OpenAICompatibleClient:
-    if provider == "deepseek":
-        return DeepSeekClient(settings)
-    return BailianClient(settings)
+    if provider != "kimi":
+        raise ValueError(f"Unsupported provider: {provider}")
+    return KimiClient(settings)
 
 
 def create_pipeline(progress: ProgressCallback):
@@ -76,10 +71,8 @@ def create_pipeline(progress: ProgressCallback):
 
     async def extract_node(state: PipelineState):
         chunks = state["chunks"]
-        provider = state.get("provider", "bailian")
-        model = state.get("model") or (
-            settings.deepseek_model if provider == "deepseek" else settings.model
-        )
+        provider = state.get("provider", "kimi")
+        model = state.get("model") or settings.kimi_model
         client = provider_client(provider)
         warnings = list(state.get("warnings", []))
         use_ai = state.get("use_ai", True)

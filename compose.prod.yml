@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+    container_name: zlb-mindmap
+    restart: unless-stopped
+    ports:
+      - "5173:8000"
+      - "8000:8000"
+    environment:
+      KIMI_SECRETS_FILE: /run/secrets/kimi.enc.env.age
+      KIMI_AGE_IDENTITY_FILE: /run/secrets/kimi-age-identity.txt
+      KIMI_REASONING_EFFORT: ${KIMI_REASONING_EFFORT:-low}
+      MINDMAP_DATA_DIR: /app/.data/mindmap_engine
+      MINDMAP_BLACKBOARD_PATH: /app/.data/mindmap_engine/blackboard.sqlite3
+    volumes:
+      - zlb-mindmap-data:/app/.data/mindmap_engine
+      - ./runtime/secrets/kimi.enc.env.age:/run/secrets/kimi.enc.env.age:ro
+      - ./runtime/secrets/kimi-age-identity.txt:/run/secrets/kimi-age-identity.txt:ro
+
+volumes:
+  zlb-mindmap-data:

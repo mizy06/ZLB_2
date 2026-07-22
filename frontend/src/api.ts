@@ -1,4 +1,11 @@
-import type { Health, Job } from "./types";
+import type {
+  AnalysisResult,
+  Health,
+  HistoryItem,
+  Job,
+  ModelProvider,
+  ReviewResolution,
+} from "./types";
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -12,7 +19,7 @@ export async function getHealth(): Promise<Health> {
   return parseResponse(await fetch("/api/health"));
 }
 
-export async function getModels(provider: string): Promise<string[]> {
+export async function getModels(provider: ModelProvider): Promise<string[]> {
   const result = await parseResponse<{ models: string[] }>(
     await fetch(`/api/models?provider=${encodeURIComponent(provider)}`),
   );
@@ -20,7 +27,7 @@ export async function getModels(provider: string): Promise<string[]> {
 }
 
 export async function checkModel(
-  provider: string,
+  provider: ModelProvider,
   model: string,
 ): Promise<{ ok: boolean; message: string }> {
   const form = new FormData();
@@ -33,15 +40,17 @@ export async function checkModel(
 
 export async function createJob(
   file: File,
-  provider: string,
+  provider: ModelProvider,
   model: string,
   useAi: boolean,
+  mode: "standard" | "precision",
 ): Promise<Job> {
   const form = new FormData();
   form.append("file", file);
   form.append("provider", provider);
   form.append("model", model);
   form.append("use_ai", String(useAi));
+  form.append("mode", mode);
   return parseResponse(
     await fetch("/api/jobs", { method: "POST", body: form }),
   );
@@ -49,4 +58,31 @@ export async function createJob(
 
 export async function getJob(id: string): Promise<Job> {
   return parseResponse(await fetch(`/api/jobs/${id}`));
+}
+
+export async function getHistory(): Promise<HistoryItem[]> {
+  return parseResponse(await fetch("/api/history"));
+}
+
+export async function deleteJob(id: string): Promise<void> {
+  await parseResponse(
+    await fetch(`/api/jobs/${id}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+export async function resolveReview(
+  taskId: string,
+  reviewId: string,
+  resolution: ReviewResolution,
+): Promise<AnalysisResult> {
+  const response = await parseResponse<{ result: AnalysisResult }>(
+    await fetch(`/api/jobs/${taskId}/reviews/${reviewId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(resolution),
+    }),
+  );
+  return response.result;
 }

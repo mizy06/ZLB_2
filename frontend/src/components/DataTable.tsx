@@ -17,9 +17,12 @@ export function DataTable({ result, onSelectNode }: DataTableProps) {
       (node) =>
         node.name.toLowerCase().includes(normalized) ||
         node.definition.toLowerCase().includes(normalized) ||
-        node.type.toLowerCase().includes(normalized),
+        node.role.toLowerCase().includes(normalized) ||
+        node.origin.toLowerCase().includes(normalized),
     );
   }, [query, result.nodes]);
+
+  const parentNames = new Map(result.nodes.map((node) => [node.id, node.name]));
 
   return (
     <div className="table-view">
@@ -29,18 +32,19 @@ export function DataTable({ result, onSelectNode }: DataTableProps) {
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索名称、类型或定义"
+          placeholder="搜索名称、角色、来源或定义"
         />
       </label>
       <div className="table-scroll">
         <table>
           <thead>
             <tr>
-              <th>知识点</th>
-              <th>类型</th>
-              <th>定义</th>
+              <th>节点</th>
+              <th>角色</th>
+              <th>父节点</th>
+              <th>深度</th>
               <th>证据</th>
-              <th>置信度</th>
+              <th>风险</th>
             </tr>
           </thead>
           <tbody>
@@ -48,13 +52,19 @@ export function DataTable({ result, onSelectNode }: DataTableProps) {
               <tr key={node.id} onClick={() => onSelectNode(node.id)}>
                 <td>
                   <strong>{node.name}</strong>
+                  <small>{node.definition || "未检出明确定义"}</small>
                 </td>
                 <td>
-                  <span className="type-label">{node.type}</span>
+                  <span className="type-label">{node.role}</span>
                 </td>
-                <td>{node.definition || "未检出明确定义"}</td>
-                <td>{node.evidence.length}</td>
-                <td>{Math.round(node.confidence * 100)}%</td>
+                <td>{node.parent_id ? parentNames.get(node.parent_id) : "根节点"}</td>
+                <td>{node.depth}</td>
+                <td>{node.evidence.length + node.support_unit_ids.length}</td>
+                <td>
+                  <span className={node.risk_score > 0 ? "risk-value" : ""}>
+                    {Math.round(node.risk_score * 100)}%
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>

@@ -1,5 +1,5 @@
 import cytoscape, { type Core } from "cytoscape";
-import { Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
+import { Download, Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import type { AnalysisResult } from "../types";
@@ -7,23 +7,43 @@ import type { AnalysisResult } from "../types";
 type GraphCanvasProps = {
   result: AnalysisResult;
   selectedNodeId: string | null;
+  showCrossLinks: boolean;
   onSelectNode: (id: string | null) => void;
 };
 
 const palette: Record<string, string> = {
+  root_topic: "#1d4ed8",
+  branch_topic: "#0f766e",
   concept: "#2563eb",
-  method: "#0f766e",
+  method: "#0e7490",
   principle: "#7c3aed",
   process: "#c2410c",
+  step: "#b45309",
   formula: "#be123c",
   example: "#64748b",
+  warning: "#b91c1c",
   system: "#0369a1",
-  person: "#a16207",
+  visual_knowledge: "#047857",
+  table: "#475569",
 };
+
+const layoutOptions = (rootId: string) =>
+  ({
+    name: "breadthfirst",
+    animate: false,
+    directed: true,
+    roots: `#${rootId}`,
+    fit: true,
+    padding: 54,
+    spacingFactor: 1.22,
+    avoidOverlap: true,
+    maximal: true,
+  }) as const;
 
 export function GraphCanvas({
   result,
   selectedNodeId,
+  showCrossLinks,
   onSelectNode,
 }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -34,79 +54,144 @@ export function GraphCanvas({
     const graph = cytoscape({
       container: containerRef.current,
       elements: [
-        ...result.nodes.map((node) => ({
-          data: {
-            id: node.id,
-            label: node.name,
-            type: node.type,
-            confidence: node.confidence,
-            color: palette[node.type] || palette.concept,
-          },
-        })),
-        ...result.edges.map((edge) => ({
+        ...result.nodes.map((node) => {
+          const isRoot = node.id === result.root_id;
+          const isBranch = node.role === "branch_topic";
+          return {
+            data: {
+              id: node.id,
+              label: node.name,
+              role: node.role,
+              confidence: node.confidence,
+              color: palette[node.role] || palette.concept,
+              width: isRoot ? 124 : isBranch ? 110 : 92,
+              height: isRoot ? 52 : 42,
+              risk: node.risk_score,
+            },
+            classes: [
+              isRoot ? "root-node" : "",
+              node.status === "needs_review" ? "needs-review" : "",
+            ]
+              .filter(Boolean)
+              .join(" "),
+          };
+        }),
+        ...result.tree_edges.map((edge) => ({
           data: {
             id: edge.id,
             source: edge.source,
             target: edge.target,
-            label: edge.predicate,
-            confidence: edge.confidence,
+            label: edge.provisional ? "待确认" : "",
+            score: edge.score,
           },
+          classes: edge.provisional ? "provisional" : "tree-edge",
+        })),
+        ...result.cross_links.map((edge) => ({
+          data: {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            label: edge.relation,
+            score: edge.score,
+          },
+          classes: "cross-link",
         })),
       ],
       style: [
         {
           selector: "node",
           style: {
-            width: 48,
-            height: 48,
-            "background-color": "data(color)",
-            "border-width": 3,
-            "border-color": "#ffffff",
+            width: "data(width)",
+            height: "data(height)",
+            shape: "round-rectangle",
+            "background-color": "#ffffff",
+            "border-width": 2,
+            "border-color": "data(color)",
             "overlay-opacity": 0,
             label: "data(label)",
             color: "#172033",
             "font-family": "Inter, Noto Sans SC, sans-serif",
-            "font-size": 12,
+            "font-size": 11,
             "font-weight": 600,
             "text-wrap": "wrap",
-            "text-max-width": "100px",
-            "text-valign": "bottom",
-            "text-margin-y": 10,
+            "text-max-width": "84px",
+            "text-valign": "center",
+            "text-halign": "center",
+          },
+        },
+        {
+          selector: "node.root-node",
+          style: {
+            "background-color": "#1d4ed8",
+            "border-color": "#1d4ed8",
+            color: "#ffffff",
+            "font-size": 12,
+            "text-max-width": "112px",
+          },
+        },
+        {
+          selector: "node.needs-review",
+          style: {
+            "border-style": "dashed",
+            "border-color": "#d97706",
           },
         },
         {
           selector: "node:selected",
           style: {
-            "border-width": 5,
+            "border-width": 4,
             "border-color": "#f59e0b",
+            "background-color": "#fffbeb",
+            color: "#172033",
           },
         },
         {
-          selector: "edge",
+          selector: "edge.tree-edge",
           style: {
-            width: 1.5,
-            "line-color": "#a8b4c5",
-            "target-arrow-color": "#a8b4c5",
+            width: 1.8,
+            "line-color": "#9aa9ba",
+            "target-arrow-color": "#9aa9ba",
             "target-arrow-shape": "triangle",
+            "curve-style": "taxi",
+            "taxi-direction": "downward",
+            "taxi-turn": 20,
+          },
+        },
+        {
+          selector: "edge.provisional",
+          style: {
+            width: 2,
+            "line-color": "#d97706",
+            "target-arrow-color": "#d97706",
+            "target-arrow-shape": "triangle",
+            "line-style": "dashed",
+            "curve-style": "taxi",
+            label: "data(label)",
+            color: "#92400e",
+            "font-size": 8,
+          },
+        },
+        {
+          selector: "edge.cross-link",
+          style: {
+            display: showCrossLinks ? "element" : "none",
+            width: 1.2,
+            "line-color": "#7c3aed",
+            "target-arrow-color": "#7c3aed",
+            "target-arrow-shape": "vee",
+            "line-style": "dashed",
             "curve-style": "bezier",
             label: "data(label)",
-            color: "#667085",
-            "font-size": 9,
-            "text-background-color": "#f8fafc",
+            color: "#6d28d9",
+            "font-size": 8,
+            "text-background-color": "#ffffff",
             "text-background-opacity": 0.9,
-            "text-background-padding": "3px",
+            "text-background-padding": "2px",
             "text-rotation": "autorotate",
           },
         },
       ],
-      layout: {
-        name: "cose",
-        animate: false,
-        fit: true,
-        padding: 60,
-        nodeRepulsion: () => 7800,
-        idealEdgeLength: () => 115,
-      },
+      layout: layoutOptions(result.root_id),
       minZoom: 0.25,
       maxZoom: 2.4,
     });
@@ -119,7 +204,7 @@ export function GraphCanvas({
       graph.destroy();
       graphRef.current = null;
     };
-  }, [result, onSelectNode]);
+  }, [result, showCrossLinks, onSelectNode]);
 
   useEffect(() => {
     const graph = graphRef.current;
@@ -130,8 +215,8 @@ export function GraphCanvas({
 
   return (
     <div className="graph-shell">
-      <div ref={containerRef} className="graph-canvas" aria-label="知识关系图" />
-      <div className="graph-controls" aria-label="图谱缩放工具">
+      <div ref={containerRef} className="graph-canvas" aria-label="课程思维导图" />
+      <div className="graph-controls" aria-label="导图缩放工具">
         <button
           type="button"
           title="放大"
@@ -153,9 +238,7 @@ export function GraphCanvas({
           title="重新布局"
           aria-label="重新布局"
           onClick={() =>
-            graphRef.current
-              ?.layout({ name: "cose", animate: true, padding: 60 })
-              .run()
+            graphRef.current?.layout(layoutOptions(result.root_id)).run()
           }
         >
           <RotateCcw size={16} />
@@ -164,10 +247,18 @@ export function GraphCanvas({
           type="button"
           title="适应画布"
           aria-label="适应画布"
-          onClick={() => graphRef.current?.fit(undefined, 60)}
+          onClick={() => graphRef.current?.fit(undefined, 54)}
         >
           <Maximize2 size={16} />
         </button>
+        <a
+          href={`/api/jobs/${result.task_id}/export.png`}
+          download
+          title="保存 PNG"
+          aria-label="保存 PNG"
+        >
+          <Download size={16} />
+        </a>
       </div>
     </div>
   );
