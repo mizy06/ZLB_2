@@ -21,7 +21,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN apt-get update \
+RUN sed -i \
+        -e 's|http://deb.debian.org/debian-security|https://mirrors.cloud.tencent.com/debian-security|g' \
+        -e 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         age \
         fonts-noto-cjk \
