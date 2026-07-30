@@ -7,10 +7,11 @@
 - 历史规格：`docs/superpowers/specs/2026-07-17-mind-map-agent-framework-design.md`
 - 2026-07-30 产品审批：`docs/MINDMAP_PRODUCT_APPROVAL_RECORD.md`
 - 完整执行书：`docs/MINDMAP_EXECUTION_PLAYBOOK.md`
-- 当前结论：八项 Q0 P0 的本地代码候选与 integrated red-team 自动验证已完成；
-  因缺少独立 Red Team/Reviewer/Approver 签署，Q0 Gate 保持 `HOLD`。Q1、Q3、
-  Runtime、Q2、Q4、Q5 的真实数据、人员、故障与授权证据仍不完整，生产替换、
-  internal allowlist 和公网流量继续 No-Go。
+- 当前 profile：`STUDENT COMPETITION`
+- 当前结论：八项 Q0 P0、integrated red-team 和全量自动验证已完成，代码候选
+  `ACCEPTED FOR COMPETITION`。独立多人签署、60 份 Gold、20 人研究、完整生产
+  fault matrix、internal allowlist 和 canary 已移出竞赛 DoD；实际参赛材料的
+  端到端演练仍由项目所有者在提交作品前完成。
 - 完整证据：`docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`
 
 ## 1. 状态定义
@@ -18,12 +19,13 @@
 | 状态 | 含义 |
 | --- | --- |
 | 已实现 | 存在可执行代码、冻结合同和自动化测试 |
+| 竞赛就绪 | 满足学生竞赛的代码、安全、演示和回退底线，不代表生产认证 |
 | 合同已实现，运行锁定 | 合同、策略和拒绝路径存在，但默认不启用真实外部能力 |
-| 待外部证据 | 需要真实数据、标注者、用户研究、运维演练或审批，不能由代码测试替代 |
+| 生产证据归档 | 未来产品化所需的真实数据、用户研究或运维演练，不阻断竞赛 |
 | No-Go | ADR-01 或最终发布决策明确禁止当前启用 |
 
-“已实现”只表示本仓库中的受限 shadow 行为可执行，不表示模型质量、生产 SLO、
-公网发布或教师/学生可用性已经得到证明。
+“竞赛就绪”允许本地或隔离演示，不表示模型质量、生产 SLO、多租户公网发布或
+教师/学生统计可用性已经得到证明。
 
 ## 2. Clean-Room 边界
 
@@ -60,8 +62,8 @@ backend.vnext.adapters.legacy_result
 | S3 recorded semantic stage | 局部 `TaskEnvelope`、严格 Claim/Region proposal、独立 Region veto、完整 interaction replay | `claims/model_stage.py`、`regions/model_stage.py`、`model_runtime/adapter.py`、两个 recorded CLI | 已实现；无 live endpoint |
 | S3 多介质呈现 | 同一 Projection 输出 Web/Mobile/PNG/PDF/JSON | `presentation/builder.py`、`pagination.py`、`renderer.py`、`render-shadow` CLI | 已实现；发布保持锁定 |
 | S4 评测工具 | 每文档/分层门、risk-coverage、五次稳定性、泄漏检测 | `contracts/quality.py`、`quality/evaluator.py`、`pilot-evaluate` CLI | 已实现 |
-| S4 真实 pilot | 12 development、18 calibration、30 sealed blind，多标注者 | 默认 policy 在数据或阈值不完整时返回 `incomplete` | 待外部证据 |
-| S4 可用性 | 8 名教师、12 名学生，桌面/移动各半 | 尚无真实研究结果 | 待外部证据 |
+| S4 真实 pilot | 12 development、18 calibration、30 sealed blind，多标注者 | 未来产品化方案 | 生产证据归档 |
+| S4 可用性 | 8 名教师、12 名学生，桌面/移动各半 | 未来产品化方案 | 生产证据归档 |
 
 S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实 OCR/VLM、复杂公式和
 化学反应若不能可靠解析，会保持原始区域或 `unresolved`，不会被自然语言猜补。
@@ -216,8 +218,8 @@ history/TTL、rollout duration audit 和 bad-revision rollback issue/PR。其状
 - Runtime/Q2/Q3/Q4/Q5 epic：`#15` 至 `#19`
 - Q0-Q5 Gate review：`#20` 至 `#25`
 
-各 issue 均记录角色、依赖、验收项和 Stop 条件；独立人员尚未实际分配，因此
-远端骨架完成不改变 Gate 的 `HOLD` 结论。
+这些 issue 是生产 Profile 的历史骨架；竞赛 Profile 生效后将关闭或归档，不再
+阻断候选。
 
 ## 7. 验证结果
 
@@ -282,8 +284,8 @@ Canvas 并保持 44px 目标。报告同时绑定 code-only manifest digest
 - 唯一 skip 是宿主缺少 `age`/`age-keygen` 的 legacy 密钥往返，与 vNext
   Q0 候选无关。
 
-代码与自动证据完成不等于 Gate 签署。Q0 因没有独立 verifier/red-team verdict
-保持 `HOLD`；完整 Gate 结论见
+按学生竞赛 Profile，代码与自动证据已经满足竞赛候选验收。生产级独立签署和统计
+证据不再是当前交付项；完整边界见
 `docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`。
 
 2026-07-29 本分支执行：
@@ -375,7 +377,9 @@ replay snapshot 运行：
 实现无关。测试期间出现 Starlette `TestClient`/`httpx` deprecation warning；
 现有锁定依赖功能正常，本次不为消除 warning 改动依赖栈。
 
-## 8. 尚未完成且不能伪造的证据
+## 8. 未来产品化证据归档
+
+以下内容不再阻断学生竞赛，仅在未来正式产品化时恢复：
 
 ### 8.1 外部数据和人员
 
@@ -409,36 +413,29 @@ replay snapshot 运行：
   链校验已实现；尚无外部签名锚点、多主机 writer、备份恢复或 RTO/RPO 演练证据。
 - Standalone API 只提供受保护的 shadow run/read，不提供上传、发布或 legacy route。
 
-## 9. 解锁顺序
+## 9. 竞赛收尾顺序
 
-1. 冻结 pilot 标注规范，收集 60 文档并运行 `pilot-evaluate`。
-2. 用 calibration 结果冻结阈值和 verifier independence group。
-3. 取得 Q0 独立 Red Team、Schema Steward、Reviewer 和 Product Approver verdict，
-   再以 recorded/no-egress Claim 与显式 Region stages 为基线，用 calibration 冻结
-   prompt、provider revision、预算和失败门，并按 ADR-03/05 的范围申请
-   public-fixture inferred Region 和内部模型 profile pilot。
-4. 完成 live search 隐私、SSRF、prompt injection、retention 和 snapshot 红队后，
-   再考虑租户 opt-in。
-5. 对现有 renderer 完成教师/学生任务、跨浏览器、辅助技术和打印验收；证据齐备前
-   保持 `publication_enabled=false`。
-6. 完成 ADR-08 公共 API 迁移证据、Q0-Q5、并发/灾备/回滚演练和 blind set 扩充后，
-   才可申请 internal allowlist；public canary 仍需 release-specific 授权。
+1. 使用至少一份实际参赛材料完成端到端生成、诊断和导出演练。
+2. 在演示设备上复查桌面与移动端，不出现裁切、重叠或空白画布。
+3. 确认演示环境没有真实密钥、未授权私有数据和意外公网能力。
+4. 保存稳定提交和关闭 vNext 的回退步骤。
+5. 只在比赛确实需要时追加模型/search 能力；生产 Gold、用户研究、灾备和
+   canary 保持未来工作，不阻塞当前提交。
 
 ## 10. 最终边界
 
 当前可以准确声称：
 
-> 独立 vNext 受限 shadow 已形成可执行的
+> 学生竞赛候选已形成可执行的
 > `Document IR + Source Inventory -> explicit top-down RegionPlan ->
 > Claim Ledger -> Canonical DAG -> Diagnostic Projection` 主链，并具备不可变
 > artifact、耐久控制、完整 recorded model interaction 回放、复核、评测、真实
-> Web/PNG/PDF/JSON shadow 输出、默认拒绝搜索和发布治理基础。
+> Web/PNG/PDF/JSON shadow 输出、默认拒绝搜索和可回退演示基础。
 
 当前不能声称：
 
 > 已完成完整生产 Agent 框架、已达到教学质量、已通过公网发布门，或可以替换
 > legacy v56。
 
-因此本实现提供了 ADR-01/02 和后续 scoped approval 的实验基础，但不自动符合这些
-ADR 的正式合同。完整生产目标必须保持未完成，直到第 8 节外部证据、Q0 独立
-ACCEPT 和 Q1-Q5 逐项满足。
+因此本实现按竞赛 Profile 为 `COMPETITION DEMO READY`；第 8 节和生产 Q0-Q5
+只在未来产品化时恢复。

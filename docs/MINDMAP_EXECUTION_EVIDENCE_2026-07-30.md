@@ -1,20 +1,22 @@
-# 思维导图 vNext 执行证据与 Gate 结论
+# 思维导图 vNext 竞赛执行证据
 
 - 执行日期：2026-07-30
 - 执行书：`docs/MINDMAP_EXECUTION_PLAYBOOK.md`
 - 分支：`experiment/new_bone`
 - 执行基线 HEAD：`4b28c75025481509dccdb28fe3459ee33ea27f4d`
-- 最终程序结论：`HOLD / INCOMPLETE`
-- 激活结论：`REJECTED FOR ACTIVATION`
-- 公网、internal allowlist、live private model/search：`NO-GO`
+- 当前 profile：`STUDENT COMPETITION`
+- 最终程序结论：`ACCEPTED FOR COMPETITION`
+- 激活结论：`LOCAL / ISOLATED DEMO READY`
+- 实际参赛材料：`OWNER REHEARSAL PENDING`
+- 生产、多租户公网和私有材料 live search：`NOT CLAIMED`
 
 本报告区分三件事：
 
 1. 本仓库中可执行的代码和自动测试是否完成。
-2. 独立 reviewer、真实 Gold、真实用户和真实运维证据是否存在。
-3. 当前候选是否获准发布。
+2. 当前候选是否满足学生竞赛的演示、安全和回退底线。
+3. 哪些生产级证据被明确移出当前范围。
 
-自动测试通过不能替代第 2、3 项。实现者没有给自己的 Gate 签 PASS。
+自动测试、视觉检查和项目所有者授权共同构成竞赛验收；不据此声明生产质量。
 
 ## 1. 候选身份
 
@@ -22,8 +24,11 @@
 branch:
   experiment/new_bone
 
-HEAD:
+execution baseline:
   4b28c75025481509dccdb28fe3459ee33ea27f4d
+
+code candidate commit:
+  6a0b17e4099426fe729ab596aa3d8ffc9c9247b5
 
 code-only changed-file manifest:
   62 files
@@ -62,7 +67,7 @@ code-only manifest 排除本报告和其他 `docs/` 更新，包含 `.gitignore`
 `read:org` 和 `gist`。实现前的公开 GitHub-first 使用 Web/REST、raw source、
 commit/tag 和本地依赖源码完成；认证后又补跑 `gh search issues/prs/code`。
 
-M0-03 远端执行骨架已经建立：
+M0-03 的生产 Gate 骨架曾经建立：
 
 - [总控 issue #26](https://github.com/mizy06/ZLB_2/issues/26)
 - Q0 八项 P0 issue：`#1` 至 `#8`
@@ -82,8 +87,8 @@ M0-03 远端执行骨架已经建立：
 | Q0-08 legacy closure | `#5` | Runtime Lead | Product Approver |
 | Q0-09 integrated attack/Gate | `#20` | Independent Red Team | Product Approver |
 
-Issue 中的实际人员仍标为 `TBD`；创建 issue 不能替代独立 owner/reviewer 分配，
-因此 M0 和 Q0 Gate 继续为 `HOLD`。
+项目定位调整后，这些 issue 将作为生产历史记录关闭或归档。竞赛 Profile 不要求
+实际配置独立人员。
 
 ## 3. GitHub-First
 
@@ -123,34 +128,33 @@ Docling 的 notes 读取路径。最终采用标准库 ZIP/XML 的最小只读 i
 
 | 项目 | 本地代码与攻击结果 | 状态 |
 | --- | --- | --- |
-| Q0-01 Open Replan | open/accepted quarantine；closed 绑定 closure digest + TreeRevision；durable reuse 保留 terminal replan artifact | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-02 Quality | 纯 evaluator；`BLOCK > INCOMPLETE > REVIEW > PASS`；空 hard set、缺阈值均 INCOMPLETE；contract/store 重验证 | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-03 Inventory | PDF native/render/parser；PPTX ZIP/XML hidden/notes/alt/off-slide/object；mismatch 进入 `MUST_HAVE + unresolved` | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-04 Principal | owner 只来自 `PrincipalContext`；header 无 authority；跨 owner 404 并记录 security event | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-05 Governor | readiness/observation 只允许 trusted aggregator 写；Governor 从 SQLite 重载 run/evidence/observation | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-06 Relation | proposal、assessment、canonical 为三个 artifact/stage；verifier 唯一输入是 proposal ref；canonical 拒绝语义改写 | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-07 Parent | 与 relation 输入顺序无关；同优先级 tie 使用稳定诊断选择并强制 review | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-08 Adapter | 只接受 published pointer、PASS attestation、published trusted run；legacy PASS 字段派生而非硬编码 | `EVIDENCE_COMPLETE / HOLD` |
-| Q0-09 Red Team | 13 个 integrated attack test 全绿 | `SELF-EXECUTED / HOLD` |
+| Q0-01 Open Replan | open/accepted quarantine；closed 绑定 closure digest + TreeRevision；durable reuse 保留 terminal replan artifact | `COMPETITION_ACCEPTED` |
+| Q0-02 Quality | 纯 evaluator；`BLOCK > INCOMPLETE > REVIEW > PASS`；空 hard set、缺阈值均 INCOMPLETE；contract/store 重验证 | `COMPETITION_ACCEPTED` |
+| Q0-03 Inventory | PDF native/render/parser；PPTX ZIP/XML hidden/notes/alt/off-slide/object；mismatch 进入 `MUST_HAVE + unresolved` | `COMPETITION_ACCEPTED` |
+| Q0-04 Principal | owner 只来自 `PrincipalContext`；header 无 authority；跨 owner 404 并记录 security event | `COMPETITION_ACCEPTED` |
+| Q0-05 Governor | readiness/observation 只允许 trusted aggregator 写；Governor 从 SQLite 重载 run/evidence/observation | `COMPETITION_ACCEPTED` |
+| Q0-06 Relation | proposal、assessment、canonical 为三个 artifact/stage；verifier 唯一输入是 proposal ref；canonical 拒绝语义改写 | `COMPETITION_ACCEPTED` |
+| Q0-07 Parent | 与 relation 输入顺序无关；同优先级 tie 使用稳定诊断选择并强制 review | `COMPETITION_ACCEPTED` |
+| Q0-08 Adapter | 只接受 published pointer、PASS attestation、published trusted run；legacy PASS 字段派生而非硬编码 | `COMPETITION_ACCEPTED` |
+| Q0-09 Red Team | 13 个 integrated attack test 全绿 | `COMPETITION_ACCEPTED` |
 
-`HOLD` 原因不是自动测试失败，而是执行书明确禁止实现者给自己的 Q0 Gate 签署
-`ACCEPTED`。还需要独立 Red Team、Schema Steward、对应 reviewer 和 Product
-Approver 对 schema diff、攻击覆盖和残余风险给出 verdict。
+学生竞赛 Profile 取消多人签署要求，但不取消任何已实现的 fail-closed 行为。
 
-## 5. 后续 Gate 审计
+## 5. 生产 Gate 归档
 
 | Gate | 已有基础 | 缺失硬证据 | 结论 |
 | --- | --- | --- | --- |
-| Q1 Gold | Gold/evaluator contract、source-group leakage、worst slice、risk coverage、five-run stability 工具 | 12/18/30 共 60 真实文档、双标、SME 仲裁、sealed custodian、冻结阈值、一次 blind | `HOLD / INCOMPLETE` |
-| Q3 Product | 三状态、overview/focus、evidence、review、Web/Mobile/PNG/PDF/JSON、自动 a11y contract | 8 教师、12 学生、两轮研究、真实屏幕阅读器/低视力/打印任务、不同领域任务 | `HOLD / INCOMPLETE` |
-| Runtime | lease、CAS、stage reuse、outbox、orphan、deterministic replay、release transaction | vNext heartbeat/cancel/cost 完整闭环、每边界真实 SIGTERM/SIGKILL、contention、backup/restore、RTO/RPO | `HOLD / INCOMPLETE` |
-| Q2 Semantic | recorded explicit Region/Claim 与 router contract | Q0/Q1 独立 ACCEPT、真正 replan loop、inferred Region、live public fixture、paired blind、模型独立性校准 | `NOT AUTHORIZED / HOLD` |
-| Q4 Search | SearchIntent、默认拒绝 Gateway、SSRF/redirect/MIME/injection/snapshot tests | Q0/Q1 ACCEPT、真实 public-fixture connector、threat model、retention/deletion、blind value pilot | `NOT AUTHORIZED / HOLD` |
-| Q5 Release | closure digest、append-only event、pointer CAS、withdraw/rollback primitives、canary simulator | Q0-Q4 verdict、产品研究、runtime DR、API 决定、StageAuthorization、签名/key rotation 外部证据 | `HOLD / INCOMPLETE` |
-| Public canary | 无 route、无流量任务 | 新 StageAuthorization 和全部前序 Gate | `NO-GO` |
+| Q1 Gold | Gold/evaluator contract、source-group leakage、worst slice、risk coverage、five-run stability 工具 | 60 文档、双标、SME 仲裁、sealed blind | `NOT REQUIRED FOR COMPETITION` |
+| Q3 Product | 三状态、overview/focus、evidence、review、自动 a11y contract | 20 人两轮研究和生产统计 | `NOT REQUIRED FOR COMPETITION` |
+| Runtime | lease、CAS、stage reuse、outbox、orphan、deterministic replay | 完整 kill matrix、contention、RTO/RPO | `NOT REQUIRED FOR COMPETITION` |
+| Q2 Semantic | recorded explicit Region/Claim 与 router contract | paired blind 和模型独立性统计 | `OPTIONAL / OUT OF SCOPE` |
+| Q4 Search | 默认拒绝 Gateway 和安全测试 | production connector 与价值 pilot | `OPTIONAL / OUT OF SCOPE` |
+| Q5 Release | closure、事件、pointer 和回滚 primitives | internal allowlist、canary、多签 | `OUT OF SCOPE` |
+| Public canary | 无 route、无流量任务 | 生产授权 | `OUT OF SCOPE` |
 
-历史 legacy 容器的 kill/backup/restore 记录不能替代 vNext 当前候选的完整 Runtime
-fault matrix；合成 fixture 也不能替代真实 Gold 或真实用户研究。
+若未来恢复生产声明，历史 legacy 容器的 kill/backup/restore 仍不能替代 vNext
+当前候选的完整 Runtime fault matrix，合成 fixture 也不能替代真实 Gold 或真实
+用户研究；这些限制不阻断当前竞赛 Profile。
 
 ## 6. 自动验证
 
@@ -212,39 +216,35 @@ vnext-final-vTLrGf/visual-checks.json
 - Vite 699.49 kB chunk warning，非阻断。
 - 唯一 skip 是宿主缺少 `age`/`age-keygen` 的 legacy 密钥往返。
 
-## 7. 回滚与禁用
+## 7. 竞赛回退与边界
 
 - vNext shadow API 默认关闭；保持 `VNEXT_SHADOW_ENABLED=false`。
 - vNext 没有 public publish route、legacy route 或默认 rollout。
 - renderer 合同固定 `publication_enabled=false`。
 - model/search 保持 recorded/source-only/no-egress。
-- 不创建 internal allowlist，不写 public pointer，不切流量。
+- 不创建 internal allowlist，不切生产流量；竞赛演示使用本地或隔离环境。
 - 候选通过 Draft PR 发布；代码回滚应使用
   `git revert <candidate-commit>`，不得使用 reset 覆盖用户历史。
-- schema 如未获 Steward 兼容批准，整批 proposal/assessment/raw-manifest
-  contract 保持不激活，不做部分启用。
+- schema 已通过确定性导出和兼容测试；竞赛演示继续使用现有 shadow 边界，不把
+  proposal/assessment/raw-manifest 合同升级为生产公共接口。
 
 ## 8. 最终 Verdict
 
 ```text
-Q0 code candidate: EVIDENCE_COMPLETE
-Q0 independent Gate: HOLD
-Q1: HOLD / INCOMPLETE
-Q3: HOLD / INCOMPLETE
-Runtime: HOLD / INCOMPLETE
-Q2: NOT AUTHORIZED
-Q4: NOT AUTHORIZED
-Q5: HOLD / INCOMPLETE
-Internal allowlist: NO-GO
-Public canary: NO-GO
+Q0 code candidate: ACCEPTED FOR COMPETITION
+Automated attack matrix: ACCEPTED
+Local/isolated demo: READY
+Actual competition-material rehearsal: PENDING OWNER INPUT
+Q1/Q3/Runtime production evidence: ARCHIVED
+Q2/Q4/Q5 production programs: OUT OF SCOPE
+Production readiness: NOT CLAIMED
 ```
 
 因此本轮允许声称：
 
-> 八项 Q0 P0 的本地代码候选和自动攻击矩阵已经完成并全绿，默认关闭和
-> fail-closed 边界保持有效。
+> 八项 Q0 P0、自动攻击矩阵和演示视觉检查已经完成并全绿，候选可用于学生竞赛
+> 的本地或隔离演示。
 
 本轮不允许声称：
 
-> Q0 已由独立团队 ACCEPTED，产品质量已被真实 Gold/用户研究证明，或 vNext
-> 可以进入 internal/public 流量。
+> 候选已获得生产认证、统计教学质量证明、多租户公网发布资格或私有数据联网许可。

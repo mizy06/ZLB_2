@@ -2,11 +2,16 @@
 
 更新时间：2026-07-30
 
-## vNext 执行书状态
+## vNext 竞赛执行状态
 
 `experiment/new_bone` 已按 `MINDMAP_EXECUTION_PLAYBOOK.md` 完成本机工具、Q0
 代码候选、自动攻击矩阵和全量验证。当前执行基线 HEAD 为
 `4b28c75025481509dccdb28fe3459ee33ea27f4d`。
+
+2026-07-30 项目所有者确认本项目为学生参赛项目，执行标准已切换为
+`STUDENT COMPETITION TRACK`。独立多人签署、60 份 Gold、20 人用户研究、完整
+灾备、internal allowlist 和 canary 不再是竞赛硬门；代码安全、失败诚实性、
+测试/构建、实际参赛材料演练和回退能力继续保留。
 
 - `gh 2.96.0` 已认证为 `mizy06`；GitHub-first CLI 复查完成。
 - 远端总控 issue 为 `#26`，Q0/Q1/epic/Gate 工作包为 `#1` 至 `#25`。
@@ -19,11 +24,9 @@
 - schema 为 36 contracts、36 schema files 加 manifest。
 - legacy OpenAPI snapshot 未变化。
 
-Gate 仍为 `HOLD / INCOMPLETE`：当前实现者不能自批 Q0；Q1 缺 60 真实文档、
-双标/仲裁/calibration/sealed blind；Q3 缺教师/学生和辅助技术研究；Runtime
-缺完整 vNext process-kill、contention、cost、backup/restore 与 RTO/RPO；
-Q2/Q4 未获前置 Gate 授权；Q5 无 internal StageAuthorization。live private
-model/search、internal allowlist、public route 和 canary 均保持关闭。
+当前结论为 `COMPETITION DEMO READY / OWNER REHEARSAL PENDING`。代码候选和自动
+验证已按竞赛 DoD 接受；提交作品前仍需使用实际参赛材料完成一次端到端演练。
+不声明生产级质量、生产 SLO、多租户公网发布或私有材料 live search 能力。
 
 完整证据与逐 Gate verdict：
 `docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`。

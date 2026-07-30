@@ -1,19 +1,64 @@
 # 思维导图 vNext 完整执行书
 
 - 编制日期：2026-07-30
-- 状态：`LOCAL EXECUTION VERIFIED / INDEPENDENT GATES HOLD`
+- 当前模式：`STUDENT COMPETITION TRACK`
+- 状态：`COMPETITION DEMO READY / OWNER REHEARSAL PENDING`
 - 执行证据：`docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`
-- 适用范围：ADR-03 至 ADR-12 审批后的工程、评测、产品、安全和发布准备
+- 适用范围：学生参赛项目的代码、演示、安全和回退准备
 - 产品审批：`docs/MINDMAP_PRODUCT_APPROVAL_RECORD.md`
 - 规范 Workflow：`docs/MINDMAP_WORKFLOW_SPEC.md`
 - 系统整改：`docs/MINDMAP_SYSTEM_REDESIGN.md`
 - 当前实现矩阵：`docs/VNEXT_IMPLEMENTATION_MATRIX.md`
 - 事故基线：公网 v56 “醛和酮”任务
 - 参考启动日：2026-08-03；仅用于排期映射，不构成自动启动指令
-- 最终边界：本执行书不授权公网流量、私有课件 live web search、公共 API 迁移、
-  Postgres/Temporal 直接引入或正式 publication
+- 最终边界：允许本地或隔离环境参赛演示；不声明生产、多租户、公网流量、
+  私有课件 live web search、公共 API 迁移或正式 publication readiness
 
 ---
+
+## 竞赛模式覆盖条款
+
+2026-07-30，项目所有者明确确认本项目为学生参赛项目，并授权删除不适合该规模的
+生产治理门。本节优先于后文 Q0-Q5、人员编制、样本量、canary 和 Program DoD；
+后文保留为未来产品化参考，不再阻断竞赛候选。
+
+### 保留的硬底线
+
+- open replan、失败 hard metric、parser 漏项、跨 owner、关系自签、父边顺序漂移、
+  legacy 伪造 PASS 和 forged readiness 仍必须 fail closed；
+- schema、public API snapshot、backend/frontend tests、typecheck、build 和关键
+  viewport 检查必须通过；
+- 不提交或输出密钥，不对未授权私有材料启用 live model/search egress；
+- blocked/review/draft 不得显示为已发布或生产通过；
+- 演示失败时可关闭 vNext、回到稳定提交或使用 `git revert`。
+
+### 不再作为竞赛硬门
+
+- Independent Red Team、Schema Steward、Security Reviewer、Product Approver 的
+  多人签署和职责隔离；
+- 12/18/30 共 60 份 Gold、双人标注、SME 仲裁和 sealed blind custody；
+- 8 名教师、12 名学生、两轮形成性研究和生产统计置信区间；
+- 每个提交边界的真实 SIGTERM/SIGKILL、完整 contention、RTO/RPO 和灾备演练；
+- Q2/Q4 的 paired blind、模型独立性统计和 public-fixture 搜索价值实验；
+- internal allowlist、分阶段 canary、2-of-3、多方签名和 production SLO。
+
+### 竞赛 Definition of Done
+
+1. 当前自动验证全绿，且 Q0 13 项攻击测试通过。
+2. 至少用一份实际参赛材料完成端到端演练；尚未提供材料时不阻断代码合入，但
+   必须在提交作品前完成。
+3. 桌面和移动端核心流程可演示，无明显裁切、重叠或空白画布。
+4. 失败状态可解释，不把 unresolved/blocked 冒充完整结果。
+5. 演示环境不含真实密钥和未授权私有数据，并有关闭能力。
+
+当前结论：
+
+```text
+code candidate: ACCEPTED FOR COMPETITION
+local/isolated demo: READY
+actual competition-material rehearsal: PENDING OWNER INPUT
+production readiness: NOT CLAIMED
+```
 
 ## 0. 执行命令
 
@@ -40,9 +85,10 @@
 - `publish=false` 或 blocked 结果仍被称为“思维导图已生成”；
 - 系统用外部网页内容替代课件事实。
 
-### 0.2 产品成功定义
+### 0.2 生产参考成功定义
 
-一个候选版本只有同时满足以下条件才算成功：
+以下定义仅在未来进入正式产品化时恢复为硬门；竞赛验收以“竞赛 Definition of
+Done”为准：
 
 1. 源文档、结构、Claim、Canonical 和 Projection 五层可分别验收。
 2. 八项 P0 假绿灯全部关闭。
@@ -53,7 +99,7 @@
 7. 发布事实来自受信 store 和完整 closure，不来自调用方自报 boolean。
 8. 失败时可以撤回或停用，不自动回退到已知质量失败的 v56。
 
-### 0.3 不算成功
+### 0.3 生产参考不算成功
 
 - 合同测试通过但没有真实 Gold。
 - 输出一棵合法树但教学层级仍错。
@@ -72,7 +118,7 @@
 | --- | --- |
 | Git branch | `experiment/new_bone` |
 | 执行基线 HEAD | `4b28c75025481509dccdb28fe3459ee33ea27f4d` |
-| 工作树 | 用户基线提交保持不变；当前 code-only candidate 为 62 个 changed/untracked files |
+| 候选提交 | 用户基线保持在 `4b28c75`；code-only candidate 提交为 `6a0b17e`，62 files |
 | Python | `.venv` 为 Python 3.12.3 |
 | Node/corepack | Node.js 22.23.2；pnpm 10.14.0 |
 | vNext tests | 启动基线 `168 passed`；当前候选 `182 passed` |
@@ -102,6 +148,10 @@ reset、checkout 覆盖或清理用户改动。
 ---
 
 ## 1. 组织与责任
+
+竞赛模式不要求多人职责隔离。项目所有者同时承担 Product、Program 和最终演示
+决定；实现者可以执行代码、测试和文档工作。其他 reviewer 均为可选加分项，不是
+合入或演示前置。下表仅作为未来产品化参考。
 
 ### 1.1 交付团队
 
@@ -1814,7 +1864,10 @@ Day 10 不要求八项 P0 全部完成，但必须能证明每一项都有失败
 
 ---
 
-## 19. Program Definition of Done
+## 19. Production Program Definition of Done
+
+本节已被“竞赛模式覆盖条款”替代，不适用于当前学生参赛交付；仅在项目决定进入
+正式生产或多租户服务时恢复。
 
 完整执行书只有达到以下状态才算执行完成：
 

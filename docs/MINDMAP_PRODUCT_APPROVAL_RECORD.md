@@ -8,9 +8,29 @@
 - 整改背景：`docs/MINDMAP_SYSTEM_REDESIGN.md`
 - 实验实现清点：`docs/VNEXT_IMPLEMENTATION_MATRIX.md`
 - 完整执行书：`docs/MINDMAP_EXECUTION_PLAYBOOK.md`
-- 结论性质：架构决定和分阶段授权，不是生产上线许可
+- 结论性质：架构决定和分阶段授权；当前另有学生竞赛模式覆盖条款
 
 ---
+
+## 学生竞赛授权覆盖
+
+2026-07-30，项目所有者确认本项目实际为学生参赛项目。当前交付目标从生产发布
+准备调整为本地或隔离环境的竞赛演示。
+
+| 项目 | 竞赛决定 |
+| --- | --- |
+| 八项 Q0 代码安全与诚实性修复 | 保留；自动测试全绿后接受 |
+| 独立多人签署 | 取消硬性要求 |
+| 60 份 Gold、sealed blind、双标/仲裁 | 取消竞赛硬门 |
+| 20 人用户研究与生产统计 | 取消竞赛硬门 |
+| 完整 fault matrix、RTO/RPO、灾备 | 取消竞赛硬门 |
+| Q2/Q4 paired blind、internal allowlist、canary、多签 | 移出竞赛范围 |
+| 实际参赛材料端到端演练 | 保留，提交作品前由项目所有者完成 |
+| 密钥、owner 隔离、私有数据和失败诚实性 | 保留，不得豁免 |
+
+因此当前候选可标记为 `ACCEPTED FOR COMPETITION DEMO`，但不得据此宣称生产级
+质量、生产 SLO、多租户安全认证或正式公网发布资格。后文 ADR-03 至 ADR-12 的
+生产门保留为未来产品化参考，不阻断当前参赛候选。
 
 ## 0. 审批方法
 
@@ -829,14 +849,15 @@ requested activation scope
 
 截至 2026-07-30：
 
+- 学生竞赛覆盖条款已生效；本地或隔离竞赛演示按精简 DoD 验收。
 - ADR-03 至 ADR-12 已完成产品审批，不再标记为笼统的 `PROPOSED FOR REVIEW`。
 - 本文只批准各 ADR 明列的方向和实施范围；延后/否决条款同样具有约束力。
 - Workstream A 可以进入实施排期，但本文没有自动启动代码修改。
 - Workstream、任务编号、参考排期和逐项 DoD 以
   `docs/MINDMAP_EXECUTION_PLAYBOOK.md` 为准。
-- Inferred Region、live search、Standard/Precision live pilot、公共 API、正式
-  Canonical/Projection 1.0、release candidate、internal allowlist 和 public canary
-  仍分别受 Q0-Q5 约束。
+- 生产模式下，Inferred Region、live search、Standard/Precision live pilot、
+  公共 API、正式 Canonical/Projection 1.0、release candidate、internal allowlist
+  和 public canary 仍分别受 Q0-Q5 约束；这些门不属于当前竞赛交付。
 - 私有课件 live web egress、公共 API 未版本化变更、Postgres/Temporal 直接迁移、
   固定 2-of-3 签名和公网流量切换当前均未获授权。
 - 任一 material contract、gold denominator、模型/Judge、搜索策略、公共 API、
