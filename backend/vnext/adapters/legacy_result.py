@@ -18,9 +18,16 @@ from backend.app.architecture_schemas import (
     ModelVote,
     ParsedDocument,
 )
+from backend.vnext.artifacts.canonical import payload_digest
 from backend.vnext.contracts.claims import ClaimLedger, InstructionalRole
 from backend.vnext.contracts.common import DecisionEvent, RuntimeRole
-from backend.vnext.contracts.control import RunManifest, RunProfile
+from backend.vnext.contracts.control import (
+    PublicationStatus,
+    QualityGateDecision,
+    QualityStatus,
+    RunManifest,
+    RunProfile,
+)
 from backend.vnext.contracts.graph import (
     CanonicalExplicitGraph,
     CanonicalRelation,
@@ -47,6 +54,8 @@ from backend.vnext.contracts.source import (
 from backend.vnext.projection.validation import (
     validate_projection_against_graph,
 )
+from backend.vnext.orchestration.control_store import SQLiteControlStore
+from backend.vnext.orchestration.release import PUBLISHED_POINTER_KEY
 
 
 class LegacyAdaptationBlocked(ValueError):
@@ -94,12 +103,61 @@ def to_legacy_result(
     omission_audit: OmissionAudit,
     graph: CanonicalExplicitGraph,
     projection: DiagnosticProjection,
+    owner_id: str,
+    control_store: SQLiteControlStore,
     run_manifest: RunManifest | None = None,
     mode: RunProfile | str = RunProfile.STANDARD,
     title: str | None = None,
 ) -> MindMapResult:
     """Lossily down-convert a publishable vNext projection for old readers."""
 
+    pointer = control_store.load_pointer(
+        owner_id=owner_id,
+        pointer_key=PUBLISHED_POINTER_KEY,
+    )
+    if pointer is None:
+        raise LegacyAdaptationBlocked(
+            "legacy result requires a trusted published pointer"
+        )
+    if (
+        pointer.artifact_ref.owner_id != owner_id
+        or pointer.artifact_ref.artifact_type.value
+        != "diagnostic_projection"
+        or pointer.artifact_ref.payload_digest != payload_digest(projection)
+    ):
+        raise LegacyAdaptationBlocked(
+            "published pointer does not target this projection"
+        )
+    attestation = control_store.load_quality_attestation(
+        owner_id=owner_id,
+        artifact_ref=pointer.artifact_ref,
+    )
+    if (
+        attestation is None
+        or attestation.gate_decision is not QualityGateDecision.PASS
+    ):
+        raise LegacyAdaptationBlocked(
+            "published pointer lacks a passing quality closure"
+        )
+    trusted_manifest = control_store.load_run(
+        run_id,
+        owner_id=owner_id,
+    )
+    if (
+        trusted_manifest is None
+        or trusted_manifest.execution_status.value != "succeeded"
+        or trusted_manifest.quality_status is not QualityStatus.PASSED
+        or trusted_manifest.publication_status
+        is not PublicationStatus.PUBLISHED
+    ):
+        raise LegacyAdaptationBlocked(
+            "published pointer lacks a published run manifest"
+        )
+    if run_manifest is not None and run_manifest != trusted_manifest:
+        raise LegacyAdaptationBlocked(
+            "caller run manifest does not match trusted store"
+        )
+    run_manifest = trusted_manifest
     validate_projection_against_graph(projection, graph)
     if projection.quality_status is not ProjectionQualityStatus.PASSED:
         raise LegacyAdaptationBlocked(
@@ -300,6 +358,29 @@ def to_legacy_result(
             f"{len(unsupported_cross_links)} cross-links used relations "
             "unsupported by the legacy enum and were omitted."
         )
+    hard_metrics = tuple(
+        metric
+        for metric in attestation.metrics
+        if metric.applicable and metric.hard
+    )
+    structural_gate_passed = bool(hard_metrics) and all(
+        metric.passed is True for metric in hard_metrics
+    )
+    publish_gate_passed = (
+        pointer.artifact_ref.payload_digest == payload_digest(projection)
+        and run_manifest.publication_status is PublicationStatus.PUBLISHED
+    )
+    quality_gate_passed = (
+        attestation.gate_decision is QualityGateDecision.PASS
+    )
+    if not (
+        structural_gate_passed
+        and publish_gate_passed
+        and quality_gate_passed
+    ):
+        raise LegacyAdaptationBlocked(
+            "legacy quality fields cannot be derived as passing"
+        )
     quality = MindMapQualityReport(
         node_count=len(nodes),
         tree_edge_count=len(tree_edges),
@@ -319,9 +400,9 @@ def to_legacy_result(
         ),
         abstraction_support_rate=1.0,
         review_item_count=0,
-        structural_gate_passed=True,
-        publish_gate_passed=True,
-        quality_gate_passed=True,
+        structural_gate_passed=structural_gate_passed,
+        publish_gate_passed=publish_gate_passed,
+        quality_gate_passed=quality_gate_passed,
         coverage=_coverage_summary(
             inventory,
             omission_audit,

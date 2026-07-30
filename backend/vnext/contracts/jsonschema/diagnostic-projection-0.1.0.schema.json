@@ -41,6 +41,8 @@
         "replan_request",
         "claim_ledger",
         "omission_audit",
+        "relation_proposal_ledger",
+        "relation_assessment_ledger",
         "canonical_explicit_graph",
         "diagnostic_projection"
       ],
@@ -253,9 +255,23 @@
           "title": "Child Concept Id",
           "type": "string"
         },
+        "policy_version": {
+          "default": "view-parent-policy-v1",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Policy Version",
+          "type": "string"
+        },
         "selected_parent_edge_id": {
           "pattern": "^relation_[0-9a-f]{32}$",
           "title": "Selected Parent Edge Id",
+          "type": "string"
+        },
+        "selection_reason": {
+          "default": "stable_semantic_priority",
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Selection Reason",
           "type": "string"
         },
         "suppressed_canonical_edge_ids": {

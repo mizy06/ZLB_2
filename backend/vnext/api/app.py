@@ -37,6 +37,15 @@ _ALLOWED_SUFFIXES = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class PrincipalContext:
+    subject: str
+    tenant: str
+    audience: str
+    scopes: frozenset[str]
+    owner_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ShadowAPISettings:
     enabled: bool
     service_token: str = field(repr=False)
@@ -45,6 +54,12 @@ class ShadowAPISettings:
     control_db: Path
     worker_id: str = "vnext-shadow-api-worker"
     max_source_bytes: int = 100 * 1024 * 1024
+    principal_subject: str = "service:vnext-shadow"
+    principal_tenant: str = "tenant-a"
+    principal_owner_id: str = "owner-a"
+    principal_audience: str = "zlb-vnext-shadow"
+    principal_scopes: tuple[str, ...] = ("vnext:run", "vnext:read")
+    required_audience: str = "zlb-vnext-shadow"
 
     def __post_init__(self) -> None:
         if self.enabled and not self.service_token:
@@ -55,6 +70,19 @@ class ShadowAPISettings:
             raise ValueError("shadow API worker_id must not be empty")
         if self.max_source_bytes < 1:
             raise ValueError("shadow API max_source_bytes must be positive")
+        principal_values = (
+            self.principal_subject,
+            self.principal_tenant,
+            self.principal_owner_id,
+            self.principal_audience,
+            self.required_audience,
+        )
+        if any(not value.strip() for value in principal_values):
+            raise ValueError("shadow API principal fields must not be empty")
+        if not self.principal_scopes:
+            raise ValueError("shadow API principal requires at least one scope")
+        if any(not scope.strip() for scope in self.principal_scopes):
+            raise ValueError("shadow API principal scopes must not be empty")
 
     @classmethod
     def from_env(cls) -> "ShadowAPISettings":
@@ -91,6 +119,34 @@ class ShadowAPISettings:
                     "VNEXT_SHADOW_MAX_SOURCE_BYTES",
                     str(100 * 1024 * 1024),
                 )
+            ),
+            principal_subject=os.getenv(
+                "VNEXT_SHADOW_PRINCIPAL_SUBJECT",
+                "service:vnext-shadow",
+            ),
+            principal_tenant=os.getenv(
+                "VNEXT_SHADOW_PRINCIPAL_TENANT",
+                "tenant-a",
+            ),
+            principal_owner_id=os.getenv(
+                "VNEXT_SHADOW_PRINCIPAL_OWNER",
+                "owner-a",
+            ),
+            principal_audience=os.getenv(
+                "VNEXT_SHADOW_PRINCIPAL_AUDIENCE",
+                "zlb-vnext-shadow",
+            ),
+            principal_scopes=tuple(
+                scope.strip()
+                for scope in os.getenv(
+                    "VNEXT_SHADOW_PRINCIPAL_SCOPES",
+                    "vnext:run,vnext:read",
+                ).split(",")
+                if scope.strip()
+            ),
+            required_audience=os.getenv(
+                "VNEXT_SHADOW_REQUIRED_AUDIENCE",
+                "zlb-vnext-shadow",
             ),
         )
 
@@ -131,6 +187,7 @@ def create_shadow_app(settings: ShadowAPISettings) -> FastAPI:
     service_lock = Lock()
     artifact_store: LocalArtifactStore | None = None
     control_store: SQLiteControlStore | None = None
+    application.state.security_events = []
 
     def services() -> tuple[LocalArtifactStore, SQLiteControlStore]:
         nonlocal artifact_store, control_store
@@ -141,10 +198,10 @@ def create_shadow_app(settings: ShadowAPISettings) -> FastAPI:
                 control_store = SQLiteControlStore(settings.control_db)
         return artifact_store, control_store
 
-    def owner_context(
+    def principal_context(
         authorization: Annotated[str | None, Header()] = None,
         x_vnext_owner: Annotated[str | None, Header()] = None,
-    ) -> str:
+    ) -> PrincipalContext:
         if not settings.enabled:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -163,17 +220,58 @@ def create_shadow_app(settings: ShadowAPISettings) -> FastAPI:
                 detail="invalid_bearer_token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        if (
-            x_vnext_owner is None
-            or not x_vnext_owner.strip()
-            or len(x_vnext_owner) > 256
-            or any(char in x_vnext_owner for char in "\r\n\0")
-        ):
+        principal = PrincipalContext(
+            subject=settings.principal_subject,
+            tenant=settings.principal_tenant,
+            audience=settings.principal_audience,
+            scopes=frozenset(settings.principal_scopes),
+            owner_id=settings.principal_owner_id,
+        )
+        if principal.audience != settings.required_audience:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="invalid_owner_header",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="principal_audience_forbidden",
             )
-        return x_vnext_owner.strip()
+        if x_vnext_owner is not None:
+            supplied_owner = x_vnext_owner.strip()
+            if (
+                not supplied_owner
+                or len(supplied_owner) > 256
+                or any(char in supplied_owner for char in "\r\n\0")
+                or supplied_owner != principal.owner_id
+            ):
+                application.state.security_events.append(
+                    {
+                        "code": "owner_header_mismatch",
+                        "subject": principal.subject,
+                        "tenant": principal.tenant,
+                    }
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="owner_header_not_authoritative",
+                )
+        return principal
+
+    def run_principal(
+        principal: PrincipalContext = Depends(principal_context),
+    ) -> PrincipalContext:
+        if "vnext:run" not in principal.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="principal_scope_forbidden",
+            )
+        return principal
+
+    def read_principal(
+        principal: PrincipalContext = Depends(principal_context),
+    ) -> PrincipalContext:
+        if "vnext:read" not in principal.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="principal_scope_forbidden",
+            )
+        return principal
 
     @application.get("/healthz")
     def health() -> dict[str, Any]:
@@ -190,8 +288,9 @@ def create_shadow_app(settings: ShadowAPISettings) -> FastAPI:
     )
     async def create_run(
         request: ShadowRunRequest,
-        owner_id: str = Depends(owner_context),
+        principal: PrincipalContext = Depends(run_principal),
     ) -> ShadowRunResponse:
+        owner_id = principal.owner_id
         source_path = _resolve_source_path(settings, request.source_path)
         artifact_store, control_store = services()
         result = await asyncio.to_thread(
@@ -220,14 +319,26 @@ def create_shadow_app(settings: ShadowAPISettings) -> FastAPI:
     )
     def get_run(
         run_id: RunIdPath,
-        owner_id: str = Depends(owner_context),
+        principal: PrincipalContext = Depends(read_principal),
     ) -> RunManifest:
+        owner_id = principal.owner_id
         _, control_store = services()
         manifest = control_store.load_run(
             run_id,
             owner_id=owner_id,
         )
         if manifest is None:
+            if control_store.run_exists_for_other_owner(
+                run_id,
+                owner_id=owner_id,
+            ):
+                application.state.security_events.append(
+                    {
+                        "code": "run_cross_owner_probe",
+                        "subject": principal.subject,
+                        "tenant": principal.tenant,
+                    }
+                )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="run_not_found",
@@ -240,8 +351,9 @@ def create_shadow_app(settings: ShadowAPISettings) -> FastAPI:
     )
     def get_artifact(
         artifact_id: ArtifactIdPath,
-        owner_id: str = Depends(owner_context),
+        principal: PrincipalContext = Depends(read_principal),
     ) -> StoredArtifactResponse:
+        owner_id = principal.owner_id
         artifact_store, _ = services()
         try:
             stored = artifact_store.get(
@@ -249,6 +361,17 @@ def create_shadow_app(settings: ShadowAPISettings) -> FastAPI:
                 artifact_id=artifact_id,
             )
         except FileNotFoundError as exc:
+            if artifact_store.exists_for_other_owner(
+                owner_id=owner_id,
+                artifact_id=artifact_id,
+            ):
+                application.state.security_events.append(
+                    {
+                        "code": "artifact_cross_owner_probe",
+                        "subject": principal.subject,
+                        "tenant": principal.tenant,
+                    }
+                )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="artifact_not_found",

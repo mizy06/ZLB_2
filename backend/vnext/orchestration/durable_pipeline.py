@@ -14,7 +14,11 @@ from backend.vnext.artifacts.local_store import (
     LocalArtifactStore,
     StoredArtifact,
 )
-from backend.vnext.canonical_graph import build_canonical_explicit_graph
+from backend.vnext.canonical_graph import (
+    build_canonical_explicit_graph,
+    build_relation_assessment_ledger,
+    build_relation_proposal_ledger,
+)
 from backend.vnext.claims import (
     ModelClaimLedgerResult,
     PreparedRecordedClaimStage,
@@ -48,11 +52,14 @@ from backend.vnext.contracts.control import (
     ReplayMode,
     StageCommit,
     StageCommitStatus,
+    evaluate_quality_gate,
 )
 from backend.vnext.contracts.exporter import contract_schema
 from backend.vnext.contracts.graph import (
     CanonicalExplicitGraph,
     CanonicalStatus,
+    RelationAssessmentLedger,
+    RelationProposalLedger,
 )
 from backend.vnext.contracts.inventory import SourceInventory
 from backend.vnext.contracts.projection import (
@@ -899,6 +906,78 @@ class DurableShadowSupervisor:
             audit_ref = self.artifact_store.ref(
                 audit_stage.audit_envelope
             )
+            replan_refs = tuple(
+                self.artifact_store.ref(envelope)
+                for envelope in audit_stage.replan_envelopes
+            )
+            (
+                relation_proposal_ledger,
+                relation_proposal_envelope,
+            ) = self._run_stage(
+                stage_key="relation-proposal",
+                ordered_input_digests=(
+                    source_ref.payload_digest,
+                    ledger_ref.payload_digest,
+                    *(
+                        ref.payload_digest
+                        for ref in planning.accepted_plan_refs
+                    ),
+                    audit_ref.payload_digest,
+                    *(ref.payload_digest for ref in replan_refs),
+                ),
+                fresh=lambda: self._build_relation_proposal(
+                    ledger,
+                    planning,
+                    source_ref,
+                    ledger_ref,
+                    audit_ref,
+                    audit_stage.replan_requests,
+                    replan_refs,
+                    owner_id,
+                ),
+                reuse=self._load_relation_proposal,
+                output_ref=lambda value: self.artifact_store.ref(value[1]),
+                artifact_refs=lambda value: (
+                    self.artifact_store.ref(value[1]),
+                ),
+                metrics=lambda value: (
+                    StringValue(
+                        key="proposed_relations",
+                        value=str(len(value[0].proposed_relations)),
+                    ),
+                ),
+            )
+            relation_proposal_ref = self.artifact_store.ref(
+                relation_proposal_envelope
+            )
+            (
+                relation_assessment_ledger,
+                relation_assessment_envelope,
+            ) = self._run_stage(
+                stage_key="independent-relation-assessment",
+                ordered_input_digests=(
+                    relation_proposal_ref.payload_digest,
+                ),
+                fresh=lambda: self._build_relation_assessment(
+                    relation_proposal_ledger,
+                    relation_proposal_ref,
+                    owner_id,
+                ),
+                reuse=self._load_relation_assessment,
+                output_ref=lambda value: self.artifact_store.ref(value[1]),
+                artifact_refs=lambda value: (
+                    self.artifact_store.ref(value[1]),
+                ),
+                metrics=lambda value: (
+                    StringValue(
+                        key="assessed_relations",
+                        value=str(len(value[0].accepted_relations)),
+                    ),
+                ),
+            )
+            relation_assessment_ref = self.artifact_store.ref(
+                relation_assessment_envelope
+            )
             canonical, canonical_envelope = self._run_stage(
                 stage_key="canonical-explicit-graph",
                 ordered_input_digests=(
@@ -909,6 +988,9 @@ class DurableShadowSupervisor:
                         for ref in planning.accepted_plan_refs
                     ),
                     audit_ref.payload_digest,
+                    *(ref.payload_digest for ref in replan_refs),
+                    relation_proposal_ref.payload_digest,
+                    relation_assessment_ref.payload_digest,
                 ),
                 fresh=lambda: self._build_graph(
                     ledger,
@@ -916,6 +998,11 @@ class DurableShadowSupervisor:
                     source_ref,
                     ledger_ref,
                     audit_ref,
+                    audit_stage.replan_requests,
+                    replan_refs,
+                    relation_proposal_ref,
+                    relation_assessment_ledger,
+                    relation_assessment_ref,
                     owner_id,
                 ),
                 reuse=self._load_graph,
@@ -971,16 +1058,6 @@ class DurableShadowSupervisor:
             raise
 
         projection_ref = self.artifact_store.ref(projection_envelope)
-        quality_status = _quality_status(projection.quality_status)
-        gate_decision = (
-            QualityGateDecision.PASS
-            if quality_status is QualityStatus.PASSED
-            else (
-                QualityGateDecision.REVIEW
-                if quality_status is QualityStatus.REVIEW_REQUIRED
-                else QualityGateDecision.BLOCK
-            )
-        )
         accepted_relations = [
             relation
             for relation in canonical.relations
@@ -995,6 +1072,131 @@ class DurableShadowSupervisor:
             )
             / len(accepted_relations)
         )
+        source_integrity_mismatches = len(
+            source.source_inventory.raw_manifest.mismatch_codes
+        )
+        open_replan_count = len(
+            [
+                request
+                for request in audit_stage.replan_requests
+                if request.status.value in {"open", "accepted"}
+            ]
+        )
+        quality_metrics = (
+            QualityMetric(
+                name="source_integrity_mismatch_count",
+                value=source_integrity_mismatches,
+                threshold=0,
+                passed=source_integrity_mismatches == 0,
+            ),
+            QualityMetric(
+                name="omitted_source_count",
+                value=len(audit_stage.audit.omitted_source_ids),
+                threshold=0,
+                passed=not audit_stage.audit.omitted_source_ids,
+            ),
+            QualityMetric(
+                name="open_replan_count",
+                value=open_replan_count,
+                threshold=0,
+                passed=open_replan_count == 0,
+            ),
+            QualityMetric(
+                name="relation_verifier_coverage",
+                value=relation_evidence_coverage,
+                threshold=1,
+                passed=relation_evidence_coverage == 1,
+            ),
+            QualityMetric(
+                name="projection_not_blocked",
+                value=(
+                    0
+                    if projection.quality_status
+                    in {
+                        ProjectionQualityStatus.BLOCKED_DOCUMENT,
+                        ProjectionQualityStatus.BLOCKED_CLAIM,
+                        ProjectionQualityStatus.BLOCKED_SEMANTIC,
+                        ProjectionQualityStatus.BLOCKED_EVIDENCE,
+                    }
+                    else 1
+                ),
+                threshold=1,
+                passed=(
+                    projection.quality_status
+                    not in {
+                        ProjectionQualityStatus.BLOCKED_DOCUMENT,
+                        ProjectionQualityStatus.BLOCKED_CLAIM,
+                        ProjectionQualityStatus.BLOCKED_SEMANTIC,
+                        ProjectionQualityStatus.BLOCKED_EVIDENCE,
+                    }
+                ),
+            ),
+            QualityMetric(
+                name="projection_quality_passed",
+                value=(
+                    1
+                    if projection.quality_status
+                    is ProjectionQualityStatus.PASSED
+                    else 0
+                ),
+                threshold=1,
+                passed=(
+                    projection.quality_status
+                    is ProjectionQualityStatus.PASSED
+                ),
+                hard=False,
+            ),
+        )
+        gate_decision = evaluate_quality_gate(quality_metrics)
+        projected_quality_status = _quality_status(
+            projection.quality_status
+        )
+        if gate_decision is QualityGateDecision.BLOCK:
+            quality_status = (
+                projected_quality_status
+                if projected_quality_status
+                in {
+                    QualityStatus.BLOCKED_DOCUMENT,
+                    QualityStatus.BLOCKED_CLAIM,
+                    QualityStatus.BLOCKED_SEMANTIC,
+                    QualityStatus.BLOCKED_EVIDENCE,
+                }
+                else (
+                    QualityStatus.BLOCKED_SEMANTIC
+                    if open_replan_count or relation_evidence_coverage < 1
+                    else QualityStatus.BLOCKED_CLAIM
+                )
+            )
+        elif gate_decision in {
+            QualityGateDecision.INCOMPLETE,
+            QualityGateDecision.REVIEW,
+        }:
+            quality_status = QualityStatus.REVIEW_REQUIRED
+        else:
+            quality_status = projected_quality_status
+        evaluator_build_digest = _policy_digest(
+            "quality-evaluator-build",
+            code_revision=self._manifest.declared.code_revision,
+        )
+        closure_digest = payload_digest(
+            {
+                "audit": audit_ref.payload_digest,
+                "canonical": canonical_ref.payload_digest,
+                "claim_ledger": ledger_ref.payload_digest,
+                "inventory": inventory_ref.payload_digest,
+                "projection": projection_ref.payload_digest,
+                "regions": [
+                    ref.payload_digest
+                    for ref in planning.accepted_plan_refs
+                ],
+                "relation_assessment": (
+                    relation_assessment_ref.payload_digest
+                ),
+                "relation_proposal": relation_proposal_ref.payload_digest,
+                "replans": [ref.payload_digest for ref in replan_refs],
+                "source": source_ref.payload_digest,
+            }
+        )
         self.control_store.record_quality_attestation(
             QualityAttestation(
                 attestation_id="attestation_" + secrets.token_hex(16),
@@ -1008,22 +1210,9 @@ class DurableShadowSupervisor:
                     "quality-gates",
                     code_revision=self._manifest.declared.code_revision,
                 ),
-                metrics=(
-                    QualityMetric(
-                        name="omitted_source_count",
-                        value=len(
-                            audit_stage.audit.omitted_source_ids
-                        ),
-                        threshold=0,
-                        passed=not audit_stage.audit.omitted_source_ids,
-                    ),
-                    QualityMetric(
-                        name="relation_evidence_coverage",
-                        value=relation_evidence_coverage,
-                        threshold=1,
-                        passed=relation_evidence_coverage == 1,
-                    ),
-                ),
+                closure_digest=closure_digest,
+                evaluator_build_digest=evaluator_build_digest,
+                metrics=quality_metrics,
                 gate_decision=gate_decision,
                 created_at=datetime.now(UTC),
             )
@@ -1048,6 +1237,10 @@ class DurableShadowSupervisor:
             omission_audit_envelope=audit_stage.audit_envelope,
             replan_requests=audit_stage.replan_requests,
             replan_envelopes=audit_stage.replan_envelopes,
+            relation_proposal_ledger=relation_proposal_ledger,
+            relation_proposal_envelope=relation_proposal_envelope,
+            relation_assessment_ledger=relation_assessment_ledger,
+            relation_assessment_envelope=relation_assessment_envelope,
             canonical_graph=canonical,
             canonical_graph_envelope=canonical_envelope,
             projection=projection,
@@ -1247,13 +1440,7 @@ class DurableShadowSupervisor:
         )
         if not isinstance(stored.payload, OmissionAudit):
             raise TypeError("audit stage output is not OmissionAudit")
-        requests = audit_regions_bottom_up(
-            planning,
-            source.source_inventory,
-            stored.payload,
-        )
-        request_by_id = {request.request_id: request for request in requests}
-        envelopes: list[ArtifactEnvelope] = []
+        linked: list[tuple[ReplanRequest, ArtifactEnvelope]] = []
         for envelope in self.artifact_store.list_envelopes(
             owner_id=audit_ref.owner_id
         ):
@@ -1271,14 +1458,53 @@ class DurableShadowSupervisor:
                 continue
             if (
                 isinstance(candidate.payload, ReplanRequest)
-                and candidate.payload.request_id in request_by_id
             ):
-                envelopes.append(candidate.envelope)
+                linked.append((candidate.payload, candidate.envelope))
+        if linked:
+            superseded_artifact_ids = {
+                request.supersedes.artifact_id
+                for request, _ in linked
+                if request.supersedes is not None
+            }
+            terminal = tuple(
+                (request, envelope)
+                for request, envelope in linked
+                if envelope.artifact_id not in superseded_artifact_ids
+            )
+            requests = tuple(
+                request
+                for request, _ in sorted(
+                    terminal,
+                    key=lambda item: (
+                        item[0].affected_region_id,
+                        item[0].request_id,
+                        item[1].artifact_id,
+                    ),
+                )
+            )
+            envelopes = tuple(
+                envelope
+                for _, envelope in sorted(
+                    terminal,
+                    key=lambda item: (
+                        item[0].affected_region_id,
+                        item[0].request_id,
+                        item[1].artifact_id,
+                    ),
+                )
+            )
+        else:
+            requests = audit_regions_bottom_up(
+                planning,
+                source.source_inventory,
+                stored.payload,
+            )
+            envelopes = ()
         return _AuditStageResult(
             audit=stored.payload,
             audit_envelope=stored.envelope,
             replan_requests=requests,
-            replan_envelopes=tuple(envelopes),
+            replan_envelopes=envelopes,
         )
 
     def _build_graph(
@@ -1288,6 +1514,11 @@ class DurableShadowSupervisor:
         source_ref: ArtifactRef,
         ledger_ref: ArtifactRef,
         audit_ref: ArtifactRef,
+        replan_requests: tuple[ReplanRequest, ...],
+        replan_refs: tuple[ArtifactRef, ...],
+        relation_proposal_ref: ArtifactRef,
+        relation_assessment_ledger: RelationAssessmentLedger,
+        relation_assessment_ref: ArtifactRef,
         owner_id: str,
     ) -> tuple[CanonicalExplicitGraph, ArtifactEnvelope]:
         graph = build_canonical_explicit_graph(
@@ -1295,7 +1526,9 @@ class DurableShadowSupervisor:
             planning,
             source_observation_ref=source_ref,
             claim_ledger_ref=ledger_ref,
-            additional_input_refs=(audit_ref,),
+            relation_assessment_ledger=relation_assessment_ledger,
+            replan_requests=replan_requests,
+            additional_input_refs=(audit_ref, *replan_refs),
         )
         envelope = self.artifact_store.put(
             owner_id=owner_id,
@@ -1310,9 +1543,98 @@ class DurableShadowSupervisor:
                 ledger_ref,
                 *planning.accepted_plan_refs,
                 audit_ref,
+                *replan_refs,
+                relation_proposal_ref,
+                relation_assessment_ref,
             ),
         )
         return graph, envelope
+
+    def _build_relation_proposal(
+        self,
+        ledger: ClaimLedger,
+        planning: RegionPlanningResult,
+        source_ref: ArtifactRef,
+        ledger_ref: ArtifactRef,
+        audit_ref: ArtifactRef,
+        replan_requests: tuple[ReplanRequest, ...],
+        replan_refs: tuple[ArtifactRef, ...],
+        owner_id: str,
+    ) -> tuple[RelationProposalLedger, ArtifactEnvelope]:
+        proposal = build_relation_proposal_ledger(
+            ledger,
+            planning,
+            source_observation_ref=source_ref,
+            claim_ledger_ref=ledger_ref,
+            replan_requests=replan_requests,
+            additional_input_refs=(audit_ref, *replan_refs),
+        )
+        envelope = self.artifact_store.put(
+            owner_id=owner_id,
+            role=RuntimeRole.RELATION_PROPOSER,
+            payload=proposal,
+            producer=_producer(
+                "vnext-explicit-relation-proposer",
+                RuntimeRole.RELATION_PROPOSER,
+            ),
+            input_refs=(
+                source_ref,
+                ledger_ref,
+                *planning.accepted_plan_refs,
+                audit_ref,
+                *replan_refs,
+            ),
+        )
+        return proposal, envelope
+
+    def _load_relation_proposal(
+        self,
+        proposal_ref: ArtifactRef,
+    ) -> tuple[RelationProposalLedger, ArtifactEnvelope]:
+        stored = self.artifact_store.get(
+            owner_id=proposal_ref.owner_id,
+            artifact_id=proposal_ref.artifact_id,
+        )
+        if not isinstance(stored.payload, RelationProposalLedger):
+            raise TypeError(
+                "relation stage output is not RelationProposalLedger"
+            )
+        return stored.payload, stored.envelope
+
+    def _build_relation_assessment(
+        self,
+        proposal: RelationProposalLedger,
+        proposal_ref: ArtifactRef,
+        owner_id: str,
+    ) -> tuple[RelationAssessmentLedger, ArtifactEnvelope]:
+        assessment = build_relation_assessment_ledger(
+            proposal,
+        )
+        envelope = self.artifact_store.put(
+            owner_id=owner_id,
+            role=RuntimeRole.RELATION_VERIFIER_A,
+            payload=assessment,
+            producer=_producer(
+                "vnext-explicit-relation-verifier-a",
+                RuntimeRole.RELATION_VERIFIER_A,
+            ),
+            input_refs=(proposal_ref,),
+        )
+        return assessment, envelope
+
+    def _load_relation_assessment(
+        self,
+        assessment_ref: ArtifactRef,
+    ) -> tuple[RelationAssessmentLedger, ArtifactEnvelope]:
+        stored = self.artifact_store.get(
+            owner_id=assessment_ref.owner_id,
+            artifact_id=assessment_ref.artifact_id,
+        )
+        if not isinstance(stored.payload, RelationAssessmentLedger):
+            raise TypeError(
+                "relation stage output is not RelationAssessmentLedger"
+            )
+        return stored.payload, stored.envelope
 
     def _load_graph(
         self,

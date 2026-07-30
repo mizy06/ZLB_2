@@ -143,6 +143,23 @@ class LocalArtifactStore:
             envelopes.append(envelope)
         return tuple(envelopes)
 
+    def exists_for_other_owner(
+        self,
+        *,
+        owner_id: str,
+        artifact_id: ArtifactId,
+    ) -> bool:
+        current_scope = self._artifacts_root(owner_id).parent.name
+        owners_root = self.root / "owners"
+        if not owners_root.is_dir():
+            return False
+        return any(
+            owner_dir.name != current_scope
+            and (owner_dir / "artifacts" / artifact_id).is_dir()
+            for owner_dir in owners_root.iterdir()
+            if owner_dir.is_dir()
+        )
+
     def reconcile_pending(self, *, owner_id: str) -> tuple[str, ...]:
         artifacts_root = self._artifacts_root(owner_id)
         if not artifacts_root.is_dir():

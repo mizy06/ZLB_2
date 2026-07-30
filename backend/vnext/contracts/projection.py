@@ -73,6 +73,14 @@ class ProjectionParentSelection(FrozenContract):
     selected_parent_edge_id: RelationId
     alternate_parent_edge_ids: tuple[RelationId, ...] = ()
     suppressed_canonical_edge_ids: tuple[RelationId, ...] = ()
+    policy_version: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=128),
+    ] = "view-parent-policy-v1"
+    selection_reason: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=256),
+    ] = "stable_semantic_priority"
 
     @model_validator(mode="after")
     def validate_edge_sets(self) -> "ProjectionParentSelection":

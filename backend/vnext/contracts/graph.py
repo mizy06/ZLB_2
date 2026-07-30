@@ -337,6 +337,97 @@ class GraphAuditItem(FrozenContract):
     evidence_refs: tuple[EvidenceRef, ...] = ()
 
 
+class RelationProposalLedger(FrozenContract):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    owner_id: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=256),
+    ]
+    candidate_graph_digest: Sha256Digest
+    proposer: ArtifactProducerRef
+    policy_digest: Sha256Digest
+    proposed_relations: tuple[CanonicalRelation, ...]
+
+    @model_validator(mode="after")
+    def validate_ledger(self) -> "RelationProposalLedger":
+        if self.proposer.role is not RuntimeRole.RELATION_PROPOSER:
+            raise ValueError("relation proposal ledger role is invalid")
+        relation_ids = [
+            relation.relation_id for relation in self.proposed_relations
+        ]
+        if len(relation_ids) != len(set(relation_ids)):
+            raise ValueError(
+                "relation proposal ledger relation IDs must be unique"
+            )
+        for relation in self.proposed_relations:
+            if relation.status is not CanonicalStatus.CANDIDATE:
+                raise ValueError(
+                    "relation proposal ledger may contain only candidates"
+                )
+            if relation.verifier_decisions:
+                raise ValueError(
+                    "relation proposals cannot contain verifier decisions"
+                )
+            if (
+                relation.region_plan_ref is not None
+                and relation.region_plan_ref.owner_id != self.owner_id
+            ):
+                raise ValueError(
+                    "relation proposal RegionPlan refs must remain owner-scoped"
+                )
+        return self
+
+
+class RelationAssessmentLedger(FrozenContract):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    owner_id: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=256),
+    ]
+    candidate_graph_digest: Sha256Digest
+    proposer: ArtifactProducerRef
+    verifier: ArtifactProducerRef
+    policy_digest: Sha256Digest
+    accepted_relations: tuple[CanonicalRelation, ...]
+
+    @model_validator(mode="after")
+    def validate_ledger(self) -> "RelationAssessmentLedger":
+        if self.proposer.role is not RuntimeRole.RELATION_PROPOSER:
+            raise ValueError("relation ledger proposer role is invalid")
+        if self.verifier.role not in {
+            RuntimeRole.RELATION_VERIFIER_A,
+            RuntimeRole.RELATION_VERIFIER_B,
+        }:
+            raise ValueError("relation ledger verifier role is invalid")
+        if self.proposer.producer_id == self.verifier.producer_id:
+            raise ValueError("relation proposer cannot verify its own proposal")
+        relation_ids = [
+            relation.relation_id for relation in self.accepted_relations
+        ]
+        if len(relation_ids) != len(set(relation_ids)):
+            raise ValueError("relation ledger relation IDs must be unique")
+        for relation in self.accepted_relations:
+            if relation.status is not CanonicalStatus.ACCEPTED:
+                raise ValueError(
+                    "relation ledger may contain only accepted relations"
+                )
+            if not relation.verifier_decisions or any(
+                decision.verifier != self.verifier
+                for decision in relation.verifier_decisions
+            ):
+                raise ValueError(
+                    "relation ledger decisions must come from its verifier"
+                )
+            if (
+                relation.region_plan_ref is not None
+                and relation.region_plan_ref.owner_id != self.owner_id
+            ):
+                raise ValueError(
+                    "relation ledger RegionPlan refs must remain owner-scoped"
+                )
+        return self
+
+
 class CanonicalBuildManifest(FrozenContract):
     builder: ArtifactProducerRef
     policy_digest: Sha256Digest

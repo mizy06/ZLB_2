@@ -40,6 +40,8 @@ class VNextSchemaBundleTests(unittest.TestCase):
                 "RegionPlannerProposal",
                 "RegionDecisionVerification",
                 "OmissionAudit",
+                "RelationProposalLedger",
+                "RelationAssessmentLedger",
                 "CanonicalExplicitGraph",
                 "DiagnosticProjection",
                 "ArtifactEnvelope",
@@ -101,7 +103,7 @@ class VNextSchemaBundleTests(unittest.TestCase):
         )
         schema = contract_schema(envelope)
 
-        self.assertEqual(len(schema["allOf"]), 9)
+        self.assertEqual(len(schema["allOf"]), 11)
         self.assertEqual(
             {
                 condition["if"]["properties"]["artifact_type"]["const"]
@@ -132,12 +134,12 @@ class VNextSchemaBundleTests(unittest.TestCase):
             first = write_schema_bundle(output)
             second = write_schema_bundle(output, check=True)
 
-            self.assertEqual(len(first), 35)
+            self.assertEqual(len(first), 37)
             self.assertEqual(second, ())
             manifest = json.loads(
                 (output / "manifest.json").read_text(encoding="ascii")
             )
-            self.assertEqual(len(manifest["contracts"]), 34)
+            self.assertEqual(len(manifest["contracts"]), 36)
 
     def test_checked_in_bundle_matches_models(self):
         self.assertEqual(

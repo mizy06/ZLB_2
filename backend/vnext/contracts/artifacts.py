@@ -58,6 +58,14 @@ _SCHEMA_BINDINGS = {
         "urn:zlb:vnext:schema:omission-audit:1.0.0",
         "1.0.0",
     ),
+    ArtifactType.RELATION_PROPOSAL_LEDGER: (
+        "urn:zlb:vnext:schema:relation-proposal-ledger:1.0.0",
+        "1.0.0",
+    ),
+    ArtifactType.RELATION_ASSESSMENT_LEDGER: (
+        "urn:zlb:vnext:schema:relation-assessment-ledger:1.0.0",
+        "1.0.0",
+    ),
     ArtifactType.CANONICAL_EXPLICIT_GRAPH: (
         "urn:zlb:vnext:schema:canonical-explicit-graph:0.1.0",
         "0.1.0",

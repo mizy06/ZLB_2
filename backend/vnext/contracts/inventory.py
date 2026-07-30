@@ -9,6 +9,7 @@ from .base import FrozenContract
 from .common import (
     ArtifactRef,
     ArtifactType,
+    Sha256Digest,
     SourceId,
     require_artifact_type,
 )
@@ -97,10 +98,83 @@ class HumanMustHaveRef(FrozenContract):
         return self
 
 
+class RawSourceManifest(FrozenContract):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    source_hash: Sha256Digest
+    source_format: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=32),
+    ]
+    inspector_policy_version: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=128),
+    ]
+    parser_major: int
+    native_page_count: int | None = None
+    rendered_page_count: int | None = None
+    parser_page_count: int
+    native_object_count: int | None = None
+    parser_object_count: int
+    native_outline_count: int | None = None
+    parser_outline_count: int
+    hidden_page_count: int = 0
+    parser_hidden_page_count: int = 0
+    notes_count: int = 0
+    parser_notes_count: int = 0
+    alt_text_count: int = 0
+    parser_alt_text_count: int = 0
+    off_slide_object_count: int = 0
+    parser_off_slide_object_count: int = 0
+    package_entry_count: int | None = None
+    unresolved_checks: tuple[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)],
+        ...,
+    ] = ()
+    mismatch_codes: tuple[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)],
+        ...,
+    ] = ()
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> "RawSourceManifest":
+        count_fields = (
+            self.native_page_count,
+            self.rendered_page_count,
+            self.parser_page_count,
+            self.native_object_count,
+            self.parser_object_count,
+            self.native_outline_count,
+            self.parser_outline_count,
+            self.hidden_page_count,
+            self.parser_hidden_page_count,
+            self.notes_count,
+            self.parser_notes_count,
+            self.alt_text_count,
+            self.parser_alt_text_count,
+            self.off_slide_object_count,
+            self.parser_off_slide_object_count,
+            self.package_entry_count,
+        )
+        if any(value is not None and value < 0 for value in count_fields):
+            raise ValueError("raw source manifest counts cannot be negative")
+        for values, label in (
+            (self.unresolved_checks, "unresolved checks"),
+            (self.mismatch_codes, "mismatch codes"),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"raw source manifest {label} must be unique")
+            if values != tuple(sorted(values)):
+                raise ValueError(
+                    f"raw source manifest {label} must be deterministic"
+                )
+        return self
+
+
 class SourceInventory(FrozenContract):
     schema_version: Literal["1.0.0"] = "1.0.0"
     inventory_id: InventoryId
     document_ir_ref: ArtifactRef
+    raw_manifest: RawSourceManifest
     page_entries: tuple[InventoryEntry, ...]
     block_entries: tuple[InventoryEntry, ...] = ()
     table_cell_entries: tuple[InventoryEntry, ...] = ()

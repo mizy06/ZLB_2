@@ -1,7 +1,8 @@
 # 思维导图 vNext 完整执行书
 
 - 编制日期：2026-07-30
-- 状态：`APPROVED EXECUTION PLAN / NOT STARTED`
+- 状态：`LOCAL EXECUTION VERIFIED / INDEPENDENT GATES HOLD`
+- 执行证据：`docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`
 - 适用范围：ADR-03 至 ADR-12 审批后的工程、评测、产品、安全和发布准备
 - 产品审批：`docs/MINDMAP_PRODUCT_APPROVAL_RECORD.md`
 - 规范 Workflow：`docs/MINDMAP_WORKFLOW_SPEC.md`
@@ -63,24 +64,26 @@
 - Postgres、Temporal、多签或 canary 工具完成，但没有可发布产品候选。
 - 单一“醛和酮”样本通过就宣称生产质量。
 
-### 0.4 当前冻结基线
+### 0.4 冻结基线与当前候选
 
-2026-07-30 重新验证：
+2026-07-30 启动基线和本轮候选：
 
 | 项目 | 当前事实 |
 | --- | --- |
 | Git branch | `experiment/new_bone` |
-| HEAD | `297da939835dc9b748a33bd80d368702d7de687d` |
-| 工作树 | 42 个 tracked change、2 个 tracked delete、100 个 untracked；全部视为用户工作 |
+| 执行基线 HEAD | `4b28c75025481509dccdb28fe3459ee33ea27f4d` |
+| 工作树 | 用户基线提交保持不变；当前 code-only candidate 为 62 个 changed/untracked files |
 | Python | `.venv` 为 Python 3.12.3 |
-| Node/corepack | 当前 shell 不可用；开始前必须补齐 Node.js 22 和 pnpm 10.14.0 |
-| vNext tests | `168 passed`，14.645 秒 |
+| Node/corepack | Node.js 22.23.2；pnpm 10.14.0 |
+| vNext tests | 启动基线 `168 passed`；当前候选 `182 passed` |
+| Backend tests | 启动基线 704 tests、1 skip；当前候选 718 tests、1 skip |
 | Schema check | `{"changed": []}` |
+| vNext schema | 启动基线 34 contracts；当前候选 36 contracts |
 | Pydantic/FastAPI/rfc8785 | `2.13.4 / 0.140.0 / 0.1.4` |
 | 运行边界 | source-only、recorded/deterministic、publication disabled、shadow |
 
-当前通过的 168 个测试是工程起点，不是产品质量证明。工作树禁止 reset、checkout
-覆盖或清理用户改动。
+启动基线 168 个测试和当前候选 182 个测试都不是产品质量证明。工作树禁止
+reset、checkout 覆盖或清理用户改动。
 
 ### 0.5 继续有效的 No-Go
 
@@ -144,12 +147,10 @@ adopt / adapt / reject decision
 reason local implementation remains necessary
 ```
 
-当前环境没有 `gh`。T0 必须选择以下一种方式：
-
-- 安装并认证 `gh`，仅使用最小必要权限；
-- 使用 GitHub Web/REST 和官方上游文档，并把查询和链接写入 evidence pack。
-
-禁止因 CLI 不可用而跳过 GitHub-first。
+本机已安装 `gh 2.96.0` 并认证为 `mizy06`。实现前使用 GitHub Web/REST、公开
+raw source 和官方上游文档完成 GitHub-first；认证后补跑 `gh search
+issues/prs/code`，结果写入 evidence pack。远端执行骨架为总控 issue `#26`，
+工作包和 Gate review 为 `#1` 至 `#25`。
 
 ### 1.4 RACI
 
@@ -357,7 +358,9 @@ corepack pnpm --version
 .venv/bin/python -m pip check
 ```
 
-当前已知阻断：`node` 和 `corepack` 在本 shell 不可用。
+当前环境版本已满足 AGENTS.md。`gh` 已认证，GitHub issue、PR、code search 和
+远端写操作可用；独立 reviewer、Gold custody 和 StageAuthorization 仍须由实际
+人员承担，不能因账号可写而自动视为 Gate 通过。
 
 ### M0-02 基线清单
 
@@ -369,8 +372,8 @@ corepack pnpm --version
 
 - branch、HEAD、dirty file manifest；
 - 现有 public OpenAPI/schema snapshot；
-- 34 个 vNext schema 和 manifest digest；
-- 当前 168-test 报告；
+- 启动基线 34 个、当前候选 36 个 vNext schema 和 manifest digest；
+- 启动基线 168-test 和当前候选 182-test 报告；
 - 当前八项 P0 的代码位置和 reproducer；
 - “醛和酮”source hash、oracle digest 和历史失败摘要；
 - 当前模型/search/publication lock 状态。

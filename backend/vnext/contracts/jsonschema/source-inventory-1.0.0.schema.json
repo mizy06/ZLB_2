@@ -41,6 +41,8 @@
         "replan_request",
         "claim_ledger",
         "omission_audit",
+        "relation_proposal_ledger",
+        "relation_assessment_ledger",
         "canonical_explicit_graph",
         "diagnostic_projection"
       ],
@@ -308,6 +310,181 @@
       ],
       "title": "InventoryInspectionStatus",
       "type": "string"
+    },
+    "RawSourceManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "alt_text_count": {
+          "default": 0,
+          "title": "Alt Text Count",
+          "type": "integer"
+        },
+        "hidden_page_count": {
+          "default": 0,
+          "title": "Hidden Page Count",
+          "type": "integer"
+        },
+        "inspector_policy_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Inspector Policy Version",
+          "type": "string"
+        },
+        "mismatch_codes": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Mismatch Codes",
+          "type": "array"
+        },
+        "native_object_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Object Count"
+        },
+        "native_outline_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Outline Count"
+        },
+        "native_page_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Page Count"
+        },
+        "notes_count": {
+          "default": 0,
+          "title": "Notes Count",
+          "type": "integer"
+        },
+        "off_slide_object_count": {
+          "default": 0,
+          "title": "Off Slide Object Count",
+          "type": "integer"
+        },
+        "package_entry_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Package Entry Count"
+        },
+        "parser_alt_text_count": {
+          "default": 0,
+          "title": "Parser Alt Text Count",
+          "type": "integer"
+        },
+        "parser_hidden_page_count": {
+          "default": 0,
+          "title": "Parser Hidden Page Count",
+          "type": "integer"
+        },
+        "parser_major": {
+          "title": "Parser Major",
+          "type": "integer"
+        },
+        "parser_notes_count": {
+          "default": 0,
+          "title": "Parser Notes Count",
+          "type": "integer"
+        },
+        "parser_object_count": {
+          "title": "Parser Object Count",
+          "type": "integer"
+        },
+        "parser_off_slide_object_count": {
+          "default": 0,
+          "title": "Parser Off Slide Object Count",
+          "type": "integer"
+        },
+        "parser_outline_count": {
+          "title": "Parser Outline Count",
+          "type": "integer"
+        },
+        "parser_page_count": {
+          "title": "Parser Page Count",
+          "type": "integer"
+        },
+        "rendered_page_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rendered Page Count"
+        },
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_format": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Source Format",
+          "type": "string"
+        },
+        "source_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Hash",
+          "type": "string"
+        },
+        "unresolved_checks": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Unresolved Checks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_hash",
+        "source_format",
+        "inspector_policy_version",
+        "parser_major",
+        "parser_page_count",
+        "parser_object_count",
+        "parser_outline_count"
+      ],
+      "title": "RawSourceManifest",
+      "type": "object"
     }
   },
   "$id": "urn:zlb:vnext:schema:source-inventory:1.0.0",
@@ -367,6 +544,9 @@
       "title": "Page Entries",
       "type": "array"
     },
+    "raw_manifest": {
+      "$ref": "#/$defs/RawSourceManifest"
+    },
     "reaction_region_entries": {
       "default": [],
       "items": {
@@ -420,6 +600,7 @@
   "required": [
     "inventory_id",
     "document_ir_ref",
+    "raw_manifest",
     "page_entries",
     "inventory_policy_version"
   ],

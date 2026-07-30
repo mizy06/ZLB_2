@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from backend.vnext.artifacts.local_store import LocalArtifactStore
-from backend.vnext.canonical_graph import build_canonical_explicit_graph
+from backend.vnext.canonical_graph import (
+    build_canonical_explicit_graph,
+    build_relation_assessment_ledger,
+    build_relation_proposal_ledger,
+)
 from backend.vnext.claims import (
     atomize_source_claims,
     audit_claim_omissions,
@@ -15,7 +19,11 @@ from backend.vnext.contracts.common import (
     ArtifactProducerRef,
     RuntimeRole,
 )
-from backend.vnext.contracts.graph import CanonicalExplicitGraph
+from backend.vnext.contracts.graph import (
+    CanonicalExplicitGraph,
+    RelationAssessmentLedger,
+    RelationProposalLedger,
+)
 from backend.vnext.contracts.projection import DiagnosticProjection
 from backend.vnext.contracts.regions import ReplanRequest
 from backend.vnext.projection import build_diagnostic_projection
@@ -38,6 +46,10 @@ class ShadowPipelineResult:
     omission_audit_envelope: ArtifactEnvelope
     replan_requests: tuple[ReplanRequest, ...]
     replan_envelopes: tuple[ArtifactEnvelope, ...]
+    relation_proposal_ledger: RelationProposalLedger
+    relation_proposal_envelope: ArtifactEnvelope
+    relation_assessment_ledger: RelationAssessmentLedger
+    relation_assessment_envelope: ArtifactEnvelope
     canonical_graph: CanonicalExplicitGraph
     canonical_graph_envelope: ArtifactEnvelope
     projection: DiagnosticProjection
@@ -139,12 +151,54 @@ def run_shadow_pipeline(
                 input_refs=input_refs,
             )
         )
+    replan_refs = tuple(store.ref(item) for item in replan_envelopes)
+    relation_proposal_ledger = build_relation_proposal_ledger(
+        ledger,
+        planning,
+        source_observation_ref=source_ref,
+        claim_ledger_ref=ledger_ref,
+        replan_requests=replan_requests,
+        additional_input_refs=(omission_ref, *replan_refs),
+    )
+    relation_proposal_envelope = store.put(
+        owner_id=owner_id,
+        role=RuntimeRole.RELATION_PROPOSER,
+        payload=relation_proposal_ledger,
+        producer=_producer(
+            "vnext-explicit-relation-proposer",
+            RuntimeRole.RELATION_PROPOSER,
+        ),
+        input_refs=(
+            source_ref,
+            ledger_ref,
+            *planning.accepted_plan_refs,
+            omission_ref,
+            *replan_refs,
+        ),
+    )
+    relation_proposal_ref = store.ref(relation_proposal_envelope)
+    relation_assessment_ledger = build_relation_assessment_ledger(
+        relation_proposal_ledger,
+    )
+    relation_assessment_envelope = store.put(
+        owner_id=owner_id,
+        role=RuntimeRole.RELATION_VERIFIER_A,
+        payload=relation_assessment_ledger,
+        producer=_producer(
+            "vnext-explicit-relation-verifier-a",
+            RuntimeRole.RELATION_VERIFIER_A,
+        ),
+        input_refs=(relation_proposal_ref,),
+    )
+    relation_assessment_ref = store.ref(relation_assessment_envelope)
     canonical = build_canonical_explicit_graph(
         ledger,
         planning,
         source_observation_ref=source_ref,
         claim_ledger_ref=ledger_ref,
-        additional_input_refs=(omission_ref,),
+        relation_assessment_ledger=relation_assessment_ledger,
+        replan_requests=replan_requests,
+        additional_input_refs=(omission_ref, *replan_refs),
     )
     canonical_envelope = store.put(
         owner_id=owner_id,
@@ -159,6 +213,9 @@ def run_shadow_pipeline(
             ledger_ref,
             *planning.accepted_plan_refs,
             omission_ref,
+            *replan_refs,
+            relation_proposal_ref,
+            relation_assessment_ref,
         ),
     )
     canonical_ref = store.ref(canonical_envelope)
@@ -185,6 +242,10 @@ def run_shadow_pipeline(
         omission_audit_envelope=omission_envelope,
         replan_requests=replan_requests,
         replan_envelopes=tuple(replan_envelopes),
+        relation_proposal_ledger=relation_proposal_ledger,
+        relation_proposal_envelope=relation_proposal_envelope,
+        relation_assessment_ledger=relation_assessment_ledger,
+        relation_assessment_envelope=relation_assessment_envelope,
         canonical_graph=canonical,
         canonical_graph_envelope=canonical_envelope,
         projection=projection,

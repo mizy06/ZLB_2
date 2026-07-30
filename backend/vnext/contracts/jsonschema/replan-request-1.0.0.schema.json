@@ -41,6 +41,8 @@
         "replan_request",
         "claim_ledger",
         "omission_audit",
+        "relation_proposal_ledger",
+        "relation_assessment_ledger",
         "canonical_explicit_graph",
         "diagnostic_projection"
       ],
@@ -320,6 +322,19 @@
       "title": "Boundary Errors",
       "type": "array"
     },
+    "closure_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Closure Digest"
+    },
     "duplicate_memberships": {
       "default": [],
       "items": {
@@ -378,6 +393,19 @@
       "default": "bottom_up_region_auditor",
       "title": "Requester",
       "type": "string"
+    },
+    "resolved_tree_revision": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolved Tree Revision"
     },
     "schema_version": {
       "const": "1.0.0",

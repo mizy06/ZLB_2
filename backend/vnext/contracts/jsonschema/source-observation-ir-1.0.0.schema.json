@@ -41,6 +41,8 @@
         "replan_request",
         "claim_ledger",
         "omission_audit",
+        "relation_proposal_ledger",
+        "relation_assessment_ledger",
         "canonical_explicit_graph",
         "diagnostic_projection"
       ],

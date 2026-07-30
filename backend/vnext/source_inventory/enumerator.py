@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 from backend.vnext.artifacts.canonical import canonical_json_bytes
 from backend.vnext.contracts.common import ArtifactRef
@@ -10,6 +11,7 @@ from backend.vnext.contracts.inventory import (
     InventoryEntryKind,
     InventoryImportance,
     InventoryInspectionStatus,
+    RawSourceManifest,
     SourceInventory,
 )
 from backend.vnext.contracts.source import (
@@ -22,6 +24,8 @@ from backend.vnext.contracts.source import (
     SourceObservationIR,
     UnresolvedRegionIR,
 )
+
+from .raw_manifest import inspect_raw_source
 
 
 INVENTORY_POLICY_VERSION = "source-inventory-v1"
@@ -179,13 +183,46 @@ def _unresolved_entry(
     )
 
 
+def _integrity_entry(
+    source: SourceObservationIR,
+    code: str,
+) -> InventoryEntry:
+    source_digest = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "code": code,
+                "source_hash": source.source_hash,
+            }
+        )
+    ).hexdigest()
+    source_id = f"src:integrity:{source_digest}"
+    return _entry(
+        source_hash=source.source_hash,
+        source_id=source_id,
+        kind=InventoryEntryKind.UNRESOLVED,
+        page_id=None,
+        importance=InventoryImportance.MUST_HAVE,
+        inspection_status=InventoryInspectionStatus.UNRESOLVED,
+        declared_role=code,
+        evidence_refs=(
+            EvidenceRef(
+                namespace=EvidenceNamespace.SYSTEM,
+                ref_id=f"sys:source-integrity:{source_digest}",
+                content_digest=source.source_hash,
+            ),
+        ),
+    )
+
+
 def enumerate_source_inventory(
     source: SourceObservationIR,
     *,
+    source_path: Path,
     document_ir_ref: ArtifactRef,
 ) -> SourceInventory:
     """Enumerate the source denominator without reading any claim output."""
 
+    raw_manifest: RawSourceManifest = inspect_raw_source(source_path, source)
     page_entries = tuple(_page_entry(source, page) for page in source.pages)
     block_entries = tuple(
         _block_entry(source, block)
@@ -275,9 +312,15 @@ def enumerate_source_inventory(
     outline_entries = tuple(
         _outline_entry(source, item) for item in source.outline_entries
     )
-    unresolved_entries = tuple(
-        _unresolved_entry(source, item)
-        for item in source.unresolved_regions
+    unresolved_entries = (
+        *(
+            _unresolved_entry(source, item)
+            for item in source.unresolved_regions
+        ),
+        *(
+            _integrity_entry(source, code)
+            for code in raw_manifest.mismatch_codes
+        ),
     )
     return SourceInventory(
         inventory_id=_stable_token(
@@ -289,6 +332,7 @@ def enumerate_source_inventory(
             },
         ),
         document_ir_ref=document_ir_ref,
+        raw_manifest=raw_manifest,
         page_entries=page_entries,
         block_entries=block_entries,
         table_cell_entries=tuple(table_cell_entries),

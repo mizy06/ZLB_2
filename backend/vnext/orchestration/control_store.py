@@ -14,7 +14,11 @@ from backend.vnext.artifacts.canonical import (
     payload_digest,
 )
 from backend.vnext.artifacts.local_store import LocalArtifactStore
-from backend.vnext.contracts.common import ArtifactRef
+from backend.vnext.contracts.common import (
+    ArtifactProducerRef,
+    ArtifactRef,
+    RuntimeRole,
+)
 from backend.vnext.contracts.control import (
     ExecutionStatus,
     PublicationStatus,
@@ -26,10 +30,13 @@ from backend.vnext.contracts.control import (
 )
 from backend.vnext.contracts.release import (
     CanaryDecision,
+    CanaryObservation,
+    CanaryStage,
     CanaryTransitionDecision,
     ReleaseEvent,
     ReleaseEventType,
     ReleasePointerSnapshot,
+    ReleaseReadinessEvidence,
     RollbackRecord,
 )
 
@@ -280,6 +287,51 @@ class SQLiteControlStore:
             attestation_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_quality_artifact
+            ON quality_attestations(owner_scope, artifact_id, created_at);
+        CREATE TABLE IF NOT EXISTS release_readiness_evidence (
+            owner_scope TEXT NOT NULL,
+            release_id TEXT NOT NULL,
+            evidence_digest TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            recorder_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (owner_scope, release_id)
+        );
+        CREATE TRIGGER IF NOT EXISTS release_readiness_no_update
+        BEFORE UPDATE ON release_readiness_evidence
+        BEGIN
+            SELECT RAISE(ABORT, 'release readiness evidence is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS release_readiness_no_delete
+        BEFORE DELETE ON release_readiness_evidence
+        BEGIN
+            SELECT RAISE(ABORT, 'release readiness evidence is append-only');
+        END;
+        CREATE TABLE IF NOT EXISTS canary_observations (
+            owner_scope TEXT NOT NULL,
+            release_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            observation_digest TEXT NOT NULL,
+            observation_json TEXT NOT NULL,
+            recorder_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (owner_scope, observation_digest)
+        );
+        CREATE INDEX IF NOT EXISTS idx_canary_observation_release
+            ON canary_observations(
+                owner_scope, release_id, stage, observed_at
+            );
+        CREATE TRIGGER IF NOT EXISTS canary_observations_no_update
+        BEFORE UPDATE ON canary_observations
+        BEGIN
+            SELECT RAISE(ABORT, 'canary observations are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS canary_observations_no_delete
+        BEFORE DELETE ON canary_observations
+        BEGIN
+            SELECT RAISE(ABORT, 'canary observations are append-only');
+        END;
         """
         with self._lock, self._connect() as connection:
             connection.executescript(schema)
@@ -351,6 +403,22 @@ class SQLiteControlStore:
         ):
             return None
         return RunManifest.model_validate_json(row["manifest_json"])
+
+    def run_exists_for_other_owner(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+    ) -> bool:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT owner_scope FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return (
+            row is not None
+            and row["owner_scope"] != self._owner_scope(owner_id)
+        )
 
     def compare_and_swap_manifest(
         self,
@@ -1587,6 +1655,9 @@ class SQLiteControlStore:
         self,
         attestation: QualityAttestation,
     ) -> None:
+        validated = QualityAttestation.model_validate(
+            attestation.model_dump(mode="python")
+        )
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
@@ -1596,13 +1667,224 @@ class SQLiteControlStore:
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    attestation.attestation_id,
-                    self._owner_scope(attestation.owner_id),
-                    attestation.artifact_ref.artifact_id,
-                    self._json(attestation),
-                    attestation.created_at.isoformat(),
+                    validated.attestation_id,
+                    self._owner_scope(validated.owner_id),
+                    validated.artifact_ref.artifact_id,
+                    self._json(validated),
+                    validated.created_at.isoformat(),
                 ),
             )
+
+    def load_quality_attestation(
+        self,
+        *,
+        owner_id: str,
+        artifact_ref: ArtifactRef,
+    ) -> QualityAttestation | None:
+        if artifact_ref.owner_id != owner_id:
+            return None
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT attestation_json
+                FROM quality_attestations
+                WHERE owner_scope = ? AND artifact_id = ?
+                ORDER BY created_at DESC, attestation_id DESC
+                LIMIT 1
+                """,
+                (
+                    self._owner_scope(owner_id),
+                    artifact_ref.artifact_id,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        attestation = QualityAttestation.model_validate_json(
+            row["attestation_json"]
+        )
+        if attestation.artifact_ref != artifact_ref:
+            raise ControlPlaneError(
+                "quality attestation artifact reference mismatch"
+            )
+        return attestation
+
+    def record_release_readiness_evidence(
+        self,
+        evidence: ReleaseReadinessEvidence,
+        *,
+        recorder: ArtifactProducerRef,
+    ) -> None:
+        if recorder.role is not RuntimeRole.RELEASE_EVIDENCE_AGGREGATOR:
+            raise PermissionError(
+                "release readiness requires trusted evidence aggregator"
+            )
+        owner_scope = self._owner_scope(evidence.owner_id)
+        digest = payload_digest(evidence)
+        with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT evidence_digest, evidence_json, recorder_json
+                FROM release_readiness_evidence
+                WHERE owner_scope = ? AND release_id = ?
+                """,
+                (owner_scope, evidence.release_id),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["evidence_digest"] != digest
+                    or existing["evidence_json"] != self._json(evidence)
+                    or existing["recorder_json"] != self._json(recorder)
+                ):
+                    raise CompareAndSwapConflict(
+                        "release readiness evidence is already frozen"
+                    )
+                return
+            connection.execute(
+                """
+                INSERT INTO release_readiness_evidence (
+                    owner_scope, release_id, evidence_digest,
+                    evidence_json, recorder_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    owner_scope,
+                    evidence.release_id,
+                    digest,
+                    self._json(evidence),
+                    self._json(recorder),
+                    evidence.created_at.isoformat(),
+                ),
+            )
+
+    def load_release_readiness_evidence(
+        self,
+        *,
+        owner_id: str,
+        release_id: str,
+    ) -> ReleaseReadinessEvidence | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT evidence_digest, evidence_json, recorder_json
+                FROM release_readiness_evidence
+                WHERE owner_scope = ? AND release_id = ?
+                """,
+                (self._owner_scope(owner_id), release_id),
+            ).fetchone()
+        if row is None:
+            return None
+        recorder = ArtifactProducerRef.model_validate_json(
+            row["recorder_json"]
+        )
+        if recorder.role is not RuntimeRole.RELEASE_EVIDENCE_AGGREGATOR:
+            raise ControlPlaneError(
+                "release readiness recorder role is not trusted"
+            )
+        evidence = ReleaseReadinessEvidence.model_validate_json(
+            row["evidence_json"]
+        )
+        if (
+            evidence.owner_id != owner_id
+            or evidence.release_id != release_id
+            or payload_digest(evidence) != row["evidence_digest"]
+        ):
+            raise ControlPlaneError(
+                "release readiness evidence integrity mismatch"
+            )
+        return evidence
+
+    def record_canary_observation(
+        self,
+        observation: CanaryObservation,
+        *,
+        owner_id: str,
+        recorder: ArtifactProducerRef,
+    ) -> None:
+        if recorder.role is not RuntimeRole.CANARY_OBSERVATION_AGGREGATOR:
+            raise PermissionError(
+                "canary observation requires trusted aggregator"
+            )
+        digest = payload_digest(observation)
+        owner_scope = self._owner_scope(owner_id)
+        with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT observation_json, recorder_json
+                FROM canary_observations
+                WHERE owner_scope = ? AND observation_digest = ?
+                """,
+                (owner_scope, digest),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["observation_json"]
+                    != self._json(observation)
+                    or existing["recorder_json"] != self._json(recorder)
+                ):
+                    raise CompareAndSwapConflict(
+                        "canary observation digest collision"
+                    )
+                return
+            connection.execute(
+                """
+                INSERT INTO canary_observations (
+                    owner_scope, release_id, stage, observation_digest,
+                    observation_json, recorder_json, observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    owner_scope,
+                    observation.release_id,
+                    observation.stage.value,
+                    digest,
+                    self._json(observation),
+                    self._json(recorder),
+                    observation.observed_at.isoformat(),
+                ),
+            )
+
+    def load_canary_observation(
+        self,
+        *,
+        owner_id: str,
+        release_id: str,
+        stage: CanaryStage,
+        observation_digest: str,
+    ) -> CanaryObservation | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT observation_json, recorder_json
+                FROM canary_observations
+                WHERE owner_scope = ? AND release_id = ? AND stage = ?
+                    AND observation_digest = ?
+                """,
+                (
+                    self._owner_scope(owner_id),
+                    release_id,
+                    stage.value,
+                    observation_digest,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        recorder = ArtifactProducerRef.model_validate_json(
+            row["recorder_json"]
+        )
+        if recorder.role is not RuntimeRole.CANARY_OBSERVATION_AGGREGATOR:
+            raise ControlPlaneError(
+                "canary observation recorder role is not trusted"
+            )
+        observation = CanaryObservation.model_validate_json(
+            row["observation_json"]
+        )
+        if (
+            observation.release_id != release_id
+            or observation.stage is not stage
+            or payload_digest(observation) != observation_digest
+        ):
+            raise ControlPlaneError("canary observation integrity mismatch")
+        return observation
 
     def referenced_artifact_ids(self, *, owner_id: str) -> set[str]:
         owner_scope = self._owner_scope(owner_id)

@@ -93,6 +93,8 @@
         "replan_request",
         "claim_ledger",
         "omission_audit",
+        "relation_proposal_ledger",
+        "relation_assessment_ledger",
         "canonical_explicit_graph",
         "diagnostic_projection"
       ],
@@ -264,12 +266,15 @@
         "bottom_up_region_auditor",
         "claim_fidelity_verifier",
         "domain_resolver",
+        "relation_proposer",
         "canonicalizer",
         "relation_verifier_a",
         "relation_verifier_b",
         "arbiter",
         "quality_auditor",
-        "projection_planner"
+        "projection_planner",
+        "release_evidence_aggregator",
+        "canary_observation_aggregator"
       ],
       "title": "RuntimeRole",
       "type": "string"

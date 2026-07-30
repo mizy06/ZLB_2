@@ -456,6 +456,8 @@ class VNextSQLiteControlPlaneTests(unittest.TestCase):
                     role=RuntimeRole.QUALITY_AUDITOR,
                 ),
                 policy_digest=digest("9"),
+                closure_digest=digest("a"),
+                evaluator_build_digest=digest("b"),
                 metrics=(
                     QualityMetric(
                         name="topology_valid",

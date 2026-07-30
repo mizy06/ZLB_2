@@ -76,6 +76,8 @@ class VNextDurablePipelineTests(unittest.TestCase):
                 "explicit-region-planning",
                 "claim-ledger",
                 "omission-and-region-audit",
+                "relation-proposal",
+                "independent-relation-assessment",
                 "canonical-explicit-graph",
                 "diagnostic-projection",
             }
@@ -163,6 +165,8 @@ class VNextDurablePipelineTests(unittest.TestCase):
                 "explicit-region-planning",
                 "claim-ledger",
                 "omission-and-region-audit",
+                "relation-proposal",
+                "independent-relation-assessment",
                 "canonical-explicit-graph",
                 "diagnostic-projection",
             }
@@ -243,7 +247,7 @@ class VNextDurablePipelineTests(unittest.TestCase):
                         owner_id="tenant-a",
                     )
                 ),
-                6,
+                8,
             )
 
     def test_unresolved_run_succeeds_execution_but_fails_quality(self):

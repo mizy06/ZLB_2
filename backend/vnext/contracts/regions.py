@@ -13,6 +13,7 @@ from .common import (
     RegionId,
     RequestId,
     RuntimeRole,
+    Sha256Digest,
     SourceId,
     require_artifact_type,
 )
@@ -504,6 +505,8 @@ class ReplanRequest(FrozenContract):
         "bottom_up_region_auditor"
     )
     status: ReplanStatus = ReplanStatus.OPEN
+    closure_digest: Sha256Digest | None = None
+    resolved_tree_revision: int | None = Field(default=None, ge=1)
     supersedes: ArtifactRef | None = None
 
     @model_validator(mode="after")
@@ -513,6 +516,27 @@ class ReplanRequest(FrozenContract):
             ArtifactType.REPLAN_REQUEST,
             field_name="supersedes",
         )
+        closed_statuses = {
+            ReplanStatus.REJECTED,
+            ReplanStatus.RESOLVED,
+            ReplanStatus.SUPERSEDED,
+        }
+        if self.status in closed_statuses:
+            if (
+                self.closure_digest is None
+                or self.resolved_tree_revision is None
+            ):
+                raise ValueError(
+                    "closed replan requires a new closure digest and "
+                    "resolved TreeRevision"
+                )
+        elif (
+            self.closure_digest is not None
+            or self.resolved_tree_revision is not None
+        ):
+            raise ValueError(
+                "open or accepted replan cannot claim closure"
+            )
         if not any(
             (
                 self.omitted_source_ids,

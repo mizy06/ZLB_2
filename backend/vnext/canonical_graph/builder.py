@@ -35,12 +35,18 @@ from backend.vnext.contracts.graph import (
     GraphAuditItem,
     HierarchyDirectness,
     PedagogicalRole,
+    RelationAssessmentLedger,
+    RelationProposalLedger,
     SemanticKind,
     SemanticRelation,
     VerifierClassification,
     VerifierDecision,
 )
-from backend.vnext.contracts.regions import RegionPlanStatus
+from backend.vnext.contracts.regions import (
+    RegionPlanStatus,
+    ReplanRequest,
+    ReplanStatus,
+)
 from backend.vnext.regions.planner import RegionPlanningResult
 
 
@@ -50,6 +56,11 @@ _CANONICALIZER = ArtifactProducerRef(
     producer_id="vnext-explicit-canonicalizer",
     producer_version="1.0.0",
     role=RuntimeRole.CANONICALIZER,
+)
+_RELATION_PROPOSER = ArtifactProducerRef(
+    producer_id="vnext-explicit-relation-proposer",
+    producer_version="1.0.0",
+    role=RuntimeRole.RELATION_PROPOSER,
 )
 _RELATION_VERIFIER = ArtifactProducerRef(
     producer_id="vnext-explicit-relation-verifier-a",
@@ -127,7 +138,7 @@ def _accepted_claim(claim: ClaimRecord) -> bool:
     )
 
 
-def _relation(
+def _relation_candidate(
     *,
     parent_concept_id: str,
     child_concept_id: str,
@@ -136,13 +147,6 @@ def _relation(
     source_claim_ids: tuple[str, ...],
     locator: object,
 ) -> CanonicalRelation:
-    decision = VerifierDecision(
-        verifier=_RELATION_VERIFIER,
-        classification=VerifierClassification.DIRECT,
-        supports_relation=True,
-        outline_evidence_refs=evidence_refs,
-        reason_codes=("explicit_region_membership",),
-    )
     return CanonicalRelation(
         relation_id=_stable_id("relation_", locator),
         source_id=parent_concept_id,
@@ -153,20 +157,21 @@ def _relation(
         source_claim_ids=source_claim_ids,
         edge_evidence_refs=evidence_refs,
         region_plan_ref=region_plan_ref,
-        verifier_decisions=(decision,),
-        status=CanonicalStatus.ACCEPTED,
+        verifier_decisions=(),
+        status=CanonicalStatus.CANDIDATE,
     )
 
 
-def build_canonical_explicit_graph(
+def _build_candidate_graph(
     ledger: ClaimLedger,
     planning: RegionPlanningResult,
     *,
     source_observation_ref: ArtifactRef,
     claim_ledger_ref: ArtifactRef,
+    replan_requests: tuple[ReplanRequest, ...] = (),
     additional_input_refs: tuple[ArtifactRef, ...] = (),
 ) -> CanonicalExplicitGraph:
-    """Assemble explicit claims and accepted RegionPlan edges only."""
+    """Assemble concepts and unverified explicit relation proposals."""
 
     accepted_plans = tuple(
         plan
@@ -478,7 +483,7 @@ def build_canonical_explicit_graph(
             )
 
     relations = tuple(
-        _relation(
+        _relation_candidate(
             parent_concept_id=parent_id,
             child_concept_id=child_id,
             region_plan_ref=next(
@@ -508,6 +513,27 @@ def build_canonical_explicit_graph(
                 item_id=plan.region_id,
                 reason_codes=("region_not_accepted",),
                 evidence_refs=plan.evidence_refs,
+            )
+        )
+    for request in replan_requests:
+        closed = (
+            request.status
+            in {
+                ReplanStatus.REJECTED,
+                ReplanStatus.RESOLVED,
+                ReplanStatus.SUPERSEDED,
+            }
+            and request.closure_digest is not None
+            and request.resolved_tree_revision is not None
+        )
+        if closed:
+            continue
+        unresolved_items.append(
+            GraphAuditItem(
+                item_type="region",
+                item_id=request.affected_region_id,
+                reason_codes=("open_replan_quarantined",),
+                evidence_refs=request.evidence_refs,
             )
         )
 
@@ -552,5 +578,173 @@ def build_canonical_explicit_graph(
                 StringValue(key="root_fallback", value="disabled"),
                 StringValue(key="external_core_edges", value="disabled"),
             ),
+        ),
+    )
+
+
+def build_relation_proposal_ledger(
+    ledger: ClaimLedger,
+    planning: RegionPlanningResult,
+    *,
+    source_observation_ref: ArtifactRef,
+    claim_ledger_ref: ArtifactRef,
+    replan_requests: tuple[ReplanRequest, ...] = (),
+    additional_input_refs: tuple[ArtifactRef, ...] = (),
+) -> RelationProposalLedger:
+    candidate = _build_candidate_graph(
+        ledger,
+        planning,
+        source_observation_ref=source_observation_ref,
+        claim_ledger_ref=claim_ledger_ref,
+        replan_requests=replan_requests,
+        additional_input_refs=additional_input_refs,
+    )
+    candidate_digest = payload_digest(candidate)
+    return RelationProposalLedger(
+        owner_id=source_observation_ref.owner_id,
+        candidate_graph_digest=candidate_digest,
+        proposer=_RELATION_PROPOSER,
+        policy_digest=payload_digest(
+            {
+                "policy": "explicit-relation-proposal-v1",
+                "candidate_graph_digest": candidate_digest,
+            }
+        ),
+        proposed_relations=candidate.relations,
+    )
+
+
+def build_relation_assessment_ledger(
+    proposal_ledger: RelationProposalLedger,
+) -> RelationAssessmentLedger:
+    accepted_relations: list[CanonicalRelation] = []
+    for relation in proposal_ledger.proposed_relations:
+        evidence_kwargs = (
+            {"outline_evidence_refs": relation.edge_evidence_refs}
+            if relation.evidence_authority
+            is EvidenceAuthority.OUTLINE_STRUCTURAL
+            else {"courseware_evidence_refs": relation.edge_evidence_refs}
+        )
+        decision = VerifierDecision(
+            verifier=_RELATION_VERIFIER,
+            classification=VerifierClassification.DIRECT,
+            supports_relation=True,
+            reason_codes=("explicit_region_membership",),
+            **evidence_kwargs,
+        )
+        accepted_relations.append(
+            CanonicalRelation.model_validate(
+                {
+                    **relation.model_dump(mode="python"),
+                    "verifier_decisions": (decision,),
+                    "status": CanonicalStatus.ACCEPTED,
+                }
+            )
+        )
+    return RelationAssessmentLedger(
+        owner_id=proposal_ledger.owner_id,
+        candidate_graph_digest=proposal_ledger.candidate_graph_digest,
+        proposer=proposal_ledger.proposer,
+        verifier=_RELATION_VERIFIER,
+        policy_digest=payload_digest(
+            {
+                "policy": "explicit-relation-assessment-v1",
+                "candidate_graph_digest": (
+                    proposal_ledger.candidate_graph_digest
+                ),
+                "proposal_policy_digest": proposal_ledger.policy_digest,
+            }
+        ),
+        accepted_relations=tuple(accepted_relations),
+    )
+
+
+def build_canonical_explicit_graph(
+    ledger: ClaimLedger,
+    planning: RegionPlanningResult,
+    *,
+    source_observation_ref: ArtifactRef,
+    claim_ledger_ref: ArtifactRef,
+    relation_assessment_ledger: RelationAssessmentLedger,
+    replan_requests: tuple[ReplanRequest, ...] = (),
+    additional_input_refs: tuple[ArtifactRef, ...] = (),
+) -> CanonicalExplicitGraph:
+    candidate = _build_candidate_graph(
+        ledger,
+        planning,
+        source_observation_ref=source_observation_ref,
+        claim_ledger_ref=claim_ledger_ref,
+        replan_requests=replan_requests,
+        additional_input_refs=additional_input_refs,
+    )
+    if (
+        relation_assessment_ledger.owner_id
+        != source_observation_ref.owner_id
+    ):
+        raise ValueError("relation assessment ledger owner mismatch")
+    if relation_assessment_ledger.candidate_graph_digest != payload_digest(
+        candidate
+    ):
+        raise ValueError(
+            "relation assessment ledger references another candidate graph"
+        )
+    candidates = {
+        relation.relation_id: relation for relation in candidate.relations
+    }
+    accepted = {
+        relation.relation_id: relation
+        for relation in relation_assessment_ledger.accepted_relations
+    }
+    if set(candidates) != set(accepted):
+        raise ValueError(
+            "relation assessment ledger must cover every proposal exactly"
+        )
+    for relation_id, assessed in accepted.items():
+        proposal = candidates[relation_id]
+        comparable = assessed.model_dump(
+            mode="python",
+            exclude={"status", "verifier_decisions"},
+        )
+        expected = proposal.model_dump(
+            mode="python",
+            exclude={"status", "verifier_decisions"},
+        )
+        if comparable != expected:
+            raise ValueError(
+                "relation assessment cannot rewrite proposal semantics"
+            )
+    ledger_digest = payload_digest(relation_assessment_ledger)
+    return CanonicalExplicitGraph(
+        graph_id=_stable_id(
+            "graph_",
+            {
+                "candidate_graph_digest": payload_digest(candidate),
+                "relation_ledger_digest": ledger_digest,
+            },
+        ),
+        source_observation_ref=candidate.source_observation_ref,
+        claim_ledger_ref=candidate.claim_ledger_ref,
+        region_plan_refs=candidate.region_plan_refs,
+        concepts=candidate.concepts,
+        relations=tuple(
+            accepted[relation_id] for relation_id in sorted(accepted)
+        ),
+        unresolved_items=candidate.unresolved_items,
+        rejected_items=candidate.rejected_items,
+        decision_log=candidate.decision_log,
+        build_manifest=candidate.build_manifest.model_copy(
+            update={
+                "input_digests": (
+                    *candidate.build_manifest.input_digests,
+                    ledger_digest,
+                ),
+                "parameters": (
+                    *candidate.build_manifest.parameters,
+                    StringValue(
+                        key="relation_assessment_policy",
+                        value="explicit-relation-assessment-v1",
+                    ),
+                ),
+            }
         ),
     )

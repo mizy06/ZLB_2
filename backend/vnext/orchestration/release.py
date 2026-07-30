@@ -183,6 +183,42 @@ def evaluate_canary_transition(
     )
 
 
+def _trusted_input_hold(
+    policy: CanaryPolicy,
+    evidence: ReleaseReadinessEvidence,
+    observation: CanaryObservation,
+    reason_codes: tuple[str, ...],
+    *,
+    decided_at: datetime | None = None,
+) -> CanaryTransitionDecision:
+    timestamp = decided_at or datetime.now(UTC)
+    reasons = tuple(sorted(set(reason_codes)))
+    decision_digest = hashlib.sha256(
+        (
+            "zlb-vnext-canary-trusted-input-hold-v1\0"
+            + payload_digest(policy)
+            + "\0"
+            + payload_digest(evidence)
+            + "\0"
+            + payload_digest(observation)
+            + "\0"
+            + "\0".join(reasons)
+        ).encode("utf-8")
+    ).hexdigest()
+    return CanaryTransitionDecision(
+        decision_id="canary_decision_" + decision_digest[:32],
+        release_id=evidence.release_id,
+        from_stage=observation.stage,
+        to_stage=observation.stage,
+        decision=CanaryDecision.HOLD,
+        policy_digest=payload_digest(policy),
+        evidence_digest=payload_digest(evidence),
+        observation_digest=payload_digest(observation),
+        reason_codes=reasons,
+        decided_at=timestamp,
+    )
+
+
 class ReleaseGovernor:
     def __init__(
         self,
@@ -202,8 +238,24 @@ class ReleaseGovernor:
         expected_pointer_version: int | None,
         expected_release_sequence: int | None,
     ) -> ReleasePointerChange:
-        self._validate_manifest(manifest, evidence)
-        if manifest.publication_status is not (
+        (
+            trusted_manifest,
+            trusted_evidence,
+            trusted_observation,
+            trust_failures,
+        ) = self._trusted_inputs(manifest, evidence, observation)
+        if trust_failures:
+            self._block_untrusted_transition(
+                evidence,
+                observation,
+                trust_failures,
+                expected_release_sequence=expected_release_sequence,
+            )
+        assert trusted_manifest is not None
+        assert trusted_evidence is not None
+        assert trusted_observation is not None
+        self._validate_manifest(trusted_manifest, trusted_evidence)
+        if trusted_manifest.publication_status is not (
             PublicationStatus.RELEASE_CANDIDATE
         ):
             raise ValueError(
@@ -211,8 +263,8 @@ class ReleaseGovernor:
             )
         decision = evaluate_canary_transition(
             self.policy,
-            evidence,
-            observation,
+            trusted_evidence,
+            trusted_observation,
         )
         if (
             decision.decision is not CanaryDecision.ADVANCE
@@ -229,10 +281,10 @@ class ReleaseGovernor:
             )
         pointer, event = (
             self.control_store.publish_pointer_with_release_decision(
-                manifest,
+                trusted_manifest,
                 decision,
                 pointer_key=CANARY_POINTER_KEY,
-                artifact_ref=evidence.candidate_projection_ref,
+                artifact_ref=trusted_evidence.candidate_projection_ref,
                 expected_pointer_version=expected_pointer_version,
                 expected_release_sequence=expected_release_sequence,
             )
@@ -252,15 +304,33 @@ class ReleaseGovernor:
         expected_pointer_version: int | None,
         expected_release_sequence: int | None,
     ) -> ReleasePointerChange:
-        self._validate_manifest(manifest, evidence)
-        if manifest.publication_status is not PublicationStatus.PUBLISHED:
+        (
+            trusted_manifest,
+            trusted_evidence,
+            trusted_observation,
+            trust_failures,
+        ) = self._trusted_inputs(manifest, evidence, observation)
+        if trust_failures:
+            self._block_untrusted_transition(
+                evidence,
+                observation,
+                trust_failures,
+                expected_release_sequence=expected_release_sequence,
+            )
+        assert trusted_manifest is not None
+        assert trusted_evidence is not None
+        assert trusted_observation is not None
+        self._validate_manifest(trusted_manifest, trusted_evidence)
+        if trusted_manifest.publication_status is not (
+            PublicationStatus.PUBLISHED
+        ):
             raise ValueError(
                 "default promotion requires published manifest"
             )
         decision = evaluate_canary_transition(
             self.policy,
-            evidence,
-            observation,
+            trusted_evidence,
+            trusted_observation,
         )
         if (
             decision.decision is not CanaryDecision.ADVANCE
@@ -277,10 +347,10 @@ class ReleaseGovernor:
             )
         pointer, event = (
             self.control_store.publish_pointer_with_release_decision(
-                manifest,
+                trusted_manifest,
                 decision,
                 pointer_key=PUBLISHED_POINTER_KEY,
-                artifact_ref=evidence.candidate_projection_ref,
+                artifact_ref=trusted_evidence.candidate_projection_ref,
                 expected_pointer_version=expected_pointer_version,
                 expected_release_sequence=expected_release_sequence,
             )
@@ -302,13 +372,23 @@ class ReleaseGovernor:
     ) -> RollbackRecord:
         if not reason_codes:
             raise ValueError("rollback requires reason codes")
+        trusted_evidence = (
+            self.control_store.load_release_readiness_evidence(
+                owner_id=evidence.owner_id,
+                release_id=evidence.release_id,
+            )
+        )
+        if trusted_evidence is None or trusted_evidence != evidence:
+            raise ValueError(
+                "rollback requires trusted release readiness evidence"
+            )
         timestamp = rolled_back_at or datetime.now(UTC)
         _, rollback, _ = (
             self.control_store.rollback_pointer_with_release_event(
                 owner_id=evidence.owner_id,
                 release_id=evidence.release_id,
                 candidate_artifact_ref=(
-                    evidence.candidate_projection_ref
+                    trusted_evidence.candidate_projection_ref
                 ),
                 pointer_key=CANARY_POINTER_KEY,
                 stable_pointer_key=PUBLISHED_POINTER_KEY,
@@ -321,6 +401,77 @@ class ReleaseGovernor:
             )
         )
         return rollback
+
+    def _trusted_inputs(
+        self,
+        manifest: RunManifest,
+        evidence: ReleaseReadinessEvidence,
+        observation: CanaryObservation,
+    ) -> tuple[
+        RunManifest | None,
+        ReleaseReadinessEvidence | None,
+        CanaryObservation | None,
+        tuple[str, ...],
+    ]:
+        failures: list[str] = []
+        trusted_evidence = (
+            self.control_store.load_release_readiness_evidence(
+                owner_id=evidence.owner_id,
+                release_id=evidence.release_id,
+            )
+        )
+        if trusted_evidence is None:
+            failures.append("trusted_release_evidence_missing")
+        elif trusted_evidence != evidence:
+            failures.append("trusted_release_evidence_mismatch")
+        trusted_observation = self.control_store.load_canary_observation(
+            owner_id=evidence.owner_id,
+            release_id=evidence.release_id,
+            stage=observation.stage,
+            observation_digest=payload_digest(observation),
+        )
+        if trusted_observation is None:
+            failures.append("trusted_canary_observation_missing")
+        elif trusted_observation != observation:
+            failures.append("trusted_canary_observation_mismatch")
+        trusted_manifest = self.control_store.load_run(
+            evidence.run_id,
+            owner_id=evidence.owner_id,
+        )
+        if trusted_manifest is None:
+            failures.append("trusted_run_manifest_missing")
+        elif trusted_manifest != manifest:
+            failures.append("trusted_run_manifest_mismatch")
+        return (
+            trusted_manifest,
+            trusted_evidence,
+            trusted_observation,
+            tuple(sorted(failures)),
+        )
+
+    def _block_untrusted_transition(
+        self,
+        evidence: ReleaseReadinessEvidence,
+        observation: CanaryObservation,
+        reason_codes: tuple[str, ...],
+        *,
+        expected_release_sequence: int | None,
+    ) -> None:
+        decision = _trusted_input_hold(
+            self.policy,
+            evidence,
+            observation,
+            reason_codes,
+        )
+        event = self.control_store.append_release_decision(
+            owner_id=evidence.owner_id,
+            decision=decision,
+            expected_release_sequence=expected_release_sequence,
+        )
+        raise ReleaseGateBlocked(
+            self._recorded_decision(event),
+            event,
+        )
 
     @staticmethod
     def _validate_manifest(

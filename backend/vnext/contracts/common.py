@@ -66,6 +66,8 @@ class ArtifactType(StrEnum):
     REPLAN_REQUEST = "replan_request"
     CLAIM_LEDGER = "claim_ledger"
     OMISSION_AUDIT = "omission_audit"
+    RELATION_PROPOSAL_LEDGER = "relation_proposal_ledger"
+    RELATION_ASSESSMENT_LEDGER = "relation_assessment_ledger"
     CANONICAL_EXPLICIT_GRAPH = "canonical_explicit_graph"
     DIAGNOSTIC_PROJECTION = "diagnostic_projection"
 
@@ -82,12 +84,15 @@ class RuntimeRole(StrEnum):
     BOTTOM_UP_REGION_AUDITOR = "bottom_up_region_auditor"
     CLAIM_FIDELITY_VERIFIER = "claim_fidelity_verifier"
     DOMAIN_RESOLVER = "domain_resolver"
+    RELATION_PROPOSER = "relation_proposer"
     CANONICALIZER = "canonicalizer"
     RELATION_VERIFIER_A = "relation_verifier_a"
     RELATION_VERIFIER_B = "relation_verifier_b"
     ARBITER = "arbiter"
     QUALITY_AUDITOR = "quality_auditor"
     PROJECTION_PLANNER = "projection_planner"
+    RELEASE_EVIDENCE_AGGREGATOR = "release_evidence_aggregator"
+    CANARY_OBSERVATION_AGGREGATOR = "canary_observation_aggregator"
 
 
 ARTIFACT_WRITERS: dict[ArtifactType, frozenset[RuntimeRole]] = {
@@ -112,6 +117,15 @@ ARTIFACT_WRITERS: dict[ArtifactType, frozenset[RuntimeRole]] = {
     ArtifactType.CLAIM_LEDGER: frozenset({RuntimeRole.CLAIM_ATOMIZER}),
     ArtifactType.OMISSION_AUDIT: frozenset(
         {RuntimeRole.OMISSION_AUDITOR}
+    ),
+    ArtifactType.RELATION_PROPOSAL_LEDGER: frozenset(
+        {RuntimeRole.RELATION_PROPOSER}
+    ),
+    ArtifactType.RELATION_ASSESSMENT_LEDGER: frozenset(
+        {
+            RuntimeRole.RELATION_VERIFIER_A,
+            RuntimeRole.RELATION_VERIFIER_B,
+        }
     ),
     ArtifactType.CANONICAL_EXPLICIT_GRAPH: frozenset(
         {RuntimeRole.CANONICALIZER}

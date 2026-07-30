@@ -4,7 +4,7 @@
       "artifact_type": "source_observation_ir",
       "filename": "source-observation-ir-1.0.0.schema.json",
       "name": "SourceObservationIR",
-      "schema_digest": "sha256:2d83c0c246a6198361410f3e215b085336034665d8cf9c70bc6637ca0d12eebe",
+      "schema_digest": "sha256:b2bd2a638efff9379f1aef0c44ed3448dd9cb97793fb044caecd2881d4b7326d",
       "schema_id": "urn:zlb:vnext:schema:source-observation-ir:1.0.0",
       "version": "1.0.0"
     },
@@ -12,7 +12,7 @@
       "artifact_type": "source_inventory",
       "filename": "source-inventory-1.0.0.schema.json",
       "name": "SourceInventory",
-      "schema_digest": "sha256:71530d008af04dd59200178db944ede1bc57f1a1c40449a579c602b813568049",
+      "schema_digest": "sha256:4815bfaa95ddbf270374f4495945ad229e268c7283fa6b97f3f906f28c252e94",
       "schema_id": "urn:zlb:vnext:schema:source-inventory:1.0.0",
       "version": "1.0.0"
     },
@@ -20,7 +20,7 @@
       "artifact_type": "region_plan",
       "filename": "region-plan-1.0.0.schema.json",
       "name": "RegionPlan",
-      "schema_digest": "sha256:90a3eabf7a2ad75f5046b1e824b0a4480b92b5172d51cc298ebd38bb1280cf84",
+      "schema_digest": "sha256:62d760b5553ca6b5603d76f6d24b75b81b73aafe0e00477b6f9745215c93d352",
       "schema_id": "urn:zlb:vnext:schema:region-plan:1.0.0",
       "version": "1.0.0"
     },
@@ -28,7 +28,7 @@
       "artifact_type": "region_split_certificate",
       "filename": "region-split-certificate-1.0.0.schema.json",
       "name": "RegionSplitCertificate",
-      "schema_digest": "sha256:d5212bc65dbc6f86c8264814f2a046efa149f9317ad36224ed5783d99b7acc04",
+      "schema_digest": "sha256:693bdda22f903d4455f81987d6675a2750802f17b9f0a9b4e47cb2882c7b459f",
       "schema_id": "urn:zlb:vnext:schema:region-split-certificate:1.0.0",
       "version": "1.0.0"
     },
@@ -36,7 +36,7 @@
       "artifact_type": "replan_request",
       "filename": "replan-request-1.0.0.schema.json",
       "name": "ReplanRequest",
-      "schema_digest": "sha256:f1d4981276af69b8a9d154cc66eaa8761744a5389efde7ea2ab904f6d4c60ef0",
+      "schema_digest": "sha256:079ff1be93d77432d911857d3d342d20aa9f785426f991cffb3ca7eb7290bc8d",
       "schema_id": "urn:zlb:vnext:schema:replan-request:1.0.0",
       "version": "1.0.0"
     },
@@ -44,7 +44,7 @@
       "artifact_type": "claim_ledger",
       "filename": "claim-ledger-1.0.0.schema.json",
       "name": "ClaimLedger",
-      "schema_digest": "sha256:93bc9f87a0c734be0f37bf9f3bbaf18d5bf8a411e215221439e3cb288895779b",
+      "schema_digest": "sha256:8ed55abac1b2f50c1f71eff44ab72209e065f74269c408e5176abe8a589b574b",
       "schema_id": "urn:zlb:vnext:schema:claim-ledger:1.0.0",
       "version": "1.0.0"
     },
@@ -76,15 +76,31 @@
       "artifact_type": "omission_audit",
       "filename": "omission-audit-1.0.0.schema.json",
       "name": "OmissionAudit",
-      "schema_digest": "sha256:80cac6b670297c1d396d79009424ddf85bc7952a0d082ac7fdd7e5bd5bde8a31",
+      "schema_digest": "sha256:f73f85ad1d77032ed9834f780fdfe6966f5e065005e57c29ebeed6a96b365e47",
       "schema_id": "urn:zlb:vnext:schema:omission-audit:1.0.0",
+      "version": "1.0.0"
+    },
+    {
+      "artifact_type": "relation_proposal_ledger",
+      "filename": "relation-proposal-ledger-1.0.0.schema.json",
+      "name": "RelationProposalLedger",
+      "schema_digest": "sha256:e0fb394707e0a31e699716bc9682aafbb317f1587843826bd18b5d3c25be9d07",
+      "schema_id": "urn:zlb:vnext:schema:relation-proposal-ledger:1.0.0",
+      "version": "1.0.0"
+    },
+    {
+      "artifact_type": "relation_assessment_ledger",
+      "filename": "relation-assessment-ledger-1.0.0.schema.json",
+      "name": "RelationAssessmentLedger",
+      "schema_digest": "sha256:654397df74334bc13416bc957d37a9504e7b0683da7bb706da457b53fa51463f",
+      "schema_id": "urn:zlb:vnext:schema:relation-assessment-ledger:1.0.0",
       "version": "1.0.0"
     },
     {
       "artifact_type": "canonical_explicit_graph",
       "filename": "canonical-explicit-graph-0.1.0.schema.json",
       "name": "CanonicalExplicitGraph",
-      "schema_digest": "sha256:be15eeabb0b66c07b1e6a51e8fadf4b0a00d327f7bdd32f1a38fc3ff5de6764d",
+      "schema_digest": "sha256:62c8ed75246379729a216363345b259e51f1ba2137d9ac4a18415f36872de383",
       "schema_id": "urn:zlb:vnext:schema:canonical-explicit-graph:0.1.0",
       "version": "0.1.0"
     },
@@ -92,7 +108,7 @@
       "artifact_type": "diagnostic_projection",
       "filename": "diagnostic-projection-0.1.0.schema.json",
       "name": "DiagnosticProjection",
-      "schema_digest": "sha256:730901c27e946a98c3900f4abb091418fc274f5b49811cd9f435aca206d9d919",
+      "schema_digest": "sha256:b9bb29635998efbcabd9d93b9867f998d1ed05a872dc99322cfeac77044ea311",
       "schema_id": "urn:zlb:vnext:schema:diagnostic-projection:0.1.0",
       "version": "0.1.0"
     },
@@ -100,7 +116,7 @@
       "artifact_type": "metadata",
       "filename": "artifact-envelope-1.0.0.schema.json",
       "name": "ArtifactEnvelope",
-      "schema_digest": "sha256:ec17045dbfdc594a3cd7021afd6038d04517307cdf34838df13fd21811eb511b",
+      "schema_digest": "sha256:20819fe827f8139a242ccfb5d92f70c7fa61754ba8137abc6f9ca3b29572894f",
       "schema_id": "urn:zlb:vnext:schema:artifact-envelope:1.0.0",
       "version": "1.0.0"
     },
@@ -108,7 +124,7 @@
       "artifact_type": "metadata",
       "filename": "run-manifest-1.0.0.schema.json",
       "name": "RunManifest",
-      "schema_digest": "sha256:0f4c2e0dadeaa95cc9e8a4b076f8d34fd2feaa9b67fa3098d3e46697c1269eca",
+      "schema_digest": "sha256:40efb9b3f378bd78d98aef8e2b20a08cae8751ae6c3d875d520d52cf4c958d5a",
       "schema_id": "urn:zlb:vnext:schema:run-manifest:1.0.0",
       "version": "1.0.0"
     },
@@ -116,7 +132,7 @@
       "artifact_type": "metadata",
       "filename": "stage-commit-1.0.0.schema.json",
       "name": "StageCommit",
-      "schema_digest": "sha256:a2f8c6f46e8e9e6674725eaf3ba4db71dddbe7eac840e92a7df8ac2c686cff8c",
+      "schema_digest": "sha256:27f83ae4e4cd5710d2e583334f604d61211c75f18f956f4664a4503f62ef3da2",
       "schema_id": "urn:zlb:vnext:schema:stage-commit:1.0.0",
       "version": "1.0.0"
     },
@@ -124,7 +140,7 @@
       "artifact_type": "metadata",
       "filename": "quality-attestation-1.0.0.schema.json",
       "name": "QualityAttestation",
-      "schema_digest": "sha256:1877e2157df090cd1c0a1fa32ba685c1b3f8c6a5d92522034db183369e09134c",
+      "schema_digest": "sha256:ea152b0453e4375208ecf89c5eb43f3204579300c0f751ef21a21e238c90fe33",
       "schema_id": "urn:zlb:vnext:schema:quality-attestation:1.0.0",
       "version": "1.0.0"
     },
@@ -132,7 +148,7 @@
       "artifact_type": "metadata",
       "filename": "task-envelope-1.0.0.schema.json",
       "name": "TaskEnvelope",
-      "schema_digest": "sha256:b99dd23a14552954192441201a7558c87b58124062843f60f11dcb4e940c2eaa",
+      "schema_digest": "sha256:a686d22110bfb3f3a1b4f6a7f3b3aaa0e79656f7c5dba58e48bb1dd4493e74d7",
       "schema_id": "urn:zlb:vnext:schema:task-envelope:1.0.0",
       "version": "1.0.0"
     },
@@ -148,7 +164,7 @@
       "artifact_type": "metadata",
       "filename": "recorded-interaction-1.0.0.schema.json",
       "name": "RecordedInteraction",
-      "schema_digest": "sha256:5a107ed539931ddf2fee70c89df93fd47c2b47ad4eb6ec1e35c88aa46b28677f",
+      "schema_digest": "sha256:53411e710822c07758f1d70beca0f35a812ec9b25a6d89d59714b227a80561b1",
       "schema_id": "urn:zlb:vnext:schema:recorded-interaction:1.0.0",
       "version": "1.0.0"
     },
@@ -156,7 +172,7 @@
       "artifact_type": "metadata",
       "filename": "search-intent-1.0.0.schema.json",
       "name": "SearchIntent",
-      "schema_digest": "sha256:8f61dadce7e67b38acfa13d9e33441d38786e48338ea80804eb37ab9f31de118",
+      "schema_digest": "sha256:10f189833326cd4a67d4731cf320c0d7087c3e1b512a77381483e050f4955ee4",
       "schema_id": "urn:zlb:vnext:schema:search-intent:1.0.0",
       "version": "1.0.0"
     },
@@ -164,7 +180,7 @@
       "artifact_type": "metadata",
       "filename": "evidence-bundle-1.0.0.schema.json",
       "name": "EvidenceBundle",
-      "schema_digest": "sha256:c762cc703d9cdb80e9c0242143bfd3d2ad852eb006595a3c85957d4e76930492",
+      "schema_digest": "sha256:f801356b47c5d28734583fb35bb551f39abf7c2fcff9c8a061933b580344165e",
       "schema_id": "urn:zlb:vnext:schema:evidence-bundle:1.0.0",
       "version": "1.0.0"
     },
@@ -188,7 +204,7 @@
       "artifact_type": "metadata",
       "filename": "review-task-1.0.0.schema.json",
       "name": "ReviewTask",
-      "schema_digest": "sha256:2c2aa40dc69d468be77d7810fb4fe603cb8e1d4becad096723a0f11c4d932d09",
+      "schema_digest": "sha256:e927aaba3ea123f3aa3b4c6a33937ef0f92e29a3d2e7f1021184272ac02fff44",
       "schema_id": "urn:zlb:vnext:schema:review-task:1.0.0",
       "version": "1.0.0"
     },
@@ -196,7 +212,7 @@
       "artifact_type": "metadata",
       "filename": "review-decision-1.0.0.schema.json",
       "name": "ReviewDecision",
-      "schema_digest": "sha256:ea950f83f7f3532e4ed7abfc94bf023a113704ca1d4030ad114adad91ae7fe88",
+      "schema_digest": "sha256:36526e694eeb3969a2907afa18e96f37dd29c298a5030d7484f37ce92a601c48",
       "schema_id": "urn:zlb:vnext:schema:review-decision:1.0.0",
       "version": "1.0.0"
     },
@@ -204,7 +220,7 @@
       "artifact_type": "metadata",
       "filename": "affected-replay-plan-1.0.0.schema.json",
       "name": "AffectedReplayPlan",
-      "schema_digest": "sha256:08cbd259338bf72e9ef8f538cc10167dcfe4e1e12ebddfaba66e2f413fa48c36",
+      "schema_digest": "sha256:b738ff0bfed56bc4ccd9a9f1bba853b76eabbd92c353e1fd30ce405067d1efa6",
       "schema_id": "urn:zlb:vnext:schema:affected-replay-plan:1.0.0",
       "version": "1.0.0"
     },
@@ -212,7 +228,7 @@
       "artifact_type": "metadata",
       "filename": "cross-link-proposal-ledger-1.0.0.schema.json",
       "name": "CrossLinkProposalLedger",
-      "schema_digest": "sha256:8fb14306b763ff86a27d45aa6438939f6fbf6287959f798da5e0a195dfb3e0bd",
+      "schema_digest": "sha256:53d7044c98e904d419bce7e004601089a0c3e59e159fc1f1121fd8d3fa566ae1",
       "schema_id": "urn:zlb:vnext:schema:cross-link-proposal-ledger:1.0.0",
       "version": "1.0.0"
     },
@@ -220,7 +236,7 @@
       "artifact_type": "metadata",
       "filename": "cross-link-resolution-ledger-1.0.0.schema.json",
       "name": "CrossLinkResolutionLedger",
-      "schema_digest": "sha256:c52521e663e2b274be7a5e9d7e3ce1450b84d436a6c46d75c1e2c092f0edbbb6",
+      "schema_digest": "sha256:2d04fff868c9fff73bdfd607383b41ed2da516a5ed9060cd054ec0e573c99992",
       "schema_id": "urn:zlb:vnext:schema:cross-link-resolution-ledger:1.0.0",
       "version": "1.0.0"
     },
@@ -244,7 +260,7 @@
       "artifact_type": "metadata",
       "filename": "rollback-record-1.0.0.schema.json",
       "name": "RollbackRecord",
-      "schema_digest": "sha256:ca10f8ac459c548cc3dedadfd2ed9da2506660ec87875d4af50004df73fe9bb5",
+      "schema_digest": "sha256:269d63e4671f82dd71cf35b4a38e914a299edc2a37409c260e723c6f06aeae17",
       "schema_id": "urn:zlb:vnext:schema:rollback-record:1.0.0",
       "version": "1.0.0"
     },
@@ -252,7 +268,7 @@
       "artifact_type": "metadata",
       "filename": "release-event-1.0.0.schema.json",
       "name": "ReleaseEvent",
-      "schema_digest": "sha256:7e65d61111f912abe5b3e744fdd048fb63e6e3e3c455a5b6c5100d3c3f8ce776",
+      "schema_digest": "sha256:a307f97ba5c4cee3e4d26e1b3ddac04f575d94e641ebee3fe1d39fb0e6d483c3",
       "schema_id": "urn:zlb:vnext:schema:release-event:1.0.0",
       "version": "1.0.0"
     },
@@ -260,7 +276,7 @@
       "artifact_type": "metadata",
       "filename": "projection-media-bundle-1.0.0.schema.json",
       "name": "ProjectionMediaBundle",
-      "schema_digest": "sha256:a0dd54cc0dcfddd344d17ef78e01f484d1a1996fd3ef5cd873e3ce30fcb513fb",
+      "schema_digest": "sha256:4f8348a9169f0c2a957ab11f53c87aa45608a7729a6f1f2436b41ebec064113b",
       "schema_id": "urn:zlb:vnext:schema:projection-media-bundle:1.0.0",
       "version": "1.0.0"
     },
@@ -268,7 +284,7 @@
       "artifact_type": "metadata",
       "filename": "rendered-presentation-bundle-1.0.0.schema.json",
       "name": "RenderedPresentationBundle",
-      "schema_digest": "sha256:618b90517f6555a8d0b9ea81a73db3efb6a50b10d22721149e8aa98c9b269622",
+      "schema_digest": "sha256:7faaa3522cdcca896f460407e1febfd93f4d6d80efc6929681ad58d7c12b5e6d",
       "schema_id": "urn:zlb:vnext:schema:rendered-presentation-bundle:1.0.0",
       "version": "1.0.0"
     }

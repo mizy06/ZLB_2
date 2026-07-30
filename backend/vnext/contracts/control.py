@@ -96,6 +96,7 @@ class StageCommitStatus(StrEnum):
 class QualityGateDecision(StrEnum):
     PASS = "pass"
     BLOCK = "block"
+    INCOMPLETE = "incomplete"
     REVIEW = "review"
 
 
@@ -317,6 +318,29 @@ class QualityMetric(FrozenContract):
     value: float
     threshold: float | None = None
     passed: bool | None = None
+    hard: bool = True
+    applicable: bool = True
+
+
+def evaluate_quality_gate(
+    metrics: tuple[QualityMetric, ...],
+    *,
+    incomplete_items: tuple[str, ...] = (),
+    review_items: tuple[str, ...] = (),
+) -> QualityGateDecision:
+    applicable = tuple(metric for metric in metrics if metric.applicable)
+    hard = tuple(metric for metric in applicable if metric.hard)
+    if any(metric.passed is False for metric in hard):
+        return QualityGateDecision.BLOCK
+    if not hard or incomplete_items or any(
+        metric.threshold is None or metric.passed is None for metric in hard
+    ):
+        return QualityGateDecision.INCOMPLETE
+    if review_items or any(
+        metric.passed is False for metric in applicable if not metric.hard
+    ):
+        return QualityGateDecision.REVIEW
+    return QualityGateDecision.PASS
 
 
 class QualityAttestation(FrozenContract):
@@ -326,7 +350,17 @@ class QualityAttestation(FrozenContract):
     artifact_ref: ArtifactRef
     evaluator: ArtifactProducerRef
     policy_digest: Sha256Digest
+    closure_digest: Sha256Digest
+    evaluator_build_digest: Sha256Digest
     metrics: tuple[QualityMetric, ...]
+    incomplete_items: tuple[
+        Annotated[str, StringConstraints(min_length=1, max_length=256)],
+        ...,
+    ] = ()
+    review_items: tuple[
+        Annotated[str, StringConstraints(min_length=1, max_length=256)],
+        ...,
+    ] = ()
     gate_decision: QualityGateDecision
     created_at: datetime
     supersedes: AttestationId | None = None
@@ -344,6 +378,19 @@ class QualityAttestation(FrozenContract):
             raise ValueError("attestation must remain owner-scoped")
         if self.evaluator.role is not RuntimeRole.QUALITY_AUDITOR:
             raise ValueError("attestation evaluator must be quality_auditor")
+        names = [metric.name for metric in self.metrics]
+        if len(names) != len(set(names)):
+            raise ValueError("quality metric names must be unique")
+        expected = evaluate_quality_gate(
+            self.metrics,
+            incomplete_items=self.incomplete_items,
+            review_items=self.review_items,
+        )
+        if self.gate_decision is not expected:
+            raise ValueError(
+                "gate_decision does not match applicable hard metrics, "
+                "incomplete items, and review policy"
+            )
         return self
 
 

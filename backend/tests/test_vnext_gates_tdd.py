@@ -17,6 +17,7 @@ from backend.vnext.contracts.inventory import (
     InventoryEntry,
     InventoryEntryKind,
     InventoryImportance,
+    RawSourceManifest,
     SourceInventory,
 )
 from backend.vnext.contracts.regions import (
@@ -276,6 +277,16 @@ class VNextOmissionGateTests(unittest.TestCase):
             document_ir_ref=artifact_ref(
                 ArtifactType.SOURCE_OBSERVATION_IR,
                 "1",
+            ),
+            raw_manifest=RawSourceManifest(
+                source_hash=digest("a"),
+                source_format="md",
+                inspector_policy_version="test-raw-manifest-v1",
+                parser_major=1,
+                parser_page_count=1,
+                parser_object_count=1,
+                parser_outline_count=0,
+                unresolved_checks=("native_pagination_unavailable",),
             ),
             page_entries=(
                 InventoryEntry(

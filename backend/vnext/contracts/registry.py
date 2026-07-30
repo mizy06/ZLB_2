@@ -17,7 +17,11 @@ from .crosslinks import (
     CrossLinkProposalLedger,
     CrossLinkResolutionLedger,
 )
-from .graph import CanonicalExplicitGraph
+from .graph import (
+    CanonicalExplicitGraph,
+    RelationAssessmentLedger,
+    RelationProposalLedger,
+)
 from .inventory import SourceInventory
 from .integrations import (
     EvidenceBundle,
@@ -142,6 +146,20 @@ CONTRACTS: tuple[ContractRegistration, ...] = (
         ArtifactType.OMISSION_AUDIT,
         OmissionAudit,
         "omission-audit",
+        "1.0.0",
+    ),
+    _registration(
+        "RelationProposalLedger",
+        ArtifactType.RELATION_PROPOSAL_LEDGER,
+        RelationProposalLedger,
+        "relation-proposal-ledger",
+        "1.0.0",
+    ),
+    _registration(
+        "RelationAssessmentLedger",
+        ArtifactType.RELATION_ASSESSMENT_LEDGER,
+        RelationAssessmentLedger,
+        "relation-assessment-ledger",
         "1.0.0",
     ),
     _registration(

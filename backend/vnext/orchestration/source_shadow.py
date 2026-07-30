@@ -45,6 +45,7 @@ def run_source_shadow(
     source_ref = store.ref(source_envelope)
     inventory = enumerate_source_inventory(
         source,
+        source_path=path,
         document_ir_ref=source_ref,
     )
     inventory_envelope = store.put(

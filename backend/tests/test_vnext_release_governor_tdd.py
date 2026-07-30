@@ -11,8 +11,10 @@ from pathlib import Path
 
 from backend.tests.vnext_test_support import digest
 from backend.vnext.contracts.common import (
+    ArtifactProducerRef,
     ArtifactRef,
     ArtifactType,
+    RuntimeRole,
     StringValue,
 )
 from backend.vnext.contracts.control import (
@@ -51,6 +53,16 @@ from backend.vnext.orchestration.release import (
 NOW = datetime(2026, 7, 29, 14, 0, tzinfo=UTC)
 RUN_ID = f"run_{'1' * 32}"
 RELEASE_ID = f"release_{'2' * 32}"
+READINESS_RECORDER = ArtifactProducerRef(
+    producer_id="test-release-evidence-aggregator",
+    producer_version="1.0.0",
+    role=RuntimeRole.RELEASE_EVIDENCE_AGGREGATOR,
+)
+OBSERVATION_RECORDER = ArtifactProducerRef(
+    producer_id="test-canary-observation-aggregator",
+    producer_version="1.0.0",
+    role=RuntimeRole.CANARY_OBSERVATION_AGGREGATOR,
+)
 
 
 def _projection_ref(digit: str) -> ArtifactRef:
@@ -152,6 +164,63 @@ def _observation(
     )
 
 
+def _trust(
+    control: SQLiteControlStore,
+    manifest: RunManifest,
+    evidence: ReleaseReadinessEvidence,
+    observation: CanaryObservation,
+) -> None:
+    if control.load_run(
+        manifest.run_id,
+        owner_id=manifest.owner_id,
+    ) is None:
+        try:
+            control.create_run(manifest)
+        except sqlite3.IntegrityError:
+            pass
+    control.record_release_readiness_evidence(
+        evidence,
+        recorder=READINESS_RECORDER,
+    )
+    control.record_canary_observation(
+        observation,
+        owner_id=evidence.owner_id,
+        recorder=OBSERVATION_RECORDER,
+    )
+
+
+def _activate(
+    governor: ReleaseGovernor,
+    manifest: RunManifest,
+    evidence: ReleaseReadinessEvidence,
+    observation: CanaryObservation,
+    **kwargs,
+):
+    _trust(governor.control_store, manifest, evidence, observation)
+    return governor.activate_candidate(
+        manifest,
+        evidence,
+        observation,
+        **kwargs,
+    )
+
+
+def _promote(
+    governor: ReleaseGovernor,
+    manifest: RunManifest,
+    evidence: ReleaseReadinessEvidence,
+    observation: CanaryObservation,
+    **kwargs,
+):
+    _trust(governor.control_store, manifest, evidence, observation)
+    return governor.promote_default(
+        manifest,
+        evidence,
+        observation,
+        **kwargs,
+    )
+
+
 class VNextCanaryDecisionTests(unittest.TestCase):
     def test_readiness_gaps_hold_and_safety_incidents_rollback(self):
         policy = default_canary_policy()
@@ -246,7 +315,8 @@ class VNextReleasePointerTests(unittest.TestCase):
                 now=NOW,
             )
 
-            activation = governor.activate_candidate(
+            activation = _activate(
+                governor,
                 _manifest(PublicationStatus.RELEASE_CANDIDATE),
                 _evidence(candidate),
                 _observation(CanaryStage.SHADOW, 0),
@@ -322,7 +392,8 @@ class VNextReleasePointerTests(unittest.TestCase):
             candidate = _projection_ref("a")
 
             with self.assertRaises(ReleaseGateBlocked) as raised:
-                governor.activate_candidate(
+                _activate(
+                    governor,
                     _manifest(PublicationStatus.RELEASE_CANDIDATE),
                     _evidence(
                         candidate,
@@ -369,7 +440,8 @@ class VNextReleasePointerTests(unittest.TestCase):
                 now=NOW,
             )
 
-            promoted = governor.promote_default(
+            promoted = _promote(
+                governor,
                 _manifest(PublicationStatus.PUBLISHED),
                 _evidence(candidate),
                 _observation(CanaryStage.PERCENT_50, 300),
@@ -400,7 +472,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
             observation = _observation(CanaryStage.SHADOW, 0)
 
             with self.assertRaises(ReleaseGateBlocked) as first:
-                governor.activate_candidate(
+                _activate(
+                    governor,
                     manifest,
                     evidence,
                     observation,
@@ -408,7 +481,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
                     expected_release_sequence=None,
                 )
             with self.assertRaises(ReleaseGateBlocked) as retry:
-                governor.activate_candidate(
+                _activate(
+                    governor,
                     manifest,
                     evidence,
                     observation,
@@ -465,7 +539,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
             )
 
             with self.assertRaises(ReleaseGateBlocked):
-                governor.activate_candidate(
+                _activate(
+                    governor,
                     manifest,
                     evidence,
                     _observation(CanaryStage.SHADOW, 0),
@@ -476,7 +551,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
                 CompareAndSwapConflict,
                 "release event sequence",
             ):
-                governor.activate_candidate(
+                _activate(
+                    governor,
                     manifest,
                     evidence,
                     _observation(CanaryStage.SHADOW, 1),
@@ -504,7 +580,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
                 governor = ReleaseGovernor(SQLiteControlStore(path))
                 barrier.wait()
                 try:
-                    governor.activate_candidate(
+                    _activate(
+                        governor,
                         _manifest(
                             PublicationStatus.RELEASE_CANDIDATE
                         ),
@@ -553,7 +630,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
                 )
 
             with self.assertRaises(sqlite3.IntegrityError):
-                governor.activate_candidate(
+                _activate(
+                    governor,
                     _manifest(PublicationStatus.RELEASE_CANDIDATE),
                     _evidence(candidate),
                     _observation(CanaryStage.SHADOW, 0),
@@ -589,7 +667,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
                 expected_version=None,
                 now=NOW,
             )
-            activation = governor.activate_candidate(
+            activation = _activate(
+                governor,
                 _manifest(PublicationStatus.RELEASE_CANDIDATE),
                 _evidence(candidate),
                 _observation(CanaryStage.SHADOW, 0),
@@ -640,7 +719,8 @@ class VNextReleaseEventStoreTests(unittest.TestCase):
             control = SQLiteControlStore(path)
             governor = ReleaseGovernor(control)
             with self.assertRaises(ReleaseGateBlocked) as raised:
-                governor.activate_candidate(
+                _activate(
+                    governor,
                     _manifest(PublicationStatus.RELEASE_CANDIDATE),
                     _evidence(
                         _projection_ref("a"),
