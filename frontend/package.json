@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "test": "rm -rf .test-dist && tsc src/jobLifecycle.ts src/mindmapLayout.ts src/reviewActions.ts --target ES2022 --module ES2022 --moduleResolution Bundler --outDir .test-dist && node --test src/jobLifecycle.test.mjs src/mindmapLayout.test.mjs src/reviewActions.test.mjs",
+    "test:e2e": "playwright test",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
@@ -15,6 +17,7 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.0",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^4.4.1",

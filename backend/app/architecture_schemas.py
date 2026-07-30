@@ -117,6 +117,8 @@ class DecisionRecord(BaseModel):
 
 
 class ReviewItemView(ReviewItem):
+    subject_id: str = ""
+    subject_type: Literal["node", "tree_edge", "root", "cross_link"] = "node"
     evidence_unit_ids: list[str] = Field(default_factory=list)
     model_votes: list[ModelVote] = Field(default_factory=list)
     local_subtree_preview: dict = Field(default_factory=dict)
@@ -153,6 +155,8 @@ class MindMapQualityReport(EngineQualityReport):
     direct_parent_confidence: float = Field(default=0, ge=0, le=1)
     abstraction_support_rate: float = Field(default=0, ge=0, le=1)
     review_item_count: int = 0
+    structural_gate_passed: bool = False
+    publish_gate_passed: bool = False
     quality_gate_passed: bool = False
     coverage: CoverageSummary = Field(default_factory=CoverageSummary)
 
@@ -185,6 +189,9 @@ class MindMapResult(BaseModel):
     decision_records: list[DecisionRecord] = Field(default_factory=list)
     mode: RunMode = "standard"
     extraction_mode: Literal[
+        "qwen",
+        "deepseek",
+        # Retained so graph versions created before the provider migration load.
         "kimi",
         "heuristic",
         "mixed",
@@ -193,11 +200,12 @@ class MindMapResult(BaseModel):
     degraded_components: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     solver_status: str = ""
+    run_manifest: dict = Field(default_factory=dict)
 
 
 class JobView(BaseModel):
     id: str
-    status: Literal["queued", "running", "completed", "failed"]
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
     stage: str
     progress: int
     message: str = ""
@@ -212,13 +220,23 @@ class HistoryItem(BaseModel):
     filename: str
     file_type: str
     mode: RunMode
-    extraction_mode: Literal["kimi", "heuristic", "mixed"]
+    extraction_mode: Literal["qwen", "deepseek", "kimi", "heuristic", "mixed"]
     graph_version: int
     node_count: int
     review_count: int
     quality_gate_passed: bool
     created_at: str
     updated_at: str
+    status: Literal[
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+    ] = "completed"
+    stage: str = "complete"
+    progress: int = 100
+    error: str | None = None
 
 
 class ReviewResolutionRequest(BaseModel):
@@ -232,6 +250,7 @@ class ReviewResolutionRequest(BaseModel):
     parent_id: str | None = None
     label: str | None = None
     reason: str = ""
+    expected_graph_version: int = Field(ge=1)
 
     @model_validator(mode="after")
     def validate_action_fields(self):

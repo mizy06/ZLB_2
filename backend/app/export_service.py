@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .architecture_schemas import MindMapResult
+from .mindmap_layout import (
+    LayoutResult,
+    NodeSize,
+    compute_mindmap_layout,
+    find_spacing_violations,
+    plan_raster_size,
+)
 
 
 FONT_CANDIDATES = [
@@ -15,6 +21,8 @@ FONT_CANDIDATES = [
     Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
 ]
+MAX_PNG_PIXELS = 16_000_000
+MAX_PNG_DIMENSION = 8_192
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -49,99 +57,167 @@ def _wrap_label(
     return "\n".join(lines)
 
 
-def render_mindmap_png(result: MindMapResult) -> bytes:
-    layers: dict[int, list] = defaultdict(list)
+def _cubic_curve(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    steps: int = 24,
+) -> list[tuple[int, int]]:
+    control_x = (start[0] + end[0]) / 2
+    first = (control_x, start[1])
+    second = (control_x, end[1])
+    points: list[tuple[int, int]] = []
+    for index in range(steps + 1):
+        t = index / steps
+        inverse = 1 - t
+        x = (
+            inverse**3 * start[0]
+            + 3 * inverse**2 * t * first[0]
+            + 3 * inverse * t**2 * second[0]
+            + t**3 * end[0]
+        )
+        y = (
+            inverse**3 * start[1]
+            + 3 * inverse**2 * t * first[1]
+            + 3 * inverse * t**2 * second[1]
+            + t**3 * end[1]
+        )
+        points.append((round(x), round(y)))
+    return points
+
+
+def build_mindmap_layout(
+    result: MindMapResult,
+) -> tuple[LayoutResult, dict[str, str]]:
+    """Measure final PNG boxes once and feed them to the shared layout."""
+
+    label_font = _font(16)
+    labels: dict[str, str] = {}
+    sizes: dict[str, NodeSize] = {}
     for node in result.nodes:
-        layers[node.depth].append(node)
-    for nodes in layers.values():
-        nodes.sort(key=lambda node: (node.role, node.name, node.id))
+        is_root = node.id == result.root_id
+        is_branch = node.role == "branch_topic"
+        width = 230 if is_root else 190 if is_branch else 180
+        label = _wrap_label(
+            node.name,
+            label_font,
+            width - 24,
+            # Root labels may legally contain up to 80 characters. The layout
+            # already grows from measured line count, so truncating them at
+            # four lines creates a false "generation was cut off" symptom.
+            max_lines=8 if is_root else 5 if is_branch else 6,
+        )
+        line_count = max(label.count("\n") + 1, 1)
+        height = max(
+            72 if is_root else 58,
+            24 + line_count * 19 + (0 if is_root else 14),
+        )
+        labels[node.id] = label
+        sizes[node.id] = NodeSize(width=width, height=height)
 
-    max_depth = max(layers, default=0)
-    max_layer_size = max((len(nodes) for nodes in layers.values()), default=1)
-    node_width = 176
-    node_height = 68
-    horizontal_gap = 28
-    layer_gap = 150
-    canvas_width = min(
-        max(1200, max_layer_size * (node_width + horizontal_gap) + 120),
-        8000,
+    layout = compute_mindmap_layout(
+        node_ids=[node.id for node in result.nodes],
+        edges=[(edge.source, edge.target) for edge in result.tree_edges],
+        root_id=result.root_id,
+        sizes=sizes,
     )
-    canvas_height = max(720, (max_depth + 1) * layer_gap + 170)
+    violations = find_spacing_violations(layout, minimum_gap=24)
+    if violations:
+        sample = ", ".join(
+            f"{left}/{right}" for left, right in violations[:3]
+        )
+        raise RuntimeError(f"mind-map layout spacing invariant failed: {sample}")
+    return layout, labels
 
-    image = Image.new("RGB", (canvas_width, canvas_height), "#f8fafc")
+
+def render_mindmap_png(result: MindMapResult) -> bytes:
+    layout, labels = build_mindmap_layout(result)
+    raster = plan_raster_size(
+        canvas_width=layout.canvas_width,
+        canvas_height=layout.canvas_height,
+        max_pixels=MAX_PNG_PIXELS,
+        max_dimension=MAX_PNG_DIMENSION,
+    )
+    scale = raster.scale
+    title_font = _font(max(1, round(28 * scale)))
+    label_font = _font(max(1, round(16 * scale)))
+    meta_font = _font(max(1, round(11 * scale)))
+    node_by_id = {node.id: node for node in result.nodes}
+
+    def scaled_point(node_id: str) -> tuple[float, float]:
+        point = layout.positions[node_id]
+        return point.x * scale, point.y * scale
+
+    image = Image.new("RGB", (raster.width, raster.height), "#f8fafc")
     draw = ImageDraw.Draw(image)
-    title_font = _font(28)
-    label_font = _font(18)
-    meta_font = _font(13)
-    draw.text(
-        (canvas_width // 2, 38),
+    title = _wrap_label(
         result.document.title,
+        _font(28),
+        max(layout.canvas_width - 160, 300),
+        max_lines=2,
+    )
+    draw.multiline_text(
+        (raster.width / 2, 32 * scale),
+        title,
         fill="#172033",
         font=title_font,
         anchor="ma",
+        align="center",
+        spacing=max(1, round(4 * scale)),
     )
 
-    positions: dict[str, tuple[int, int]] = {}
-    for depth, nodes in layers.items():
-        count = max(len(nodes), 1)
-        usable_width = canvas_width - 100
-        for index, node in enumerate(nodes):
-            center_x = int(50 + usable_width * (index + 0.5) / count)
-            center_y = 115 + depth * layer_gap
-            positions[node.id] = (center_x, center_y)
-
     for edge in result.tree_edges:
-        source = positions.get(edge.source)
-        target = positions.get(edge.target)
-        if not source or not target:
+        if edge.source not in layout.positions or edge.target not in layout.positions:
             continue
-        middle_y = (source[1] + target[1]) // 2
-        color = "#d97706" if edge.provisional else "#94a3b8"
+        source = scaled_point(edge.source)
+        target = scaled_point(edge.target)
+        target_node = node_by_id[edge.target]
+        color = (
+            "#d97706"
+            if edge.provisional
+            else "#0f766e"
+            if target_node.role == "branch_topic"
+            else "#7aa2d8"
+        )
         draw.line(
-            [
-                (source[0], source[1] + node_height // 2),
-                (source[0], middle_y),
-                (target[0], middle_y),
-                (target[0], target[1] - node_height // 2),
-            ],
+            _cubic_curve(source, target),
             fill=color,
-            width=3 if edge.provisional else 2,
-            joint="curve",
+            width=max(1, round((4 if edge.provisional else 3) * scale)),
         )
 
-    node_by_id = {node.id: node for node in result.nodes}
-    for node_id, (center_x, center_y) in positions.items():
+    for node_id in layout.positions:
+        center_x, center_y = scaled_point(node_id)
         node = node_by_id[node_id]
         is_root = node_id == result.root_id
         is_branch = node.role == "branch_topic"
-        width = 210 if is_root else node_width
-        left = center_x - width // 2
-        top = center_y - node_height // 2
-        right = center_x + width // 2
-        bottom = center_y + node_height // 2
+        size = layout.sizes[node_id]
+        width = size.width * scale
+        height = size.height * scale
+        left = center_x - width / 2
+        top = center_y - height / 2
+        right = center_x + width / 2
+        bottom = center_y + height / 2
         fill = "#1d4ed8" if is_root else "#ecfdf5" if is_branch else "#ffffff"
         outline = "#1d4ed8" if is_root else "#0f766e" if is_branch else "#2563eb"
         text_color = "#ffffff" if is_root else "#172033"
         draw.rounded_rectangle(
             (left, top, right, bottom),
-            radius=10,
+            radius=max(1, round(10 * scale)),
             fill=fill,
             outline=outline,
-            width=3 if is_root else 2,
+            width=max(1, round((3 if is_root else 2) * scale)),
         )
-        label = _wrap_label(node.name, label_font, width - 24)
         draw.multiline_text(
-            (center_x, center_y - 4),
-            label,
+            (center_x, center_y - 4 * scale),
+            labels[node_id],
             fill=text_color,
             font=label_font,
             anchor="mm",
             align="center",
-            spacing=3,
+            spacing=max(1, round(3 * scale)),
         )
         if not is_root:
             draw.text(
-                (center_x, bottom - 6),
+                (center_x, bottom - 6 * scale),
                 f"{node.confidence:.0%}",
                 fill="#64748b",
                 font=meta_font,

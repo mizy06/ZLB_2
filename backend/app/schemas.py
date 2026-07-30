@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,8 @@ class ParsedDocument(BaseModel):
     file_type: str
     title: str
     blocks: list[SourceBlock]
+    parse_metadata: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class Evidence(BaseModel):
@@ -31,6 +33,7 @@ class Chunk(BaseModel):
     id: str
     index: int
     text: str
+    context_before: str = ""
     heading: str | None = None
     page_start: int | None = None
     page_end: int | None = None
@@ -96,8 +99,8 @@ class AnalysisResult(BaseModel):
     nodes: list[KnowledgeNode]
     edges: list[KnowledgeEdge]
     quality: QualityReport
-    extraction_mode: Literal["kimi", "heuristic", "mixed"]
-    provider: Literal["kimi", "heuristic"]
+    extraction_mode: Literal["qwen", "deepseek", "heuristic", "mixed"]
+    provider: Literal["qwen", "deepseek", "heuristic"]
     model: str | None = None
     warnings: list[str] = Field(default_factory=list)
 

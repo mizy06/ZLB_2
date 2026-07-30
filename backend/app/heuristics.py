@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 
+from .mindmap_engine.normalize import is_publishable_label
 from .schemas import Chunk, ChunkExtraction, EdgeCandidate, Evidence, NodeCandidate
 
 
@@ -27,11 +28,18 @@ RELATION_PATTERNS = [
     ("used_for", re.compile(r"(?P<a>[^，。；\n]{2,20})(?:用于|可用来)(?P<b>[^，。；\n]{2,20})")),
 ]
 
-
 def _clean_name(value: str) -> str:
-    value = re.sub(r"^[#\d\s一二三四五六七八九十、.：:（）()]+", "", value)
-    value = re.sub(r"[，。；：:的了和及与]+$", "", value)
-    return value.strip()[:36]
+    value = re.sub(
+        r"^(?:\s*#+\s*|\s*[-•●▪◦‣⁃]\s*|"
+        r"\s*(?:\d+|[一二三四五六七八九十]+)[、.)）]\s*)",
+        "",
+        value,
+    )
+    return re.sub(r"[ \t]+", " ", value).strip()
+
+
+def _is_valid_label(value: str) -> bool:
+    return len(value) <= 36 and is_publishable_label(value)
 
 
 def _evidence(chunk: Chunk, excerpt: str) -> Evidence:
@@ -49,7 +57,7 @@ def heuristic_extract(chunk: Chunk) -> ChunkExtraction:
 
     def add_node(name: str, definition: str, confidence: float, excerpt: str) -> None:
         clean = _clean_name(name)
-        if len(clean) < 2:
+        if not _is_valid_label(clean):
             return
         key = clean.casefold()
         candidate = NodeCandidate(
@@ -81,7 +89,7 @@ def heuristic_extract(chunk: Chunk) -> ChunkExtraction:
         for match in pattern.finditer(chunk.text):
             source = _clean_name(match.group("a"))
             target = _clean_name(match.group("b"))
-            if len(source) < 2 or len(target) < 2:
+            if not _is_valid_label(source) or not _is_valid_label(target):
                 continue
             add_node(source, "", 0.55, match.group(0))
             add_node(target, "", 0.55, match.group(0))

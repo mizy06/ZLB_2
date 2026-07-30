@@ -1,0 +1,395 @@
+{
+  "fixture_version": "1.0.0",
+  "cases": [
+    {
+      "id": "misleading-outline-retained-as-contested",
+      "probe": "source_retention",
+      "parameters": {"represented": true},
+      "expected": "retain"
+    },
+    {
+      "id": "document-without-toc-still-retains-pages",
+      "probe": "source_retention",
+      "parameters": {"represented": true},
+      "expected": "retain"
+    },
+    {
+      "id": "hidden-notes-alt-text-and-off-page-objects-retained",
+      "probe": "source_retention",
+      "parameters": {"represented": true},
+      "expected": "retain"
+    },
+    {
+      "id": "multi-column-order-remains-hypothesis",
+      "probe": "interpretation_layer",
+      "parameters": {"recorded_as_observation": false},
+      "expected": "retain_hypothesis"
+    },
+    {
+      "id": "summary-conflict-remains-auditable",
+      "probe": "claim_role",
+      "parameters": {"retained": true, "role_used_to_delete": false},
+      "expected": "retain"
+    },
+    {
+      "id": "exercise-and-answer-content-not-dropped-by-role",
+      "probe": "claim_role",
+      "parameters": {"retained": true, "role_used_to_delete": false},
+      "expected": "retain"
+    },
+    {
+      "id": "wrong-root-region-cannot-pass-boundary-gate",
+      "probe": "split_gate",
+      "parameters": {
+        "child_count": 3,
+        "parent_supported": false,
+        "children_self_contained": true,
+        "children_supported": true,
+        "sibling_separation": true,
+        "within_region_cohesion": true,
+        "comparable_granularity": true,
+        "boundaries_explainable": false,
+        "inventory_reconciled": true,
+        "capacity_as_semantics": false
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "premature-stop-remains-unresolved",
+      "probe": "stop_gate",
+      "parameters": {
+        "single_intent": false,
+        "no_subheading": false,
+        "comparable_granularity": true,
+        "inventory_reconciled": true,
+        "would_fragment": false,
+        "no_high_omission": true,
+        "no_mixed_theme": false
+      },
+      "expected": "unresolved"
+    },
+    {
+      "id": "max-depth-is-not-stop-evidence",
+      "probe": "stop_gate",
+      "parameters": {
+        "single_intent": false,
+        "no_subheading": true,
+        "comparable_granularity": false,
+        "inventory_reconciled": true,
+        "would_fragment": false,
+        "no_high_omission": true,
+        "no_mixed_theme": false
+      },
+      "expected": "unresolved"
+    },
+    {
+      "id": "capacity-only-infinite-split-rejected",
+      "probe": "split_gate",
+      "parameters": {
+        "child_count": 4,
+        "parent_supported": true,
+        "children_self_contained": true,
+        "children_supported": true,
+        "sibling_separation": true,
+        "within_region_cohesion": true,
+        "comparable_granularity": true,
+        "boundaries_explainable": true,
+        "inventory_reconciled": true,
+        "capacity_as_semantics": true
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "overlapping-sibling-boundaries-rejected",
+      "probe": "split_gate",
+      "parameters": {
+        "child_count": 2,
+        "parent_supported": true,
+        "children_self_contained": true,
+        "children_supported": true,
+        "sibling_separation": false,
+        "within_region_cohesion": true,
+        "comparable_granularity": true,
+        "boundaries_explainable": false,
+        "inventory_reconciled": true,
+        "capacity_as_semantics": false
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "unowned-source-object-fails-accounting",
+      "probe": "source_accounting",
+      "parameters": {
+        "inventory": ["a", "b", "c"],
+        "accounted": ["a"],
+        "nonclaim": [],
+        "unresolved": ["b"],
+        "omitted": []
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "non-contiguous-topic-not-forced-by-page-capacity",
+      "probe": "split_gate",
+      "parameters": {
+        "child_count": 2,
+        "parent_supported": true,
+        "children_self_contained": true,
+        "children_supported": true,
+        "sibling_separation": true,
+        "within_region_cohesion": false,
+        "comparable_granularity": true,
+        "boundaries_explainable": false,
+        "inventory_reconciled": true,
+        "capacity_as_semantics": true
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "bottom-up-auditor-cannot-write-parent",
+      "probe": "permission",
+      "parameters": {
+        "role": "bottom_up_region_auditor",
+        "artifact_type": "region_plan"
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "bottom-up-auditor-can-submit-replan",
+      "probe": "permission",
+      "parameters": {
+        "role": "bottom_up_region_auditor",
+        "artifact_type": "replan_request"
+      },
+      "expected": "allow"
+    },
+    {
+      "id": "bottom-up-auditor-cannot-rewrite-root",
+      "probe": "permission",
+      "parameters": {
+        "role": "bottom_up_region_auditor",
+        "artifact_type": "canonical_explicit_graph"
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "two-legal-parents-remain-a-dag",
+      "probe": "multiple_parents",
+      "parameters": {"all_edges_accepted": true},
+      "expected": "allow_dag"
+    },
+    {
+      "id": "true-parent-outside-retrieval-top-k-does-not-force-root",
+      "probe": "parentless",
+      "parameters": {"disposition": "unresolved"},
+      "expected": "unresolved"
+    },
+    {
+      "id": "generic-common-parent-rejected",
+      "probe": "structure_label",
+      "parameters": {"label": "course content"},
+      "expected": "reject"
+    },
+    {
+      "id": "explicit-parent-with-two-supported-children-allowed",
+      "probe": "split_gate",
+      "parameters": {
+        "child_count": 2,
+        "parent_supported": true,
+        "children_self_contained": true,
+        "children_supported": true,
+        "sibling_separation": true,
+        "within_region_cohesion": true,
+        "comparable_granularity": true,
+        "boundaries_explainable": true,
+        "inventory_reconciled": true,
+        "capacity_as_semantics": false
+      },
+      "expected": "allow"
+    },
+    {
+      "id": "hierarchy-cycle-rejected",
+      "probe": "relation_cycle",
+      "parameters": {"hierarchical": true},
+      "expected": "reject"
+    },
+    {
+      "id": "prerequisite-cycle-kept-out-of-hierarchy",
+      "probe": "relation_cycle",
+      "parameters": {"hierarchical": false},
+      "expected": "retain_audit"
+    },
+    {
+      "id": "perfect-small-graph-fails-when-hard-content-omitted",
+      "probe": "small_perfect_graph",
+      "parameters": {"high_importance_omitted": 4},
+      "expected": "reject"
+    },
+    {
+      "id": "singleton-branches-cannot-game-purity",
+      "probe": "split_gate",
+      "parameters": {
+        "child_count": 5,
+        "parent_supported": false,
+        "children_self_contained": true,
+        "children_supported": true,
+        "sibling_separation": false,
+        "within_region_cohesion": true,
+        "comparable_granularity": false,
+        "boundaries_explainable": false,
+        "inventory_reconciled": true,
+        "capacity_as_semantics": false
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "homonym-and-broader-narrower-conflict-remains-unresolved",
+      "probe": "explicit_unresolved",
+      "parameters": {
+        "selective_coverage": true,
+        "unresolved_preserved": true
+      },
+      "expected": "unresolved"
+    },
+    {
+      "id": "partially-readable-formula-remains-unresolved",
+      "probe": "explicit_unresolved",
+      "parameters": {
+        "selective_coverage": true,
+        "unresolved_preserved": true
+      },
+      "expected": "unresolved"
+    },
+    {
+      "id": "claim-states-remain-independent",
+      "probe": "state_separation",
+      "parameters": {
+        "extraction_status": "extracted",
+        "source_entailment_status": "entailed",
+        "external_validity_status": "not_checked",
+        "publication_status": "core"
+      },
+      "expected": "allow"
+    },
+    {
+      "id": "external-evidence-cannot-use-source-namespace",
+      "probe": "evidence_namespace",
+      "parameters": {
+        "namespace": "external",
+        "ref_id": "src:block:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "external-only-parent-edge-rejected",
+      "probe": "canonical_policy",
+      "parameters": {
+        "status": "accepted",
+        "authority": "external_only",
+        "relation": "topic_contains",
+        "relation_evidence": true
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "outline-cannot-certify-is-a",
+      "probe": "canonical_policy",
+      "parameters": {
+        "status": "accepted",
+        "authority": "outline_structural",
+        "relation": "is_a",
+        "relation_evidence": true
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "veto-cannot-reopen-with-repeated-evidence",
+      "probe": "veto_reopen",
+      "parameters": {
+        "supersedes": true,
+        "old_digests": ["sha256:old"],
+        "new_digest": "sha256:old"
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "veto-can-reopen-as-new-hypothesis-with-novel-courseware",
+      "probe": "veto_reopen",
+      "parameters": {
+        "supersedes": true,
+        "old_digests": ["sha256:old"],
+        "new_digest": "sha256:new"
+      },
+      "expected": "allow"
+    },
+    {
+      "id": "projection-cannot-select-rejected-parent",
+      "probe": "projection_parent",
+      "parameters": {
+        "canonical_status": "rejected",
+        "direct": true
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "cross-owner-identical-payload-remains-isolated",
+      "probe": "owner_isolation",
+      "parameters": {"owners": ["tenant-a", "tenant-b"]},
+      "expected": "allow"
+    },
+    {
+      "id": "source-prompt-injection-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "S1"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "web-prompt-injection-and-seo-pollution-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "search_gateway"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "ssrf-dns-rebinding-and-archive-bomb-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "search_gateway"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "private-courseware-query-minimization-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "search_gateway"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "model-alias-and-provider-drift-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "control_plane"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "duplicate-activity-and-cas-race-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "control_plane"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "worker-kill-resume-and-cancel-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "control_plane"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "legacy-client-status-compatibility-gate",
+      "probe": "future_stage",
+      "parameters": {"stage": "legacy_adapter"},
+      "expected": "blocked_pending_stage"
+    },
+    {
+      "id": "dag-to-tree-round-trip-remains-prohibited",
+      "probe": "future_stage",
+      "parameters": {"stage": "legacy_adapter"},
+      "expected": "blocked_pending_stage"
+    }
+  ]
+}

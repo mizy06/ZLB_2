@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
-import shutil
 import uuid
 from pathlib import Path
 
@@ -11,15 +11,22 @@ from fastapi import (
     File,
     Header,
     HTTPException,
-    Query,
+    Request,
     UploadFile,
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from ..auth import AuthenticationError, authenticate_session
 from ..chunking import chunk_document
 from ..config import settings
 from ..schemas import ParsedDocument
+from ..upload_validation import (
+    UploadTooLargeError,
+    UploadValidationError,
+    copy_upload_limited,
+    validate_upload_path,
+)
 from .normalize import normalize_graph
 from .schemas import (
     AssembleRequest,
@@ -70,6 +77,11 @@ def require_engine_token(
 ) -> None:
     expected = settings.external_engine_token
     if not expected:
+        if settings.production:
+            raise HTTPException(
+                status_code=503,
+                detail="生产环境未配置 EXTERNAL_ENGINE_TOKEN，外部引擎已关闭。",
+            )
         return
     provided = _provided_token(authorization, x_engine_token)
     if not provided or not secrets.compare_digest(provided, expected):
@@ -77,25 +89,49 @@ def require_engine_token(
 
 
 def require_asset_token(
-    token: str = Query(default=""),
+    request: Request,
     authorization: str | None = Header(default=None),
     x_engine_token: str | None = Header(default=None),
 ) -> None:
     expected = settings.asset_access_token
-    if not expected:
+    provided = _provided_token(authorization, x_engine_token)
+    if expected and provided and secrets.compare_digest(provided, expected):
         return
-    provided = token or _provided_token(authorization, x_engine_token)
-    if not provided or not secrets.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="视觉资产鉴权失败。")
+
+    session_value = request.cookies.get(settings.session_cookie_name, "")
+    if settings.api_access_token and session_value:
+        try:
+            authenticate_session(settings, session_value)
+        except AuthenticationError:
+            pass
+        else:
+            return
+
+    if not expected and not settings.api_access_token:
+        if settings.production:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "生产环境未配置 ASSET_ACCESS_TOKEN 或 "
+                    "MINDMAP_API_TOKEN，视觉资产已关闭。"
+                ),
+            )
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="视觉资产鉴权失败。",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 @router.get("/mindmap/health")
 async def engine_health():
     return {
         "status": "ok",
-        "auth_required": bool(settings.external_engine_token),
+        "auth_required": settings.production or bool(
+            settings.external_engine_token
+        ),
         "asset_public_base_url_configured": bool(settings.asset_public_base_url),
-        "data_dir": str(settings.mindmap_data_dir),
         "solver": "ortools-cp-sat",
         "graph": "networkx",
     }
@@ -161,6 +197,7 @@ async def assemble_graph(request: AssembleRequest):
 async def render_visual_document(file: UploadFile = File(...)):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in RENDER_TYPES:
+        await file.close()
         raise HTTPException(
             status_code=400,
             detail="请上传 PDF、PPTX、PNG、JPG、JPEG 或 WEBP。",
@@ -170,19 +207,36 @@ async def render_visual_document(file: UploadFile = File(...)):
     upload_dir.mkdir(parents=True, exist_ok=True)
     upload_path = upload_dir / f"{uuid.uuid4().hex[:16]}{suffix}"
     try:
-        with upload_path.open("wb") as handle:
-            shutil.copyfileobj(file.file, handle)
-        return render_document(
+        await asyncio.to_thread(
+            copy_upload_limited,
+            file.file,
+            upload_path,
+            settings.max_upload_bytes,
+        )
+        await asyncio.to_thread(
+            validate_upload_path,
+            upload_path,
+            filename=file.filename or upload_path.name,
+            content_type=file.content_type or "",
+            settings=settings,
+        )
+        return await asyncio.to_thread(
+            render_document,
             upload_path,
             file.filename or upload_path.name,
             settings.mindmap_data_dir,
             settings.asset_public_base_url,
             settings.asset_access_token,
         )
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except UploadValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         upload_path.unlink(missing_ok=True)
+        await file.close()
 
 
 @router.post(

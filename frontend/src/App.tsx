@@ -8,12 +8,15 @@ import {
   FileStack,
   GitBranch,
   History,
+  Images,
   Link2,
   ListChecks,
+  LockKeyhole,
   LoaderCircle,
   Network,
   Play,
   RotateCcw,
+  Square,
   Sparkles,
   TableProperties,
   Trash2,
@@ -31,7 +34,9 @@ import {
 } from "react";
 
 import {
+  cancelJob,
   checkModel,
+  createSession,
   createJob,
   deleteJob,
   getHealth,
@@ -45,6 +50,13 @@ import { DataTable } from "./components/DataTable";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { Inspector } from "./components/Inspector";
 import { ReviewQueue } from "./components/ReviewQueue";
+import { VisualGallery } from "./components/VisualGallery";
+import {
+  canReplaceActiveJob,
+  nextPollDelay,
+  qualityPresentation,
+  shouldContinuePolling,
+} from "./jobLifecycle";
 import { createSampleFile } from "./sample";
 import type {
   AnalysisResult,
@@ -55,7 +67,8 @@ import type {
   ReviewResolution,
 } from "./types";
 
-type View = "graph" | "nodes" | "chunks" | "reviews";
+type View = "graph" | "visuals" | "nodes" | "chunks" | "reviews";
+const ACTIVE_TASK_KEY = "zlb-mindmap-active-task";
 
 const stageLabels: Record<string, string> = {
   queued: "等待",
@@ -86,8 +99,8 @@ function historyTime(value: string): string {
 function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [models, setModels] = useState<string[]>([]);
-  const [provider] = useState<ModelProvider>("kimi");
-  const [model, setModel] = useState("kimi-k3");
+  const [provider] = useState<ModelProvider>("qwen");
+  const [model, setModel] = useState("qwen3.7-max");
   const [mode, setMode] = useState<"standard" | "precision">("standard");
   const [modelStatus, setModelStatus] = useState<
     "idle" | "checking" | "available" | "denied"
@@ -106,6 +119,9 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authToken, setAuthToken] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -119,36 +135,104 @@ function App() {
   }, []);
 
   useEffect(() => {
-    void getHealth()
-      .then((data) => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const data = await getHealth();
+        if (disposed) return;
         setHealth(data);
-        const defaultModel = data.providers.kimi.default_model;
+        const defaultModel = data.providers.qwen.default_model;
         setModel(defaultModel);
-        void getModels("kimi")
-          .then(setModels)
-          .catch(() => setModels([defaultModel]));
-      })
-      .catch((caught) => setError(caught.message));
-    void refreshHistory().catch(() => undefined);
-  }, [refreshHistory]);
+        try {
+          const available = await getModels("qwen");
+          if (disposed) return;
+          setModels(available);
+          setAuthenticated(true);
+        } catch (caught) {
+          if (disposed) return;
+          setModels([defaultModel]);
+          setAuthenticated(!data.auth_required);
+          if (!data.auth_required) {
+            setError(caught instanceof Error ? caught.message : "模型列表加载失败");
+          }
+        }
+      } catch (caught) {
+        if (!disposed) {
+          setError(caught instanceof Error ? caught.message : "健康检查失败");
+        }
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
-    if (!job || job.status === "completed" || job.status === "failed") return;
-    const timer = window.setInterval(() => {
-      void getJob(job.id)
-        .then((next) => {
-          setJob(next);
-          if (next.status === "completed" && next.result) {
-            setResult(next.result);
-            setSelectedNodeId(next.result.root_id);
-            void refreshHistory();
-          }
-          if (next.status === "failed") setError(next.error || "任务执行失败");
-        })
-        .catch((caught) => setError(caught.message));
-    }, 700);
-    return () => window.clearInterval(timer);
-  }, [job, refreshHistory]);
+    if (!authenticated) return;
+    void refreshHistory().catch(() => undefined);
+    const activeTaskId = window.localStorage.getItem(ACTIVE_TASK_KEY);
+    if (!activeTaskId || job?.id === activeTaskId) return;
+    void getJob(activeTaskId)
+      .then((restored) => {
+        setJob(restored);
+        if (restored.result) {
+          setResult(restored.result);
+          setSelectedNodeId(restored.result.root_id);
+        }
+      })
+      .catch(() => window.localStorage.removeItem(ACTIVE_TASK_KEY));
+  }, [authenticated, job?.id, refreshHistory]);
+
+  useEffect(() => {
+    if (!job || !shouldContinuePolling(job.status) || !authenticated) return;
+    let disposed = false;
+    let timer: number | undefined;
+    let failures = 0;
+
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(() => void poll(), delay);
+    };
+    const poll = async () => {
+      try {
+        const next = await getJob(job.id);
+        if (disposed) return;
+        failures = 0;
+        setJob(next);
+        if (next.status === "completed" && next.result) {
+          setResult(next.result);
+          setSelectedNodeId(next.result.root_id);
+          void refreshHistory();
+        } else if (next.status === "failed") {
+          setError(next.error || "任务执行失败");
+        } else if (next.status === "cancelled") {
+          setError("任务已取消，源文件仍保留在服务端。");
+        }
+        if (shouldContinuePolling(next.status)) {
+          schedule(nextPollDelay(0));
+        }
+      } catch (caught) {
+        if (disposed) return;
+        failures += 1;
+        setError(caught instanceof Error ? caught.message : "任务状态读取失败");
+        schedule(nextPollDelay(failures));
+      }
+    };
+
+    schedule(nextPollDelay(0));
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [authenticated, job?.id, job?.status, refreshHistory]);
+
+  useEffect(() => {
+    if (!job) return;
+    if (shouldContinuePolling(job.status)) {
+      window.localStorage.setItem(ACTIVE_TASK_KEY, job.id);
+    } else if (window.localStorage.getItem(ACTIVE_TASK_KEY) === job.id) {
+      window.localStorage.removeItem(ACTIVE_TASK_KEY);
+    }
+  }, [job]);
 
   useEffect(() => {
     if (!historyOpen) return;
@@ -159,13 +243,17 @@ function App() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [historyOpen]);
 
-  const running = job?.status === "queued" || job?.status === "running";
+  const running = job ? shouldContinuePolling(job.status) : false;
   const workspaceLabel = health
     ? `${health.workspace.name} · ${health.architecture.name}`
     : "正在连接工作空间";
 
   const acceptFile = useCallback((next: File | undefined) => {
     if (!next) return;
+    if (!canReplaceActiveJob(job?.status ?? null)) {
+      setError("当前任务仍在运行，请先取消任务再选择新文件。");
+      return;
+    }
     const allowed = [".pdf", ".pptx", ".docx", ".txt", ".md"];
     const suffix = next.name.slice(next.name.lastIndexOf(".")).toLowerCase();
     if (!allowed.includes(suffix)) {
@@ -177,7 +265,7 @@ function App() {
     setResult(null);
     setJob(null);
     setView("graph");
-  }, []);
+  }, [job?.status]);
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -186,7 +274,7 @@ function App() {
   };
 
   const run = async () => {
-    if (!file) return;
+    if (!file || !authenticated) return;
     setError("");
     setResult(null);
     setSelectedNodeId(null);
@@ -199,13 +287,54 @@ function App() {
     }
   };
 
+  const authenticate = async () => {
+    if (!authToken.trim()) return;
+    setAuthBusy(true);
+    setError("");
+    try {
+      await createSession(authToken.trim());
+      setAuthenticated(true);
+      setAuthToken("");
+      void getModels("qwen")
+        .then((available) => {
+          setModels(available);
+          setModelStatus("idle");
+          setModelMessage("");
+        })
+        .catch(() => {
+          setModels((current) => (current.length > 0 ? current : [model]));
+          setModelStatus("denied");
+          setModelMessage("模型列表不可用");
+        });
+    } catch (caught) {
+      setAuthenticated(false);
+      setError(caught instanceof Error ? caught.message : "工作台鉴权失败");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const cancelActiveJob = async () => {
+    if (!job || !running) return;
+    setError("");
+    try {
+      const cancelled = await cancelJob(job.id);
+      setJob(cancelled);
+      void refreshHistory().catch(() => undefined);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "取消任务失败");
+    }
+  };
+
   const verifyModel = async () => {
     setModelStatus("checking");
     setModelMessage("");
     try {
       const checked = await checkModel(provider, model);
       setModelStatus(checked.ok ? "available" : "denied");
-      setModelMessage(checked.message);
+      setModelMessage(
+        checked.ok ? "Qwen 全流程模型可用" : checked.message,
+      );
     } catch (caught) {
       setModelStatus("denied");
       setModelMessage(caught instanceof Error ? caught.message : "检查失败");
@@ -220,14 +349,35 @@ function App() {
     setBusyReviewId(reviewId);
     setError("");
     try {
-      const updated = await resolveReview(result.task_id, reviewId, resolution);
+      const updated = await resolveReview(
+        result.task_id,
+        reviewId,
+        resolution,
+        result.graph_version,
+      );
       setResult(updated);
       setJob((current) =>
         current ? { ...current, result: updated } : current,
       );
       void refreshHistory().catch(() => undefined);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "复核操作失败");
+      const message = caught instanceof Error ? caught.message : "复核操作失败";
+      if (message.includes("版本冲突")) {
+        try {
+          const refreshed = await getJob(result.task_id);
+          if (refreshed.result) {
+            setJob(refreshed);
+            setResult(refreshed.result);
+            setError("图版本已更新，已载入最新版本，请重新确认该操作。");
+          } else {
+            setError(message);
+          }
+        } catch {
+          setError(message);
+        }
+      } else {
+        setError(message);
+      }
     } finally {
       setBusyReviewId(null);
     }
@@ -238,11 +388,18 @@ function App() {
     setError("");
     try {
       const restored = await getJob(item.task_id);
-      if (!restored.result) throw new Error("历史记录中没有可恢复的导图。");
       setJob(restored);
-      setResult(restored.result);
-      setMode(restored.result.mode);
-      setSelectedNodeId(restored.result.root_id);
+      if (restored.result) {
+        setResult(restored.result);
+        setMode(restored.result.mode);
+        setSelectedNodeId(restored.result.root_id);
+      } else {
+        setResult(null);
+        setSelectedNodeId(null);
+        if (restored.status === "failed") {
+          setError(restored.error || "该历史任务执行失败。");
+        }
+      }
       setView("graph");
       setFile(null);
       setHistoryOpen(false);
@@ -275,13 +432,28 @@ function App() {
 
   const modeLabel = useMemo(() => {
     if (!result) return "";
-    if (result.extraction_mode === "kimi") return "Kimi K3 生成";
+    if (result.extraction_mode === "qwen") return "Qwen 生成";
+    if (result.extraction_mode === "deepseek") return "历史 DeepSeek 任务";
+    if (result.extraction_mode === "kimi") return "历史 Kimi 任务";
     if (result.extraction_mode === "mixed") return "模型与本地混合";
     return "本地确定性降级";
   }, [result]);
 
   const pendingReviews =
     result?.review_items.filter((item) => item.status === "pending").length || 0;
+  const qualityState = result
+    ? qualityPresentation({
+        topology_valid: result.quality_report.topology_valid,
+        structural_gate_passed:
+          result.quality_report.structural_gate_passed,
+        publish_gate_passed:
+          result.quality_report.publish_gate_passed,
+        quality_gate_passed:
+          result.quality_report.quality_gate_passed,
+        degraded_components: result.degraded_components,
+        pending_reviews: pendingReviews,
+      })
+    : null;
 
   return (
     <div className="app-shell">
@@ -299,7 +471,10 @@ function App() {
           <button
             type="button"
             className="history-toggle"
+            aria-label="历史记录"
+            title="历史记录"
             onClick={() => setHistoryOpen(true)}
+            disabled={!authenticated}
           >
             <History size={16} />
             <span>历史记录</span>
@@ -316,6 +491,37 @@ function App() {
 
       <div className="workspace-layout">
         <aside className="control-panel">
+          {health?.auth_required && !authenticated && (
+            <div className="auth-card">
+              <LockKeyhole size={20} />
+              <div>
+                <strong>生产工作台鉴权</strong>
+                <span>输入部署时配置的访问令牌。</span>
+              </div>
+              <input
+                type="password"
+                value={authToken}
+                autoComplete="current-password"
+                placeholder="访问令牌"
+                onChange={(event) => setAuthToken(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void authenticate();
+                }}
+              />
+              <button
+                type="button"
+                disabled={authBusy || !authToken.trim()}
+                onClick={() => void authenticate()}
+              >
+                {authBusy ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <LockKeyhole size={15} />
+                )}
+                进入工作台
+              </button>
+            </div>
+          )}
           <div className="panel-heading">
             <span className="step-number">01</span>
             <div>
@@ -377,7 +583,7 @@ function App() {
             <span className="step-number">02</span>
             <div>
               <h2>运行配置</h2>
-              <p>生成与校验角色独立调度</p>
+              <p>生成、校验、仲裁与视觉统一调度</p>
             </div>
           </div>
 
@@ -401,26 +607,22 @@ function App() {
             </button>
           </div>
 
-          <label className="field-label" htmlFor="model-select">
-            生成模型服务
-          </label>
-          <div className="provider-control" aria-label="模型服务商">
-            <button
-              type="button"
-              className="active"
-              onClick={() => {
-                setModel(health?.providers.kimi.default_model || "kimi-k3");
-                setModelStatus("idle");
-                void getModels("kimi")
-                  .then(setModels)
-                  .catch(() => setModels(["kimi-k3"]));
-              }}
-            >
-              Kimi
-            </button>
+          <label className="field-label">模型角色</label>
+          <div className="role-models" aria-label="模型角色">
+            <div className="role-model-row">
+              <span className="role-kind">全部</span>
+              <div>
+                <strong>Qwen</strong>
+                <small>{model}</small>
+              </div>
+              <span
+                className={`role-status ${health?.providers.qwen.configured ? "online" : ""}`}
+                title={health?.providers.qwen.configured ? "已配置" : "未配置"}
+              />
+            </div>
           </div>
           <label className="field-label model-label" htmlFor="model-select">
-            模型
+            全流程模型
           </label>
           <div className="select-wrap">
             <select
@@ -445,7 +647,7 @@ function App() {
             type="button"
             className={`model-check ${modelStatus}`}
             onClick={verifyModel}
-            disabled={modelStatus === "checking"}
+            disabled={modelStatus === "checking" || !authenticated}
           >
             {modelStatus === "checking" ? (
               <LoaderCircle className="spin" size={15} />
@@ -457,7 +659,7 @@ function App() {
               <CircleGauge size={15} />
             )}
             {modelStatus === "idle"
-              ? "检查生成模型"
+              ? "检查全部模型"
               : modelStatus === "checking"
                 ? "正在检查"
                 : modelMessage}
@@ -480,7 +682,7 @@ function App() {
             type="button"
             className="run-button"
             onClick={run}
-            disabled={!file || running}
+            disabled={!file || running || !authenticated}
           >
             {running ? (
               <LoaderCircle className="spin" size={18} />
@@ -500,6 +702,14 @@ function App() {
                 <span style={{ width: `${job.progress}%` }} />
               </div>
               <p>{job.message}</p>
+              <button
+                type="button"
+                className="cancel-job"
+                onClick={() => void cancelActiveJob()}
+              >
+                <Square size={13} fill="currentColor" />
+                取消任务
+              </button>
             </div>
           )}
 
@@ -548,20 +758,14 @@ function App() {
               </div>
 
               <div
-                className={`quality-strip ${
-                  result.quality_report.quality_gate_passed ? "passed" : "review"
-                }`}
+                className={`quality-strip ${qualityState?.kind || "review"}`}
               >
-                {result.quality_report.quality_gate_passed ? (
+                {qualityState?.kind === "passed" ? (
                   <CheckCircle2 size={16} />
                 ) : (
                   <AlertCircle size={16} />
                 )}
-                <span>
-                  {result.quality_report.quality_gate_passed
-                    ? "质量门通过"
-                    : "主树合法，仍有质量项需要复核"}
-                </span>
+                <span>{qualityState?.label}</span>
                 <b>{result.solver_status}</b>
               </div>
 
@@ -587,6 +791,16 @@ function App() {
                   onClick={() => setView("graph")}
                 >
                   <GitBranch size={16} /> 主树
+                </button>
+                <button
+                  type="button"
+                  className={view === "visuals" ? "active" : ""}
+                  onClick={() => setView("visuals")}
+                >
+                  <Images size={16} /> 视觉
+                  {result.assets.length > 0 && (
+                    <span className="visual-tab-count">{result.assets.length}</span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -626,6 +840,7 @@ function App() {
                   href={`/api/jobs/${result.task_id}/export.json`}
                   download
                   title="保存完整 JSON"
+                  aria-label="保存 JSON"
                 >
                   <Download size={15} />
                   <span>保存 JSON</span>
@@ -672,6 +887,15 @@ function App() {
                 )}
                 {view === "nodes" && (
                   <DataTable
+                    result={result}
+                    onSelectNode={(id) => {
+                      setSelectedNodeId(id);
+                      setView("graph");
+                    }}
+                  />
+                )}
+                {view === "visuals" && (
+                  <VisualGallery
                     result={result}
                     onSelectNode={(id) => {
                       setSelectedNodeId(id);

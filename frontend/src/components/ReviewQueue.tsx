@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { reviewSupportsAction } from "../reviewActions";
 import type { AnalysisResult, ReviewResolution } from "../types";
 
 type ReviewQueueProps = {
@@ -36,6 +37,7 @@ export function ReviewQueue({
     [result.nodes],
   );
   const [selectedParents, setSelectedParents] = useState<Record<string, string>>({});
+  const [renameLabels, setRenameLabels] = useState<Record<string, string>>({});
 
   if (pending.length === 0) {
     return (
@@ -69,6 +71,9 @@ export function ReviewQueue({
             .filter((item) => item.id && nodeNames.has(item.id));
           const selectedParent =
             selectedParents[review.id] || parentOptions[0]?.id || "";
+          const subjectId =
+            review.subject_id || subjects[0]?.id || "";
+          const renameLabel = renameLabels[review.id] || "";
           const busy = busyReviewId === review.id;
 
           return (
@@ -111,6 +116,22 @@ export function ReviewQueue({
                 </label>
               )}
 
+              {subjectId && reviewSupportsAction(review.type, "rename") && (
+                <label className="review-parent-field">
+                  <span>修正节点名称</span>
+                  <input
+                    value={renameLabel}
+                    placeholder={nodeNames.get(subjectId) || "新名称"}
+                    onChange={(event) =>
+                      setRenameLabels((current) => ({
+                        ...current,
+                        [review.id]: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              )}
+
               {review.model_votes.length > 0 && (
                 <div className="review-votes">
                   {review.model_votes.map((vote, index) => (
@@ -131,7 +152,8 @@ export function ReviewQueue({
                   {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
                   保留
                 </button>
-                {review.type === "competing_parent" && selectedParent && (
+                {reviewSupportsAction(review.type, "change_parent") &&
+                  selectedParent && (
                   <button
                     type="button"
                     disabled={busy}
@@ -146,7 +168,22 @@ export function ReviewQueue({
                     改父
                   </button>
                 )}
-                {review.type === "abstract_parent" && (
+                {reviewSupportsAction(review.type, "rename") &&
+                  renameLabel.trim() && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      onResolve(review.id, {
+                        action: "rename",
+                        label: renameLabel.trim(),
+                      })
+                    }
+                  >
+                    修正名称
+                  </button>
+                )}
+                {reviewSupportsAction(review.type, "delete") && (
                   <button
                     type="button"
                     className="danger"
@@ -155,6 +192,20 @@ export function ReviewQueue({
                   >
                     <Trash2 size={15} />
                     删除
+                  </button>
+                )}
+                {reviewSupportsAction(review.type, "accept_root") && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      onResolve(review.id, {
+                        action: "accept_root",
+                        parent_id: result.root_id,
+                      })
+                    }
+                  >
+                    确认当前根主题
                   </button>
                 )}
               </div>

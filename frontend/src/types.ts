@@ -8,7 +8,7 @@ export type Evidence = {
   asset_id?: string | null;
 };
 
-export type ModelProvider = "kimi";
+export type ModelProvider = "qwen";
 
 export type Chunk = {
   id: string;
@@ -125,6 +125,8 @@ export type ReviewItem = {
     | "uncovered_content";
   risk_score: number;
   subject_ids: string[];
+  subject_id?: string;
+  subject_type?: "node" | "tree_edge" | "root" | "cross_link";
   reason: string;
   alternatives: Array<Record<string, unknown>>;
   evidence_unit_ids: string[];
@@ -188,6 +190,8 @@ export type AnalysisResult = {
     direct_parent_confidence: number;
     abstraction_support_rate: number;
     review_item_count: number;
+    structural_gate_passed?: boolean;
+    publish_gate_passed?: boolean;
     quality_gate_passed: boolean;
     coverage: {
       total_units: number;
@@ -201,7 +205,7 @@ export type AnalysisResult = {
   review_items: ReviewItem[];
   decision_records: DecisionRecord[];
   mode: "standard" | "precision";
-  extraction_mode: "kimi" | "heuristic" | "mixed";
+  extraction_mode: "qwen" | "deepseek" | "kimi" | "heuristic" | "mixed";
   model_selection: {
     generator_provider: string;
     generator_model?: string | null;
@@ -215,11 +219,12 @@ export type AnalysisResult = {
   degraded_components: string[];
   warnings: string[];
   solver_status: string;
+  run_manifest?: Record<string, unknown>;
 };
 
 export type Job = {
   id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   stage: string;
   progress: number;
   message: string;
@@ -234,30 +239,33 @@ export type HistoryItem = {
   filename: string;
   file_type: string;
   mode: "standard" | "precision";
-  extraction_mode: "kimi" | "heuristic" | "mixed";
+  extraction_mode: "qwen" | "deepseek" | "kimi" | "heuristic" | "mixed";
   graph_version: number;
   node_count: number;
   review_count: number;
   quality_gate_passed: boolean;
   created_at: string;
   updated_at: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  stage: string;
+  progress: number;
+  error?: string | null;
 };
 
 export type Health = {
   status: string;
   workspace: {
     name: string;
-    id_suffix: string;
     key_configured: boolean;
-    secret_source: "environment" | "age" | "none";
-    secret_error: string;
   };
+  environment: string;
+  auth_required: boolean;
+  auth_configured: boolean;
   default_model: string;
   providers: {
-    kimi: {
+    qwen: {
       configured: boolean;
       default_model: string;
-      base_url: string;
     };
   };
   architecture: {

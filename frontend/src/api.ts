@@ -19,6 +19,16 @@ export async function getHealth(): Promise<Health> {
   return parseResponse(await fetch("/api/health"));
 }
 
+export async function createSession(token: string): Promise<void> {
+  await parseResponse(
+    await fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }),
+  );
+}
+
 export async function getModels(provider: ModelProvider): Promise<string[]> {
   const result = await parseResponse<{ models: string[] }>(
     await fetch(`/api/models?provider=${encodeURIComponent(provider)}`),
@@ -60,6 +70,12 @@ export async function getJob(id: string): Promise<Job> {
   return parseResponse(await fetch(`/api/jobs/${id}`));
 }
 
+export async function cancelJob(id: string): Promise<Job> {
+  return parseResponse(
+    await fetch(`/api/jobs/${id}/cancel`, { method: "POST" }),
+  );
+}
+
 export async function getHistory(): Promise<HistoryItem[]> {
   return parseResponse(await fetch("/api/history"));
 }
@@ -76,12 +92,16 @@ export async function resolveReview(
   taskId: string,
   reviewId: string,
   resolution: ReviewResolution,
+  expectedGraphVersion: number,
 ): Promise<AnalysisResult> {
   const response = await parseResponse<{ result: AnalysisResult }>(
     await fetch(`/api/jobs/${taskId}/reviews/${reviewId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(resolution),
+      body: JSON.stringify({
+        ...resolution,
+        expected_graph_version: expectedGraphVersion,
+      }),
     }),
   );
   return response.result;

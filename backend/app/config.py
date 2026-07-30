@@ -6,12 +6,66 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_KIMI_SECRETS_FILE = PROJECT_ROOT.parent / "kimi.enc.env.age"
-DEFAULT_KIMI_IDENTITY_FILE = (
-    PROJECT_ROOT.parent / ".secrets" / "kimi-age-identity.txt"
+DEFAULT_QWEN_BASE_URL = (
+    "https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
+DEFAULT_QWEN_MODEL = "qwen3.7-max"
+DEFAULT_QWEN_VISION_MODEL = "qwen3.7-plus"
+DEFAULT_QWEN_IDENTITY_FILE = (
+    PROJECT_ROOT / "runtime" / "secrets" / "qwen-age-identity.txt"
+)
+DEFAULT_QWEN_SECRETS_FILE = (
+    PROJECT_ROOT / "runtime" / "secrets" / "qwen.enc.env.age"
+)
+TOKEN_PLAN_QWEN_HOSTS = frozenset(
+    {
+        "coding.dashscope.aliyuncs.com",
+        "coding-intl.dashscope.aliyuncs.com",
+        "token-plan.cn-beijing.maas.aliyuncs.com",
+        "token-plan.ap-southeast-1.maas.aliyuncs.com",
+    }
+)
+TRIAL_QWEN_HOSTS = frozenset(
+    {
+        "trial.cn-beijing.maas.aliyuncs.com",
+        "trial.ap-southeast-1.maas.aliyuncs.com",
+        "trial-us-east-1.dashscope.aliyuncs.com",
+    }
+)
+STANDARD_QWEN_HOSTS = frozenset(
+    {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+        "cn-hongkong.dashscope.aliyuncs.com",
+    }
+)
+QWEN_WORKSPACE_HOST = re.compile(
+    r"^llm-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    r"\.(?:cn-beijing|ap-southeast-1|ap-northeast-1|eu-central-1)"
+    r"\.maas\.aliyuncs\.com$"
+)
+QWEN_OPENAI_COMPATIBLE_PATH = "/compatible-mode/v1"
+QWEN_PRODUCTION_PROFILE_STANDARD = "standard"
+QWEN_PRODUCTION_PROFILE_APPROVED_CN_TOKEN_PLAN_PREVIEW = (
+    "approved_cn_token_plan_preview"
+)
+APPROVED_CN_TOKEN_PLAN_PREVIEW_BASE_URL = (
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+)
+APPROVED_CN_TOKEN_PLAN_PREVIEW_MODEL = "qwen3.8-max-preview"
+QWEN_VISION_MODEL_PATTERNS = (
+    re.compile(r"^qwen3\.5-plus(?:-|$)"),
+    re.compile(r"^qwen3\.6-plus(?:-|$)"),
+    re.compile(r"^qwen3\.7-plus(?:-|$)"),
+    re.compile(r"^qwen3\.8-max(?:-|$)"),
+    re.compile(r"^qwen-vl-"),
+    re.compile(r"^qwen3-vl-"),
+    re.compile(r"^qwen3\.6-35b(?:-|$)"),
 )
 ENV_LINE = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$"
@@ -60,24 +114,27 @@ def _sanitized_error(message: str) -> str:
     return compact[:240]
 
 
-def _load_kimi_secret() -> tuple[str, str, str]:
-    direct_key = os.getenv("KIMI_API_KEY", "").strip()
+def _load_encrypted_secret(
+    *,
+    key_name: str,
+    secrets_setting: str,
+    identity_setting: str,
+    default_secrets_file: Path,
+    default_identity_file: Path,
+    provider_label: str,
+) -> tuple[str, str, str]:
+    direct_key = os.getenv(key_name, "").strip()
     if direct_key:
         return direct_key, "environment", ""
 
-    alias_key = os.getenv("MOONSHOT_API_KEY", "").strip()
-    if alias_key:
-        os.environ["KIMI_API_KEY"] = alias_key
-        return alias_key, "environment", ""
-
     secrets_file = Path(
-        os.getenv("KIMI_SECRETS_FILE", str(DEFAULT_KIMI_SECRETS_FILE))
+        os.getenv(secrets_setting, str(default_secrets_file))
     ).expanduser()
     identity_file = Path(
-        os.getenv("KIMI_AGE_IDENTITY_FILE", str(DEFAULT_KIMI_IDENTITY_FILE))
+        os.getenv(identity_setting, str(default_identity_file))
     ).expanduser()
     if not secrets_file.is_file():
-        return "", "none", "未找到 Kimi 密文文件。"
+        return "", "none", f"未找到 {provider_label} 密文文件。"
     if not identity_file.is_file():
         return "", "none", "未找到本机 age 私钥文件。"
 
@@ -108,27 +165,94 @@ def _load_kimi_secret() -> tuple[str, str, str]:
     try:
         values = _parse_env_text(completed.stdout.decode("utf-8-sig"))
     except UnicodeDecodeError:
-        return "", "none", "Kimi 密文解密结果不是 UTF-8 ENV 文件。"
+        return "", "none", f"{provider_label} 密文解密结果不是 UTF-8 ENV 文件。"
 
-    key = (
-        values.get("KIMI_API_KEY", "").strip()
-        or values.get("MOONSHOT_API_KEY", "").strip()
-    )
+    key = values.get(key_name, "").strip()
     if not key:
-        return "", "none", "Kimi 密文中未找到 KIMI_API_KEY。"
+        return "", "none", f"{provider_label} 密文中未找到 {key_name}。"
 
-    os.environ["KIMI_API_KEY"] = key
+    os.environ[key_name] = key
     return key, "age", ""
+
+
+def _load_qwen_secret() -> tuple[str, str, str]:
+    return _load_encrypted_secret(
+        key_name="QWEN_API_KEY",
+        secrets_setting="QWEN_SECRETS_FILE",
+        identity_setting="QWEN_AGE_IDENTITY_FILE",
+        default_secrets_file=DEFAULT_QWEN_SECRETS_FILE,
+        default_identity_file=DEFAULT_QWEN_IDENTITY_FILE,
+        provider_label="Qwen",
+    )
+
+
+def qwen_model_supports_vision(model: str) -> bool:
+    normalized = model.strip().casefold()
+    return any(
+        pattern.match(normalized)
+        for pattern in QWEN_VISION_MODEL_PATTERNS
+    )
+
+
+def _production_qwen_endpoint_issue(base_url: str) -> str | None:
+    try:
+        parsed = urlsplit(base_url.strip())
+        hostname = (parsed.hostname or "").casefold().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        return "invalid_endpoint"
+    if (
+        parsed.scheme.casefold() != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+    ):
+        return "invalid_endpoint"
+    if hostname in TOKEN_PLAN_QWEN_HOSTS:
+        return "token_plan_endpoint"
+    if hostname in TRIAL_QWEN_HOSTS:
+        return "trial_endpoint"
+    if parsed.path.rstrip("/") != QWEN_OPENAI_COMPATIBLE_PATH:
+        return "invalid_endpoint"
+    if (
+        hostname not in STANDARD_QWEN_HOSTS
+        and QWEN_WORKSPACE_HOST.fullmatch(hostname) is None
+    ):
+        return "unapproved_endpoint"
+    return None
+
+
+def _endpoint_matches(base_url: str, expected_url: str) -> bool:
+    try:
+        parsed = urlsplit(base_url.strip())
+        expected = urlsplit(expected_url)
+        hostname = (parsed.hostname or "").casefold().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.casefold() == expected.scheme.casefold()
+        and hostname == (expected.hostname or "").casefold()
+        and parsed.username is None
+        and parsed.password is None
+        and port is None
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path.rstrip("/") == expected.path.rstrip("/")
+    )
 
 
 @dataclass(frozen=True)
 class Settings:
-    kimi_api_key: str
-    kimi_base_url: str
-    kimi_model: str
-    kimi_reasoning_effort: str
-    kimi_secret_source: str
-    kimi_secret_error: str
+    qwen_api_key: str
+    qwen_base_url: str
+    qwen_model: str
+    qwen_temperature: float
+    qwen_secret_source: str
+    qwen_secret_error: str
     workspace_name: str
     workspace_id: str
     vision_max_pages: int
@@ -137,21 +261,195 @@ class Settings:
     asset_access_token: str
     mindmap_data_dir: Path
     blackboard_path: Path
+    qwen_vision_model: str = DEFAULT_QWEN_VISION_MODEL
+    qwen_production_profile: str = QWEN_PRODUCTION_PROFILE_STANDARD
+    pdf_transcription_mode: str = "vision_nodes_strict"
+    pdf_page_extraction_mode: str = "direct_layout_fallback"
+    pdf_transcription_dpi: int = 192
+    pdf_transcription_concurrency: int = 8
+    pdf_transcription_max_attempts: int = 3
+    pdf_transcription_min_confidence: float = 0.85
     solver_timeout_seconds: float = 5.0
     max_chunk_chars: int = 1800
     chunk_overlap_chars: int = 240
     extraction_concurrency: int = 4
+    environment: str = "development"
+    api_access_token: str = ""
+    session_cookie_name: str = "zlb_mindmap_session"
+    session_cookie_secure: bool | None = None
+    max_upload_bytes: int = 80 * 1024 * 1024
+    max_image_pixels: int = 40_000_000
+    max_document_pages: int = 150
+    max_zip_uncompressed_bytes: int = 300 * 1024 * 1024
+    max_zip_compression_ratio: float = 120.0
+    max_concurrent_jobs: int = 1
+    provider_concurrency: int = 8
+    export_concurrency: int = 1
+    source_retention_hours: int = 72
+    provider_timeout_seconds: float = 180.0
+    provider_max_attempts: int = 3
+    provider_retry_base_seconds: float = 0.5
+    provider_retry_delay_cap_seconds: float = 30.0
+    provider_circuit_cooldown_seconds: float = 120.0
+    parser_version: str = "parser-v8-page-knowledge-extraction"
+    prompt_version: str = "cplus-prompts-v9-theme-completeness"
+    theme_prompt_version: str = (
+        "theme-synthesizer-v3-bounded-hybrid-routing"
+    )
+    pdf_page_knowledge_prompt_version: str = (
+        "cplus-prompts-v8-page-knowledge"
+    )
+    pdf_page_transcription_prompt_version: str = (
+        "cplus-prompts-v8-page-knowledge"
+    )
+    schema_version: str = "mindmap-schema-v2"
+    layout_version: str = "right-first-tree-v2"
 
     @property
     def key_configured(self) -> bool:
-        return bool(self.kimi_api_key)
+        return bool(self.qwen_api_key)
+
+    @property
+    def production(self) -> bool:
+        return self.environment.lower() in {"production", "prod"}
+
+    @property
+    def session_cookie_secure_enabled(self) -> bool:
+        if self.session_cookie_secure is None:
+            return self.production
+        return self.session_cookie_secure
+
+
+def production_qwen_configuration_issues(
+    configured: Settings,
+) -> tuple[str, ...]:
+    """Return fail-closed issues for a public automated Qwen deployment."""
+
+    if not configured.production:
+        return ()
+
+    profile = configured.qwen_production_profile.strip().casefold()
+    if (
+        profile
+        == QWEN_PRODUCTION_PROFILE_APPROVED_CN_TOKEN_PLAN_PREVIEW
+    ):
+        approved_issues: list[str] = []
+        if not configured.qwen_api_key:
+            approved_issues.append("missing_api_key")
+        elif not configured.qwen_api_key.startswith("sk-sp-"):
+            approved_issues.append("approved_profile_key_mismatch")
+        if not _endpoint_matches(
+            configured.qwen_base_url,
+            APPROVED_CN_TOKEN_PLAN_PREVIEW_BASE_URL,
+        ):
+            approved_issues.append("approved_profile_endpoint_mismatch")
+        if (
+            configured.qwen_model.strip().casefold()
+            != APPROVED_CN_TOKEN_PLAN_PREVIEW_MODEL
+        ):
+            approved_issues.append("approved_profile_text_model_mismatch")
+        if (
+            configured.qwen_vision_model.strip().casefold()
+            != APPROVED_CN_TOKEN_PLAN_PREVIEW_MODEL
+        ):
+            approved_issues.append("approved_profile_vision_model_mismatch")
+        return tuple(dict.fromkeys(approved_issues))
+
+    if profile != QWEN_PRODUCTION_PROFILE_STANDARD:
+        return ("unsupported_production_profile",)
+
+    issues: list[str] = []
+    if not configured.qwen_api_key:
+        issues.append("missing_api_key")
+    elif configured.qwen_api_key.startswith("sk-sp-"):
+        issues.append("token_plan_key")
+
+    endpoint_issue = _production_qwen_endpoint_issue(
+        configured.qwen_base_url
+    )
+    if endpoint_issue is not None:
+        issues.append(endpoint_issue)
+
+    for role, model in (
+        ("text", configured.qwen_model),
+        ("vision", configured.qwen_vision_model),
+    ):
+        normalized = model.strip().casefold()
+        if not normalized.startswith("qwen"):
+            issues.append(f"{role}_model_not_qwen")
+        elif role == "vision" and not qwen_model_supports_vision(model):
+            issues.append("vision_model_not_multimodal")
+        if "preview" in normalized:
+            issues.append(f"{role}_preview_model")
+    return tuple(dict.fromkeys(issues))
+
+
+def validate_production_qwen_configuration(
+    configured: Settings,
+) -> None:
+    issues = production_qwen_configuration_issues(configured)
+    if issues:
+        raise RuntimeError(
+            "Qwen 生产配置不合规："
+            + ",".join(issues)
+            + "。请使用标准生产配置，或显式批准且精确匹配的"
+            " Qwen production profile。"
+        )
+
+
+def _int_setting(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(value, minimum)
+
+
+def _float_setting(
+    name: str,
+    default: float,
+    minimum: float = 0,
+) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(value, minimum)
+
+
+def _optional_bool_setting(name: str) -> bool | None:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return None
+    value = raw_value.strip().lower()
+    if value in {"0", "false", "no", "off"}:
+        return False
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    return None
 
 
 def load_settings() -> Settings:
-    kimi_api_key, secret_source, secret_error = _load_kimi_secret()
-    reasoning_effort = os.getenv("KIMI_REASONING_EFFORT", "low").strip().lower()
-    if reasoning_effort not in {"low", "high", "max"}:
-        reasoning_effort = "low"
+    qwen_api_key, qwen_secret_source, qwen_secret_error = _load_qwen_secret()
+    qwen_model = (
+        os.getenv("QWEN_MODEL", DEFAULT_QWEN_MODEL).strip()
+        or DEFAULT_QWEN_MODEL
+    )
+    pdf_page_extraction_mode = os.getenv(
+        "MINDMAP_PDF_PAGE_EXTRACTION_MODE",
+        "direct_layout_fallback",
+    ).strip().casefold()
+    if pdf_page_extraction_mode not in {
+        "direct",
+        "layout_nodes",
+        "direct_layout_fallback",
+    }:
+        pdf_page_extraction_mode = "direct_layout_fallback"
+    try:
+        qwen_temperature = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
+    except ValueError:
+        qwen_temperature = 0.1
+    qwen_temperature = min(max(qwen_temperature, 0.0), 2.0)
 
     external_engine_token = os.getenv("EXTERNAL_ENGINE_TOKEN", "")
     mindmap_data_dir = Path(
@@ -161,16 +459,19 @@ def load_settings() -> Settings:
         )
     ).resolve()
     return Settings(
-        kimi_api_key=kimi_api_key,
-        kimi_base_url=os.getenv(
-            "KIMI_BASE_URL",
-            "https://api.moonshot.cn/v1",
+        qwen_api_key=qwen_api_key,
+        qwen_base_url=os.getenv(
+            "QWEN_BASE_URL",
+            DEFAULT_QWEN_BASE_URL,
         ).rstrip("/"),
-        kimi_model=os.getenv("KIMI_MODEL", "kimi-k3"),
-        kimi_reasoning_effort=reasoning_effort,
-        kimi_secret_source=secret_source,
-        kimi_secret_error=secret_error,
-        workspace_name=os.getenv("KIMI_WORKSPACE_NAME", "Kimi K3 本地工作区"),
+        qwen_model=qwen_model,
+        qwen_temperature=qwen_temperature,
+        qwen_secret_source=qwen_secret_source,
+        qwen_secret_error=qwen_secret_error,
+        workspace_name=os.getenv(
+            "QWEN_WORKSPACE_NAME",
+            "Qwen 本地工作区",
+        ),
         workspace_id="",
         vision_max_pages=int(os.getenv("MINDMAP_VISION_MAX_PAGES", "24")),
         external_engine_token=external_engine_token,
@@ -186,8 +487,157 @@ def load_settings() -> Settings:
                 str(mindmap_data_dir / "blackboard.sqlite3"),
             )
         ).resolve(),
+        qwen_vision_model=os.getenv(
+            "QWEN_VISION_MODEL",
+            DEFAULT_QWEN_VISION_MODEL,
+        ).strip()
+        or DEFAULT_QWEN_VISION_MODEL,
+        qwen_production_profile=os.getenv(
+            "MINDMAP_QWEN_PRODUCTION_PROFILE",
+            QWEN_PRODUCTION_PROFILE_STANDARD,
+        ).strip().casefold()
+        or QWEN_PRODUCTION_PROFILE_STANDARD,
+        pdf_transcription_mode=os.getenv(
+            "MINDMAP_PDF_TRANSCRIPTION_MODE",
+            "vision_nodes_strict",
+        ).strip()
+        or "vision_nodes_strict",
+        pdf_page_extraction_mode=pdf_page_extraction_mode,
+        pdf_transcription_dpi=_int_setting(
+            "MINDMAP_PDF_TRANSCRIPTION_DPI",
+            192,
+            96,
+        ),
+        pdf_transcription_concurrency=_int_setting(
+            "MINDMAP_PDF_TRANSCRIPTION_CONCURRENCY",
+            8,
+        ),
+        pdf_transcription_max_attempts=_int_setting(
+            "MINDMAP_PDF_TRANSCRIPTION_MAX_ATTEMPTS",
+            3,
+        ),
+        pdf_transcription_min_confidence=min(
+            _float_setting(
+                "MINDMAP_PDF_TRANSCRIPTION_MIN_CONFIDENCE",
+                0.85,
+                0,
+            ),
+            1,
+        ),
         solver_timeout_seconds=float(
             os.getenv("MINDMAP_SOLVER_TIMEOUT_SECONDS", "5")
+        ),
+        max_chunk_chars=_int_setting("MINDMAP_MAX_CHUNK_CHARS", 1800, 200),
+        chunk_overlap_chars=_int_setting(
+            "MINDMAP_CHUNK_OVERLAP_CHARS",
+            240,
+            0,
+        ),
+        extraction_concurrency=_int_setting(
+            "MINDMAP_EXTRACTION_CONCURRENCY",
+            4,
+        ),
+        environment=os.getenv("MINDMAP_ENV", "development").strip().lower(),
+        api_access_token=os.getenv("MINDMAP_API_TOKEN", "").strip(),
+        session_cookie_name=os.getenv(
+            "MINDMAP_SESSION_COOKIE",
+            "zlb_mindmap_session",
+        ).strip()
+        or "zlb_mindmap_session",
+        session_cookie_secure=_optional_bool_setting(
+            "MINDMAP_SESSION_COOKIE_SECURE"
+        ),
+        max_upload_bytes=_int_setting(
+            "MINDMAP_MAX_UPLOAD_BYTES",
+            80 * 1024 * 1024,
+            1024,
+        ),
+        max_image_pixels=_int_setting(
+            "MINDMAP_MAX_IMAGE_PIXELS",
+            40_000_000,
+        ),
+        max_document_pages=_int_setting(
+            "MINDMAP_MAX_DOCUMENT_PAGES",
+            150,
+        ),
+        max_zip_uncompressed_bytes=_int_setting(
+            "MINDMAP_MAX_ZIP_UNCOMPRESSED_BYTES",
+            300 * 1024 * 1024,
+            1024,
+        ),
+        max_zip_compression_ratio=_float_setting(
+            "MINDMAP_MAX_ZIP_COMPRESSION_RATIO",
+            120,
+            1,
+        ),
+        max_concurrent_jobs=_int_setting(
+            "MINDMAP_MAX_CONCURRENT_JOBS",
+            1,
+        ),
+        provider_concurrency=_int_setting(
+            "MINDMAP_PROVIDER_CONCURRENCY",
+            8,
+        ),
+        export_concurrency=_int_setting(
+            "MINDMAP_EXPORT_CONCURRENCY",
+            1,
+        ),
+        source_retention_hours=_int_setting(
+            "MINDMAP_SOURCE_RETENTION_HOURS",
+            72,
+            0,
+        ),
+        provider_timeout_seconds=_float_setting(
+            "MINDMAP_PROVIDER_TIMEOUT_SECONDS",
+            180,
+            1,
+        ),
+        provider_max_attempts=_int_setting(
+            "MINDMAP_PROVIDER_MAX_ATTEMPTS",
+            3,
+        ),
+        provider_retry_base_seconds=_float_setting(
+            "MINDMAP_PROVIDER_RETRY_BASE_SECONDS",
+            0.5,
+            0,
+        ),
+        provider_retry_delay_cap_seconds=_float_setting(
+            "MINDMAP_PROVIDER_RETRY_DELAY_CAP_SECONDS",
+            30,
+            0,
+        ),
+        provider_circuit_cooldown_seconds=_float_setting(
+            "MINDMAP_PROVIDER_CIRCUIT_COOLDOWN_SECONDS",
+            120,
+            1,
+        ),
+        parser_version=os.getenv(
+            "MINDMAP_PARSER_VERSION",
+            "parser-v8-page-knowledge-extraction",
+        ),
+        prompt_version=os.getenv(
+            "MINDMAP_PROMPT_VERSION",
+            "cplus-prompts-v9-theme-completeness",
+        ),
+        theme_prompt_version=os.getenv(
+            "MINDMAP_THEME_PROMPT_VERSION",
+            "theme-synthesizer-v3-bounded-hybrid-routing",
+        ),
+        pdf_page_knowledge_prompt_version=os.getenv(
+            "MINDMAP_PDF_PAGE_KNOWLEDGE_PROMPT_VERSION",
+            "cplus-prompts-v8-page-knowledge",
+        ),
+        pdf_page_transcription_prompt_version=os.getenv(
+            "MINDMAP_PDF_PAGE_TRANSCRIPTION_PROMPT_VERSION",
+            "cplus-prompts-v8-page-knowledge",
+        ),
+        schema_version=os.getenv(
+            "MINDMAP_SCHEMA_VERSION",
+            "mindmap-schema-v2",
+        ),
+        layout_version=os.getenv(
+            "MINDMAP_LAYOUT_VERSION",
+            "right-first-tree-v2",
         ),
     )
 

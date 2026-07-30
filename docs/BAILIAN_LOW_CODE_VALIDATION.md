@@ -1,5 +1,18 @@
 # 百炼低代码组装与验证
 
+> 本文是早期低代码验证资料，不参与当前本地 C+ 主任务，也不代表当前公网
+> `http://175.178.196.235:5173/` 已部署本轮实现。文中的“独立模型”是角色/
+> 调用隔离；若仍使用同一 Qwen 家族，不构成统计独立的第二模型。
+>
+> 2026-07-24 当前 C+ 工作树已完成后端 142/142、前端 7/7、production build、
+> 静态检查、Compose config 和最终本地隔离镜像验收；本地镜像为
+> `zlb-mindmap-agent:tdd`
+>（`sha256:fbeeb03c5f70da9a117cc606e60fd8ff4dbdc9e3366a5e80c31967e14dfde2f5`，
+> `Config.User=10001:10001`，无 registry RepoDigest）。这些结果不验证本文的
+> 百炼画布，也不构成真实 92 页 Qwen-only 生产 SLA 或人工金标准确率。公网仍
+> 运行旧镜像 `sha256:63750b13af0c9d43f10ccbbb53eb580660730bc7ee1d8f7a57fcb6241f06deba`，
+> 本轮未重启或替换。
+
 ## 1. 责任边界
 
 留在百炼工作流：
@@ -18,7 +31,7 @@
 - PPTX/PDF 页面渲染。
 - 原生图片提取和 bbox 裁剪。
 - 稳定 ID、节点归一与去重。
-- Top-k 父节点候选召回。
+- 结构受限父池与 Top-k 候选上限；当前不是 embedding/reranker 语义召回。
 - OR-Tools CP-SAT 主树求解。
 - NetworkX 图校验。
 - 临时保底边标记与复核项生成。
@@ -32,13 +45,19 @@
 
 ```text
 EXTERNAL_ENGINE_TOKEN=<百炼 API 节点使用的 Bearer Token>
-ASSET_ACCESS_TOKEN=<视觉资产 URL 的访问 Token>
+ASSET_ACCESS_TOKEN=<视觉资产请求使用的 Bearer 或 X-Engine-Token>
 ASSET_PUBLIC_BASE_URL=https://<公网 HTTPS 域名>
 MINDMAP_DATA_DIR=/app/.data/mindmap_engine
 MINDMAP_SOLVER_TIMEOUT_SECONDS=5
+MINDMAP_MAX_IMAGE_PIXELS=40000000
 ```
 
-`ASSET_PUBLIC_BASE_URL` 必须能被百炼视觉节点访问。生产环境必须使用 HTTPS。
+`ASSET_PUBLIC_BASE_URL` 只用于生成不含 query 凭据的 HTTPS 资产地址；服务会
+剥离 base URL 自带的 query/fragment。资产 GET 必须使用同源 HttpOnly session
+或 `Authorization`/`X-Engine-Token`，不得把长期 token 拼进 URL。若百炼视觉
+节点拉取 `image_url` 时不能附加 header/cookie，应先由受信 API 节点携带 header
+取回并转成平台支持的文件/数据输入，或使用可注入鉴权 header 的同源网关；当前
+仓库没有实现公开或 query-token 资产回退。
 
 ### 2.2 Docker
 
@@ -86,7 +105,8 @@ curl https://<公网域名>/v1/mindmap/health
 
 - `document`：文件。
 - `generator_model`：默认 Qwen。
-- `verifier_model`：使用不同模型家族。
+- `verifier_model`：理想情况下使用不同模型家族；若使用当前同一 Qwen 家族，
+  只能视为不同提示词/调用角色。
 - `mode`：`standard` 或 `precision`。
 
 ### 3.2 文档解析
@@ -141,7 +161,8 @@ POST ${GRAPH_SERVICE_URL}/v1/mindmap/visuals/render
 
 响应：
 
-- `pages`：整页图片 URL，供视觉模型分析。
+- `pages`：不含 query token 的整页图片 URL；视觉节点必须按 2.1 节解决受保护
+  资产取回，不能假设 URL 匿名可读。
 - `native_visuals`：PPTX 原生图片及图表/表格/组合图坐标。
 - `warnings`：本次渲染降级信息。
 
@@ -238,6 +259,8 @@ quality.provisional_edge_count == 0
 ```
 
 如果 `provisional_edge_count > 0`，主树仍然保持合法，但对应边必须进入人工确认，不能直接发布。
+这里的 `evidence_coverage` 只表示节点/边具有可定位的 unit/support mapping，
+不证明源材料语义蕴含每条直接父子关系；父边准确率仍需人工金标评估。
 
 ## 5. 标准档与高精档
 
@@ -276,7 +299,11 @@ quality.provisional_edge_count == 0
 检查：
 
 - `ASSET_PUBLIC_BASE_URL` 是否是公网 HTTPS。
-- URL 中是否携带有效 `token`。
+- URL 不应携带 `token` query。
+- 资产请求是否使用有效的 `Authorization: Bearer <ASSET_ACCESS_TOKEN>`、
+  `X-Engine-Token` 或同源 HttpOnly session。
+- 若视觉模型自身不能附带 header/cookie，是否已由受信节点预取并转换为平台
+  支持的文件/数据输入，或配置了只对受信调用注入 header 的网关。
 - 防火墙和反向代理是否允许 GET 资产路径。
 
 ### PPTX 只有原生图片，没有整页页面

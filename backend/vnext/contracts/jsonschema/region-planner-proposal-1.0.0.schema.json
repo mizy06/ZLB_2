@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "RegionProposalAction": {
+      "enum": [
+        "SPLIT",
+        "STOP",
+        "UNRESOLVED"
+      ],
+      "title": "RegionProposalAction",
+      "type": "string"
+    },
+    "RegionStopSemanticAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "claims_have_comparable_granularity": {
+          "title": "Claims Have Comparable Granularity",
+          "type": "boolean"
+        },
+        "further_split_would_fragment_or_duplicate": {
+          "title": "Further Split Would Fragment Or Duplicate",
+          "type": "boolean"
+        },
+        "no_mixed_theme_evidence": {
+          "title": "No Mixed Theme Evidence",
+          "type": "boolean"
+        },
+        "single_instructional_intent": {
+          "title": "Single Instructional Intent",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "single_instructional_intent",
+        "claims_have_comparable_granularity",
+        "further_split_would_fragment_or_duplicate",
+        "no_mixed_theme_evidence"
+      ],
+      "title": "RegionStopSemanticAssessment",
+      "type": "object"
+    }
+  },
+  "$id": "urn:zlb:vnext:schema:region-planner-proposal:1.0.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/RegionProposalAction"
+    },
+    "anchor_quote": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Anchor Quote",
+      "type": "string"
+    },
+    "anchor_source_id": {
+      "pattern": "^src:[a-z][a-z0-9_-]{1,31}:[0-9a-f]{64}$",
+      "title": "Anchor Source Id",
+      "type": "string"
+    },
+    "child_anchor_source_ids": {
+      "default": [],
+      "items": {
+        "pattern": "^src:[a-z][a-z0-9_-]{1,31}:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 64,
+      "title": "Child Anchor Source Ids",
+      "type": "array"
+    },
+    "rationale": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Rationale",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stop_assessment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RegionStopSemanticAssessment"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "anchor_source_id",
+    "anchor_quote",
+    "action",
+    "rationale"
+  ],
+  "title": "RegionPlannerProposal",
+  "type": "object"
+}

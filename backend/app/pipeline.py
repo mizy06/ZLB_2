@@ -6,12 +6,13 @@ from typing import Awaitable, Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from .kimi_provider import KimiClient, ModelProviderError, OpenAICompatibleClient
 from .chunking import chunk_document
 from .config import settings
 from .document_parser import parse_document
 from .graph_builder import build_graph
 from .heuristics import heuristic_extract
+from .model_provider import ModelProviderError, OpenAICompatibleClient
+from .qwen_provider import QwenClient
 from .schemas import (
     AnalysisResult,
     Chunk,
@@ -45,9 +46,9 @@ class PipelineState(TypedDict, total=False):
 
 
 def provider_client(provider: str) -> OpenAICompatibleClient:
-    if provider != "kimi":
+    if provider != "qwen":
         raise ValueError(f"Unsupported provider: {provider}")
-    return KimiClient(settings)
+    return QwenClient(settings)
 
 
 def create_pipeline(progress: ProgressCallback):
@@ -58,7 +59,13 @@ def create_pipeline(progress: ProgressCallback):
             Path(state["file_path"]),
             state["filename"],
         )
-        return {"document": document}
+        return {
+            "document": document,
+            "warnings": [
+                *state.get("warnings", []),
+                *document.warnings,
+            ],
+        }
 
     async def chunk_node(state: PipelineState):
         await progress("chunk", 28, "正在按章节与位置生成 chunk")
@@ -71,8 +78,8 @@ def create_pipeline(progress: ProgressCallback):
 
     async def extract_node(state: PipelineState):
         chunks = state["chunks"]
-        provider = state.get("provider", "kimi")
-        model = state.get("model") or settings.kimi_model
+        provider = state.get("provider", "qwen")
+        model = state.get("model") or settings.qwen_model
         client = provider_client(provider)
         warnings = list(state.get("warnings", []))
         use_ai = state.get("use_ai", True)

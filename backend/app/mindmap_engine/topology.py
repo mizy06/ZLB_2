@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
+from dataclasses import dataclass
 
 import networkx as nx
 from ortools.sat.python import cp_model
 
+from .normalize import is_publishable_node_label
 from .schemas import (
     CrossLink,
     NormalizedGraph,
@@ -17,6 +19,29 @@ from .schemas import (
     TreeEdge,
 )
 from .validate import build_quality_report
+
+
+@dataclass(frozen=True)
+class TopologyLimits:
+    max_active_nodes: int = 150
+    max_root_fanout: int = 8
+    max_node_fanout: int = 12
+
+    def __post_init__(self) -> None:
+        if (
+            self.max_active_nodes < 1
+            or self.max_root_fanout < 1
+            or self.max_node_fanout < 1
+        ):
+            raise ValueError("topology limits must be positive")
+
+
+DEFAULT_TOPOLOGY_LIMITS = TopologyLimits()
+STRICT_PAGE_TOPOLOGY_LIMITS = TopologyLimits(
+    max_active_nodes=512,
+    max_root_fanout=8,
+    max_node_fanout=24,
+)
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -33,6 +58,38 @@ def _edge_from_candidate(candidate: NormalizedParentCandidate) -> TreeEdge:
         score=candidate.score,
         provisional=candidate.provisional,
         evidence=candidate.evidence,
+    )
+
+
+def _candidate_is_selectable(candidate: NormalizedParentCandidate) -> bool:
+    if candidate.provisional:
+        return True
+    return (
+        candidate.classification == "direct_parent"
+        and bool(candidate.evidence)
+    )
+
+
+def _node_is_eligible(node: NormalizedNode) -> bool:
+    if not is_publishable_node_label(node):
+        return False
+    if node.is_root_candidate:
+        return True
+    return bool(
+        node.evidence
+        or node.support_unit_ids
+        or node.media_asset_ids
+    )
+
+
+def _fanout_limit(
+    node: NormalizedNode,
+    limits: TopologyLimits,
+) -> int:
+    return (
+        limits.max_root_fanout
+        if node.is_root_candidate
+        else limits.max_node_fanout
     )
 
 
@@ -157,7 +214,12 @@ def _review_selected_structure(
                         {
                             "parent_id": item.parent_id,
                             "score": item.score,
+                            "classification": item.classification,
                             "provisional": item.provisional,
+                            "evidence": [
+                                evidence.model_dump(mode="json")
+                                for evidence in item.evidence
+                            ],
                         }
                         for item in sorted(
                             candidates_by_child[edge.target],
@@ -201,6 +263,10 @@ def _review_selected_structure(
                             "parent_id": item.parent_id,
                             "score": item.score,
                             "classification": item.classification,
+                            "evidence": [
+                                evidence.model_dump(mode="json")
+                                for evidence in item.evidence
+                            ],
                         }
                         for item in ranked[:5]
                     ],
@@ -208,9 +274,44 @@ def _review_selected_structure(
             )
 
     for node in active_nodes:
+        fallback_candidate = any(
+            temp_id.startswith("coverage_")
+            or temp_id.startswith("tmp_")
+            or ":tmp_" in temp_id
+            for temp_id in node.temp_ids
+        )
+        if fallback_candidate:
+            reviews.append(
+                ReviewItem(
+                    id=_stable_id("review", "fallback_node", node.id),
+                    type="uncovered_content",
+                    risk_score=round(max(0.55, 1 - node.confidence), 4),
+                    subject_ids=[node.id],
+                    reason=(
+                        "该节点来自启发式降级或覆盖补点，"
+                        "只能作为待审候选，不能静默正式发布。"
+                    ),
+                    alternatives=[
+                        {
+                            "node_id": node.id,
+                            "name": node.name,
+                            "confidence": node.confidence,
+                        }
+                    ],
+                )
+            )
         if node.origin not in {"abstractive", "structural"}:
             continue
-        support_count = len(node.support_unit_ids) + len(node.evidence)
+        support_count = len(
+            {
+                *node.support_unit_ids,
+                *[
+                    item.unit_id or item.chunk_id
+                    for item in node.evidence
+                    if item.unit_id or item.chunk_id
+                ],
+            }
+        )
         margin = node.activation_score - node.activation_cost
         if support_count < 2 or margin < 0.15:
             reviews.append(
@@ -234,37 +335,64 @@ def _review_selected_structure(
 
 def _solve_with_cp_sat(
     request: SolveRequest,
+    limits: TopologyLimits,
 ) -> tuple[str, list[NormalizedNode], list[TreeEdge], str]:
     graph = request.graph
     nodes = graph.nodes
-    node_by_id = {node.id: node for node in nodes}
-    roots = [node for node in nodes if node.is_root_candidate]
+    source_order = {
+        node.id: index
+        for index, node in enumerate(nodes)
+    }
+    ordered_nodes = sorted(nodes, key=lambda item: item.id)
+    node_by_id = {node.id: node for node in ordered_nodes}
+    roots = [node for node in ordered_nodes if node.is_root_candidate]
     if not roots:
         raise ValueError("归一图没有根候选。")
+    selectable_candidates = sorted(
+        (
+            candidate
+            for candidate in graph.parent_candidates
+            if (
+                candidate.parent_id in node_by_id
+                and candidate.child_id in node_by_id
+                and _candidate_is_selectable(candidate)
+            )
+        ),
+        key=lambda item: (
+            item.child_id,
+            item.parent_id,
+            item.provisional,
+            -item.score,
+        ),
+    )
 
     model = cp_model.CpModel()
     active = {
         node.id: model.new_bool_var(f"active_{index}")
-        for index, node in enumerate(nodes)
+        for index, node in enumerate(ordered_nodes)
     }
     depth = {
         node.id: model.new_int_var(0, request.max_depth, f"depth_{index}")
-        for index, node in enumerate(nodes)
+        for index, node in enumerate(ordered_nodes)
     }
     edge_vars = {
         (candidate.parent_id, candidate.child_id): model.new_bool_var(
             f"edge_{index}"
         )
-        for index, candidate in enumerate(graph.parent_candidates)
+        for index, candidate in enumerate(selectable_candidates)
     }
 
     root_ids = {node.id for node in roots}
     model.add(sum(active[node.id] for node in roots) == 1)
+    model.add(
+        sum(active.values())
+        <= min(limits.max_active_nodes, len(ordered_nodes))
+    )
 
     incoming: dict[str, list] = defaultdict(list)
     outgoing: dict[str, list] = defaultdict(list)
     candidate_by_pair: dict[tuple[str, str], NormalizedParentCandidate] = {}
-    for candidate in graph.parent_candidates:
+    for candidate in selectable_candidates:
         pair = (candidate.parent_id, candidate.child_id)
         variable = edge_vars[pair]
         candidate_by_pair[pair] = candidate
@@ -276,20 +404,37 @@ def _solve_with_cp_sat(
             depth[candidate.child_id] == depth[candidate.parent_id] + 1
         ).only_enforce_if(variable)
 
-    for node in nodes:
+    for node in ordered_nodes:
         node_active = active[node.id]
         model.add(depth[node.id] <= request.max_depth * node_active)
+        if outgoing[node.id]:
+            model.add(
+                sum(outgoing[node.id])
+                <= _fanout_limit(node, limits) * node_active
+            )
         if node.id in root_ids:
             model.add(depth[node.id] == 0)
             model.add(sum(incoming[node.id]) == 0)
             continue
 
-        if not node.optional:
+        eligible = _node_is_eligible(node)
+        if not eligible:
+            model.add(node_active == 0)
+        elif not node.optional:
             model.add(node_active == 1)
+        elif node.activation_score <= node.activation_cost:
+            # A selectable edge is necessary for topology, but it is not a
+            # reward for publishing a weak candidate. Negative/zero semantic
+            # activation margin must remain rejectable.
+            model.add(node_active == 0)
         model.add(depth[node.id] >= node_active)
         model.add(sum(incoming[node.id]) == node_active)
 
-        if node.optional and node.origin in {"abstractive", "structural"}:
+        if (
+            eligible
+            and node.optional
+            and node.origin in {"abstractive", "structural"}
+        ):
             children = outgoing[node.id]
             if len(children) < 2:
                 model.add(node_active == 0)
@@ -297,33 +442,46 @@ def _solve_with_cp_sat(
                 model.add(sum(children) >= 2 * node_active)
 
     objective_terms = []
-    for pair, variable in edge_vars.items():
+    edge_count = len(edge_vars)
+    for tie_index, (pair, variable) in enumerate(sorted(edge_vars.items())):
         candidate = candidate_by_pair[pair]
-        edge_score = int(round(candidate.score * 1000))
+        edge_score = int(round(candidate.score * 1_000_000))
         if candidate.provisional:
-            edge_score -= 350
+            edge_score -= 350_000
+        edge_score += edge_count - tie_index
         objective_terms.append(edge_score * variable)
 
-    for node in nodes:
+    for node_index, node in enumerate(ordered_nodes):
         if node.id in root_ids:
-            objective_terms.append(int(round(node.confidence * 300)) * active[node.id])
+            objective_terms.append(
+                (
+                    int(round(node.confidence * 300_000))
+                    + len(ordered_nodes)
+                    - node_index
+                )
+                * active[node.id]
+            )
         elif node.optional:
             activation_value = int(
-                round((node.activation_score - node.activation_cost) * 250)
+                round(
+                    (node.activation_score - node.activation_cost)
+                    * 250_000
+                )
             )
             objective_terms.append(activation_value * active[node.id])
 
     model.maximize(sum(objective_terms))
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = request.time_limit_seconds
-    solver.parameters.num_search_workers = 8
+    solver.parameters.num_search_workers = 1
+    solver.parameters.random_seed = 0
     status = solver.solve(model)
     status_name = solver.status_name(status)
     if status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
         raise RuntimeError(f"CP-SAT 没有找到可行解：{status_name}")
 
     active_nodes = [
-        node for node in nodes if solver.value(active[node.id]) == 1
+        node for node in ordered_nodes if solver.value(active[node.id]) == 1
     ]
     selected_edges = [
         _edge_from_candidate(candidate_by_pair[pair])
@@ -343,110 +501,189 @@ def _solve_with_cp_sat(
     active_nodes.sort(
         key=lambda item: (
             selected_depths[item.id],
-            item.branch_id or "",
-            item.name,
+            source_order[item.id],
         )
     )
-    selected_edges.sort(key=lambda item: (selected_depths[item.target], item.target))
+    selected_edges.sort(
+        key=lambda item: (
+            selected_depths[item.target],
+            source_order[item.target],
+        )
+    )
     return root_id, active_nodes, selected_edges, status_name
 
 
 def _solve_with_greedy_fallback(
     request: SolveRequest,
+    limits: TopologyLimits,
+    *,
+    _excluded_ids: set[str] | None = None,
 ) -> tuple[str, list[NormalizedNode], list[TreeEdge], str]:
     graph = request.graph
+    excluded_ids = set(_excluded_ids or ())
+    source_order = {
+        node.id: index
+        for index, node in enumerate(graph.nodes)
+    }
     roots = sorted(
         (node for node in graph.nodes if node.is_root_candidate),
-        key=lambda item: item.confidence,
-        reverse=True,
+        key=lambda item: (-item.confidence, item.id),
     )
     if not roots:
         raise ValueError("归一图没有根候选。")
     root = roots[0]
-    active_nodes = [
+    node_by_id = {node.id: node for node in graph.nodes}
+    eligible_nodes = [
         node
         for node in graph.nodes
-        if node.id == root.id
-        or (
+        if (
             not node.is_root_candidate
+            and node.id not in excluded_ids
+            and _node_is_eligible(node)
             and (
                 not node.optional
-                or node.activation_score - node.activation_cost >= 0.15
+                or node.activation_score > node.activation_cost
             )
         )
     ]
-    active_ids = {node.id for node in active_nodes}
     candidates_by_child: dict[str, list[NormalizedParentCandidate]] = defaultdict(list)
     for candidate in graph.parent_candidates:
-        if candidate.parent_id in active_ids and candidate.child_id in active_ids:
+        if (
+            candidate.parent_id in node_by_id
+            and candidate.child_id in node_by_id
+            and candidate.parent_id not in excluded_ids
+            and candidate.child_id not in excluded_ids
+            and _candidate_is_selectable(candidate)
+        ):
             candidates_by_child[candidate.child_id].append(candidate)
 
     selected: list[TreeEdge] = []
     tree = nx.DiGraph()
-    tree.add_nodes_from(active_ids)
-    for child in sorted(
-        (node for node in active_nodes if node.id != root.id),
-        key=lambda item: (item.branch_id or "", -item.confidence, item.name),
+    tree.add_node(root.id)
+    active_ids = {root.id}
+    depths = {root.id: 0}
+    fanout: dict[str, int] = defaultdict(int)
+    pending = sorted(
+        eligible_nodes,
+        key=lambda item: (
+            item.optional,
+            item.role != "branch_topic",
+            -(item.activation_score - item.activation_cost),
+            -item.confidence,
+            source_order[item.id],
+        ),
+    )
+
+    made_progress = True
+    while (
+        pending
+        and made_progress
+        and len(active_ids) < limits.max_active_nodes
     ):
-        ranked = sorted(
-            candidates_by_child[child.id],
-            key=lambda item: (item.provisional, -item.score),
-        )
-        choice: NormalizedParentCandidate | None = None
-        for candidate in ranked:
-            if candidate.parent_id == child.id:
+        made_progress = False
+        remaining: list[NormalizedNode] = []
+        for child in pending:
+            if len(active_ids) >= limits.max_active_nodes:
+                remaining.append(child)
                 continue
-            if nx.has_path(tree, child.id, candidate.parent_id):
-                continue
-            choice = candidate
-            break
-        if choice is None:
-            choice = NormalizedParentCandidate(
-                parent_id=root.id,
-                child_id=child.id,
-                score=0,
-                classification="uncertain",
-                provisional=True,
+            ranked = sorted(
+                candidates_by_child[child.id],
+                key=lambda item: (
+                    item.provisional,
+                    -item.score,
+                    item.parent_id,
+                ),
             )
-        edge = _edge_from_candidate(choice)
-        selected.append(edge)
-        tree.add_edge(edge.source, edge.target)
+            choice: NormalizedParentCandidate | None = None
+            for candidate in ranked:
+                if candidate.parent_id not in active_ids:
+                    continue
+                parent = node_by_id[candidate.parent_id]
+                if fanout[parent.id] >= _fanout_limit(parent, limits):
+                    continue
+                if depths[parent.id] + 1 > request.max_depth:
+                    continue
+                choice = candidate
+                break
 
-    depths = nx.single_source_shortest_path_length(tree, root.id)
-    for edge in list(selected):
-        if depths.get(edge.target, request.max_depth + 1) <= request.max_depth:
-            continue
-        selected.remove(edge)
-        tree.remove_edge(edge.source, edge.target)
-        replacement = TreeEdge(
-            id=_stable_id("tree", root.id, edge.target),
-            source=root.id,
-            target=edge.target,
-            score=0,
-            provisional=True,
+            if choice is None and not child.optional:
+                if (
+                    fanout[root.id] < _fanout_limit(root, limits)
+                    and request.max_depth >= 1
+                ):
+                    choice = NormalizedParentCandidate(
+                        parent_id=root.id,
+                        child_id=child.id,
+                        score=0,
+                        classification="uncertain",
+                        provisional=True,
+                    )
+            if choice is None:
+                remaining.append(child)
+                continue
+
+            edge = _edge_from_candidate(choice)
+            selected.append(edge)
+            tree.add_node(child.id)
+            tree.add_edge(edge.source, edge.target)
+            active_ids.add(child.id)
+            depths[child.id] = depths[edge.source] + 1
+            fanout[edge.source] += 1
+            made_progress = True
+        pending = remaining
+
+    invalid_optional_abstractions = {
+        node_id
+        for node_id in active_ids
+        if (
+            node_id != root.id
+            and node_by_id[node_id].optional
+            and node_by_id[node_id].origin in {"abstractive", "structural"}
+            and fanout[node_id] < 2
         )
-        selected.append(replacement)
-        tree.add_edge(root.id, edge.target)
+    }
+    if invalid_optional_abstractions:
+        return _solve_with_greedy_fallback(
+            request,
+            limits,
+            _excluded_ids=excluded_ids | invalid_optional_abstractions,
+        )
 
+    active_nodes = [
+        node_by_id[node_id]
+        for node_id in active_ids
+    ]
     active_nodes.sort(
         key=lambda item: (
-            nx.shortest_path_length(tree, root.id, item.id)
-            if nx.has_path(tree, root.id, item.id)
-            else request.max_depth + 1,
-            item.name,
+            depths.get(item.id, request.max_depth + 1),
+            source_order[item.id],
+        )
+    )
+    selected.sort(
+        key=lambda edge: (
+            depths.get(edge.target, request.max_depth + 1),
+            source_order[edge.target],
         )
     )
     return root.id, active_nodes, selected, "GREEDY_FALLBACK"
 
 
-def solve_topology(request: SolveRequest) -> SolveResponse:
+def solve_topology(
+    request: SolveRequest,
+    *,
+    limits: TopologyLimits = DEFAULT_TOPOLOGY_LIMITS,
+) -> SolveResponse:
     warnings = list(request.graph.warnings)
     try:
-        root_id, active_nodes, tree_edges, solver_status = _solve_with_cp_sat(request)
+        root_id, active_nodes, tree_edges, solver_status = _solve_with_cp_sat(
+            request,
+            limits,
+        )
     except Exception as exc:
         warnings.append(f"CP-SAT 求解失败，已使用确定性贪心兜底：{exc}")
         root_id, active_nodes, tree_edges, solver_status = _solve_with_greedy_fallback(
-            request
+            request,
+            limits,
         )
 
     review_items = _review_selected_structure(
@@ -461,6 +698,9 @@ def solve_topology(request: SolveRequest) -> SolveResponse:
         active_nodes,
         tree_edges,
         len(cross_links),
+        max_nodes=limits.max_active_nodes,
+        max_root_fanout=limits.max_root_fanout,
+        max_node_fanout=limits.max_node_fanout,
     )
     warnings.extend(quality.warnings)
     return SolveResponse(

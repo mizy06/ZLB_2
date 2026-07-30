@@ -1,17 +1,37 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from io import BytesIO
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from PIL import Image
+from pptx import Presentation
+from pptx.util import Inches
 
 from backend.app.architecture_schemas import (
+    ContentUnit,
+    ModelSelection,
     ReviewItemView,
     ReviewResolutionRequest,
 )
+from backend.app.agents import RoleRuntime
 from backend.app.blackboard import SQLiteBlackboard
-from backend.app.cplus_pipeline import run_cplus_pipeline
+from backend.app.cplus_pipeline import (
+    _merge_content_units,
+    run_cplus_pipeline,
+)
 from backend.app.export_service import render_mindmap_png
 from backend.app.review_service import resolve_review_item
+from backend.app.config import settings
+from backend.app.mindmap_engine.schemas import RenderResponse
+from backend.app.mindmap_engine.schemas import EvidenceRef, NodeCandidateIn
+from backend.app.pdf_page_knowledge import PdfPageKnowledgeResult
+from backend.app.pdf_page_transcription import PdfPageTranscriptionResult
+from backend.app.schemas import ParsedDocument, SourceBlock
 
 
 SAMPLE = """# 机器学习基础
@@ -39,19 +59,440 @@ async def noop_progress(stage: str, progress: int, message: str) -> None:
 
 
 class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
+    def test_vlm_enrichment_replaces_the_weak_native_visual_unit(self):
+        native = ContentUnit(
+            id="visual:native-1",
+            document_id="doc",
+            kind="visual",
+            status="uncovered",
+            asset_id="native-1",
+            visual_kind="picture",
+            visual_action="attach_as_media",
+            summary="",
+            knowledge_score=0.25,
+        )
+        enriched = native.model_copy(
+            update={
+                "visual_kind": "group_diagram",
+                "visual_action": "standalone_node",
+                "summary": "课程结构图",
+                "knowledge_claims": ["A 包含 B"],
+                "knowledge_score": 0.86,
+            }
+        )
+
+        merged = _merge_content_units([native], [enriched])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].id, native.id)
+        self.assertEqual(merged[0].summary, "课程结构图")
+        self.assertEqual(merged[0].visual_action, "standalone_node")
+        self.assertEqual(merged[0].knowledge_score, 0.86)
+
+    async def test_visual_render_receives_the_configured_page_budget(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "course.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(
+                presentation.slide_layouts[6]
+            )
+            textbox = slide.shapes.add_textbox(
+                Inches(1),
+                Inches(1),
+                Inches(6),
+                Inches(1),
+            )
+            textbox.text = "机器学习课程"
+            presentation.save(path)
+            blackboard = SQLiteBlackboard(root / "blackboard.sqlite3")
+            rendered = RenderResponse(
+                render_id="render-budget-test",
+                filename=path.name,
+                pages=[],
+                native_visuals=[],
+                warnings=[],
+            )
+
+            with patch(
+                "backend.app.cplus_pipeline.render_document",
+                return_value=rendered,
+            ) as render:
+                await run_cplus_pipeline(
+                    task_id="task_visual_budget",
+                    file_path=path,
+                    filename=path.name,
+                    model="qwen3.8-max-preview",
+                    provider="qwen",
+                    mode="standard",
+                    use_ai=False,
+                    progress=noop_progress,
+                    blackboard=blackboard,
+                )
+
+        self.assertEqual(
+            render.call_args.kwargs["max_pages"],
+            settings.vision_max_pages,
+        )
+
+    async def test_strict_pdf_transcription_replaces_parser_blocks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "course.pdf"
+            path.write_bytes(b"%PDF fixture")
+            data_root = root / "data"
+            render_dir = data_root / "assets" / "strict-render"
+            render_dir.mkdir(parents=True)
+            image_path = render_dir / "page_0001.png"
+            Image.new("RGB", (320, 240), "white").save(image_path)
+            rendered = RenderResponse.model_validate(
+                {
+                    "render_id": "strict-render",
+                    "filename": path.name,
+                    "pages": [
+                        {
+                            "asset_id": "page_0001",
+                            "render_id": "strict-render",
+                            "filename": image_path.name,
+                            "url": "/page_0001.png",
+                            "page": 1,
+                            "width": 320,
+                            "height": 240,
+                        }
+                    ],
+                    "native_visuals": [],
+                    "warnings": [],
+                }
+            )
+            parsed = ParsedDocument(
+                document_id="doc_strict_pdf",
+                filename=path.name,
+                file_type="pdf",
+                title="旧解析标题",
+                blocks=[
+                    SourceBlock(
+                        text="旧几何解析残缺公式 10^6",
+                        page=1,
+                    )
+                ],
+                parse_metadata={"pdf_page_count": 1},
+            )
+            transcribed_document = parsed.model_copy(
+                update={
+                    "blocks": [
+                        SourceBlock(
+                            text="视觉转录公式 10^-6",
+                            page=1,
+                            heading="视觉转录",
+                        )
+                    ],
+                    "parse_metadata": {
+                        **parsed.parse_metadata,
+                        "pdf_page_transcription": {
+                            "complete": True,
+                            "accepted_pages": [1],
+                            "failed_pages": [],
+                        },
+                    },
+                }
+            )
+            transcription = PdfPageTranscriptionResult(
+                document=transcribed_document,
+                complete=True,
+                accepted_pages=[1],
+                called_pages=[1],
+            )
+            unavailable = RoleRuntime(
+                provider="qwen",
+                model="qwen3.8-max-preview",
+                client=None,
+                available=False,
+            )
+            vision = RoleRuntime(
+                provider="qwen",
+                model="qwen3-vl-plus",
+                client=None,
+                available=False,
+            )
+            selection = ModelSelection(
+                generator_provider="qwen",
+                verifier_provider="qwen",
+                vision_provider="qwen",
+            )
+            blackboard = SQLiteBlackboard(root / "blackboard.sqlite3")
+
+            with (
+                patch(
+                    "backend.app.cplus_pipeline.settings",
+                    replace(
+                        settings,
+                        mindmap_data_dir=data_root,
+                        pdf_transcription_mode="vision_strict",
+                    ),
+                ),
+                patch(
+                    "backend.app.cplus_pipeline.parse_document",
+                    return_value=parsed,
+                ),
+                patch(
+                    "backend.app.cplus_pipeline.render_document",
+                    return_value=rendered,
+                ) as render,
+                patch(
+                    "backend.app.cplus_pipeline.transcribe_pdf_pages",
+                    return_value=transcription,
+                ) as transcribe,
+                patch(
+                    "backend.app.cplus_pipeline.build_role_runtimes",
+                    return_value=(
+                        unavailable,
+                        unavailable,
+                        vision,
+                        None,
+                        None,
+                        selection,
+                        [],
+                    ),
+                ),
+            ):
+                result = await run_cplus_pipeline(
+                    task_id="task_strict_pdf",
+                    file_path=path,
+                    filename=path.name,
+                    model="qwen3.8-max-preview",
+                    provider="qwen",
+                    mode="standard",
+                    use_ai=True,
+                    progress=noop_progress,
+                    blackboard=blackboard,
+                )
+
+        self.assertIsNone(render.call_args.kwargs["max_pages"])
+        self.assertEqual(
+            render.call_args.kwargs["pdf_dpi"],
+            settings.pdf_transcription_dpi,
+        )
+        transcribe.assert_awaited_once()
+        self.assertEqual(
+            result.document.blocks[0].text,
+            "视觉转录公式 10^-6",
+        )
+        self.assertNotIn("旧几何解析残缺公式", result.document.blocks[0].text)
+        self.assertNotIn(
+            "pdf_page_transcription",
+            result.degraded_components,
+        )
+
+    async def test_page_knowledge_seeds_nodes_without_retranscription(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "course.pdf"
+            path.write_bytes(b"%PDF fixture")
+            data_root = root / "data"
+            render_dir = data_root / "assets" / "knowledge-render"
+            render_dir.mkdir(parents=True)
+            image_path = render_dir / "page_0001.png"
+            Image.new("RGB", (320, 240), "white").save(image_path)
+            rendered = RenderResponse.model_validate(
+                {
+                    "render_id": "knowledge-render",
+                    "filename": path.name,
+                    "pages": [
+                        {
+                            "asset_id": "page_0001",
+                            "render_id": "knowledge-render",
+                            "filename": image_path.name,
+                            "url": "/page_0001.png",
+                            "page": 1,
+                            "width": 320,
+                            "height": 240,
+                        }
+                    ],
+                    "native_visuals": [],
+                    "warnings": [],
+                }
+            )
+            parsed = ParsedDocument(
+                document_id="doc_page_knowledge",
+                filename=path.name,
+                file_type="pdf",
+                title="激光课程",
+                blocks=[
+                    SourceBlock(
+                        text="旧几何解析残缺公式 Δν/ν≈10^6",
+                        page=1,
+                    )
+                ],
+                parse_metadata={"pdf_page_count": 1},
+            )
+            unit = ContentUnit(
+                id="pdfk:p0001:linewidth",
+                document_id=parsed.document_id,
+                kind="text",
+                branch_hint="激光",
+                importance=0.9,
+                text="Δν/ν≈10^-6",
+                heading_path=["激光"],
+                unit_role="formula",
+                evidence_excerpt="Δν/ν≈10^-6",
+                page=1,
+                bbox=[0.1, 0.2, 0.7, 0.2],
+                asset_id="page_0001",
+            )
+            candidate = NodeCandidateIn(
+                temp_id=f"direct:{unit.id}",
+                name="谱线相对宽度",
+                type="formula",
+                role="formula",
+                definition="谱线相对宽度满足 Δν/ν≈10^-6",
+                origin="explicit",
+                confidence=0.98,
+                optional=True,
+                evidence=[
+                    EvidenceRef(
+                        unit_id=unit.id,
+                        excerpt=unit.evidence_excerpt,
+                        page=1,
+                        bbox=unit.bbox,
+                        asset_id=unit.asset_id,
+                    )
+                ],
+                support_unit_ids=[unit.id],
+            )
+            knowledge_document = parsed.model_copy(
+                update={
+                    "blocks": [
+                        SourceBlock(
+                            text=unit.evidence_excerpt,
+                            page=1,
+                            heading="激光",
+                        )
+                    ],
+                    "parse_metadata": {
+                        **parsed.parse_metadata,
+                        "pdf_page_knowledge": {
+                            "complete": True,
+                            "accepted_pages": [1],
+                            "failed_pages": [],
+                            "node_count": 1,
+                        },
+                    },
+                }
+            )
+            knowledge = PdfPageKnowledgeResult(
+                document=knowledge_document,
+                content_units=[unit],
+                node_candidates=[candidate],
+                complete=True,
+                accepted_pages=[1],
+                degraded_pages=[1],
+                called_pages=[1],
+            )
+            unavailable = RoleRuntime(
+                provider="qwen",
+                model="qwen3.8-max-preview",
+                client=None,
+                available=False,
+            )
+            selection = ModelSelection(
+                generator_provider="qwen",
+                verifier_provider="qwen",
+                vision_provider="qwen",
+            )
+            blackboard = SQLiteBlackboard(root / "blackboard.sqlite3")
+
+            with (
+                patch(
+                    "backend.app.cplus_pipeline.settings",
+                    replace(
+                        settings,
+                        mindmap_data_dir=data_root,
+                        pdf_transcription_mode="vision_nodes_strict",
+                        pdf_page_extraction_mode="layout_nodes",
+                        pdf_page_knowledge_prompt_version=(
+                            "page-knowledge-stage-v1"
+                        ),
+                    ),
+                ),
+                patch(
+                    "backend.app.cplus_pipeline.parse_document",
+                    return_value=parsed,
+                ),
+                patch(
+                    "backend.app.cplus_pipeline.render_document",
+                    return_value=rendered,
+                ),
+                patch(
+                    "backend.app.cplus_pipeline.extract_pdf_page_knowledge",
+                    return_value=knowledge,
+                    create=True,
+                ) as extract,
+                patch(
+                    "backend.app.cplus_pipeline.transcribe_pdf_pages",
+                ) as transcribe,
+                patch(
+                    "backend.app.cplus_pipeline.analyze_visual_pages",
+                ) as analyze_visual,
+                patch(
+                    "backend.app.cplus_pipeline.build_role_runtimes",
+                    return_value=(
+                        unavailable,
+                        unavailable,
+                        unavailable,
+                        None,
+                        None,
+                        selection,
+                        [],
+                    ),
+                ),
+            ):
+                result = await run_cplus_pipeline(
+                    task_id="task_page_knowledge",
+                    file_path=path,
+                    filename=path.name,
+                    model="qwen3.8-max-preview",
+                    provider="qwen",
+                    mode="standard",
+                    use_ai=True,
+                    progress=noop_progress,
+                    blackboard=blackboard,
+                )
+
+        extract.assert_awaited_once()
+        self.assertEqual(
+            extract.call_args.kwargs["extraction_profile"],
+            "layout_nodes",
+        )
+        self.assertEqual(
+            extract.call_args.kwargs["prompt_version"],
+            "page-knowledge-stage-v1",
+        )
+        transcribe.assert_not_awaited()
+        analyze_visual.assert_not_awaited()
+        self.assertIn(
+            "谱线相对宽度",
+            {node.name for node in result.nodes},
+        )
+        self.assertNotIn("10^6", str(result.model_dump(mode="json")))
+        self.assertIn(
+            "pdf_page_knowledge",
+            result.degraded_components,
+        )
+
     async def test_heuristic_pipeline_builds_versioned_rooted_tree(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             path = root / "course.md"
             path.write_text(SAMPLE, encoding="utf-8")
-            blackboard = SQLiteBlackboard(root / "blackboard.sqlite3")
+            database_path = root / "blackboard.sqlite3"
+            blackboard = SQLiteBlackboard(database_path)
 
             result = await run_cplus_pipeline(
                 task_id="task_demo",
                 file_path=path,
                 filename=path.name,
-                model="kimi-k3",
-                provider="kimi",
+                model="qwen3.8-max-preview",
+                provider="qwen",
                 mode="standard",
                 use_ai=False,
                 progress=noop_progress,
@@ -81,8 +522,17 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(history[0]["title"], result.document.title)
             self.assertEqual(history[0]["node_count"], len(result.nodes))
             self.assertEqual(history[0]["graph_version"], 1)
+            reopened = SQLiteBlackboard(database_path)
+            self.assertEqual(len(reopened.list_history()), 1)
+            self.assertEqual(
+                reopened.load_latest_result("task_demo").root_id,
+                result.root_id,
+            )
             png = render_mindmap_png(result)
             self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+            with Image.open(BytesIO(png)) as image:
+                aspect_ratio = max(image.size) / min(image.size)
+            self.assertLessEqual(aspect_ratio, 2)
 
     async def test_human_review_creates_new_graph_version(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -94,8 +544,8 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                 task_id="task_review",
                 file_path=path,
                 filename=path.name,
-                model="kimi-k3",
-                provider="kimi",
+                model="qwen3.8-max-preview",
+                provider="qwen",
                 mode="standard",
                 use_ai=False,
                 progress=noop_progress,
@@ -121,7 +571,10 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                 }
             )
             blackboard.save_review_items(result.run_id, [review])
-            blackboard.save_graph_version(result.run_id, augmented)
+            augmented_version = blackboard.save_graph_version(
+                result.run_id,
+                augmented,
+            )
 
             updated = resolve_review_item(
                 blackboard=blackboard,
@@ -131,6 +584,7 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                     action="rename",
                     label="人工确认主题",
                     reason="更符合课程术语",
+                    expected_graph_version=augmented_version,
                 ),
             )
 
@@ -144,6 +598,41 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "resolved",
             )
             self.assertEqual(updated.decision_records[-1].actor, "human")
+
+    async def test_model_preflight_failure_marks_run_failed(self):
+        async def fail_preflight(**kwargs):
+            raise RuntimeError("model preflight failed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "course.md"
+            path.write_text(SAMPLE, encoding="utf-8")
+            database_path = root / "blackboard.sqlite3"
+            blackboard = SQLiteBlackboard(database_path)
+
+            with patch(
+                "backend.app.cplus_pipeline.build_role_runtimes",
+                fail_preflight,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "model preflight failed"):
+                    await run_cplus_pipeline(
+                        task_id="task_preflight_failure",
+                        file_path=path,
+                        filename=path.name,
+                        model="qwen3.8-max-preview",
+                        provider="qwen",
+                        mode="standard",
+                        use_ai=True,
+                        progress=noop_progress,
+                        blackboard=blackboard,
+                    )
+
+            with sqlite3.connect(database_path) as connection:
+                status, stage = connection.execute(
+                    "SELECT status, stage FROM runs WHERE task_id = ?",
+                    ("task_preflight_failure",),
+                ).fetchone()
+            self.assertEqual((status, stage), ("failed", "failed"))
 
 
 if __name__ == "__main__":

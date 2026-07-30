@@ -1,0 +1,20 @@
+{
+  "baseline_commit": "297da939835dc9b748a33bd80d368702d7de687d",
+  "frozen_at": "2026-07-29",
+  "model_names": [
+    "HistoryItem",
+    "JobView",
+    "MindMapResult",
+    "ReviewResolutionRequest",
+    "ReviewResolutionResponse",
+    "EngineQualityReport",
+    "NormalizedGraph",
+    "RenderResponse",
+    "SolveResponse"
+  ],
+  "model_schema_digest": "sha256:f3899ad3363a7b6b0ba3ef9ac42097f2d95d1e8a02bef92caeb30237ecf235f1",
+  "openapi_digest": "sha256:111e35217a1e0c1896ec8b860658b5f9be544e36cb2132686fac5ed73ec116ea",
+  "openapi_path_count": 23,
+  "openapi_schema_count": 48,
+  "snapshot_version": "1.0.0"
+}

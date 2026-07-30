@@ -1,0 +1,44 @@
+[
+  {
+    "page": 1,
+    "text": "第28章    原子中的电子\n§28.1  氢原子的量子力学处理\n§28.2  电子自旋与自旋轨道耦合\n1",
+    "expected_heading": "第28章 原子中的电子",
+    "expected_status": "uncovered"
+  },
+  {
+    "page": 26,
+    "text": "…………\n26",
+    "expected_heading": "第28章 原子中的电子",
+    "expected_status": "rejected"
+  },
+  {
+    "page": 30,
+    "text": "z \uf071 3 Y10 (\uf071 , \uf06a ) = cos \uf071 4\uf070 y 3 Y10 (\uf071 , \uf06a ) = cos2 \uf071 2\n\n4\uf070\n\n3 Y1\uf0b11 (\uf071 , \uf06a ) = \uf06d sin\uf071 \uf0d7 e \uf0b1 i\uf06a 8\uf070 \uf071 z 3 y Y1\uf0b11 (\uf071 , \uf06a ) = sin2 \uf071 2\n\n8\uf070 30",
+    "expected_heading": "第28章 原子中的电子",
+    "expected_status": "deferred"
+  },
+  {
+    "page": 53,
+    "text": "*§28.3 微观粒子的不可分辨性，\n费米子和玻色子\n一. 微观粒子的全同性",
+    "expected_heading": "§28.3 微观粒子的不可分辨性，费米子和玻色子",
+    "expected_status": "uncovered"
+  },
+  {
+    "page": 63,
+    "text": "单选题  1分\n氢原子中处于2p状态的电子，描述其量子态的四个量子数可能取的值为\nA\nB\nC\nD\n提交\n63",
+    "expected_heading": "§28.3 微观粒子的不可分辨性，费米子和玻色子",
+    "expected_status": "deferred"
+  },
+  {
+    "page": 64,
+    "text": "§28.5 激光\n（Laser）\n64",
+    "expected_heading": "§28.5 激光",
+    "expected_status": "uncovered"
+  },
+  {
+    "page": 78,
+    "text": "亚稳态        亚稳态\n碰撞转移\n电\n子\n碰\n撞\n跃\n迁\n与管壁碰撞发生\n“无辐射跃迁”",
+    "expected_heading": "§28.5 激光",
+    "expected_status": "uncovered"
+  }
+]

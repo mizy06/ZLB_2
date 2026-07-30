@@ -1,0 +1,64 @@
+{
+  "fixture_version": "1.0.0",
+  "incident": "\u6807\u51c65-\u919b\u548c\u916e.pdf",
+  "instruction_fragments": [
+    "\u5b8c\u6210\u4ee5\u4e0b\u8f6c\u5316"
+  ],
+  "instruction_pages": [
+    53
+  ],
+  "minimum_outline_entry_count": 55,
+  "reaction_pages": [
+    27,
+    34
+  ],
+  "required_continuity_hypotheses": [
+    {
+      "from_page": 13,
+      "relation": "returns_to",
+      "to_page": 9
+    }
+  ],
+  "required_outline_prefixes": [
+    "10.1",
+    "10.2",
+    "10.3",
+    "10.4"
+  ],
+  "required_reaction_fields": [
+    "reactants",
+    "products",
+    "conditions",
+    "arrow",
+    "bbox",
+    "page"
+  ],
+  "required_review_hypothesis_pages": [
+    50
+  ],
+  "required_role_hypotheses": {
+    "10": [
+      "research_aside"
+    ],
+    "11": [
+      "research_aside"
+    ],
+    "12": [
+      "research_aside"
+    ],
+    "50": [
+      "review"
+    ],
+    "53": [
+      "exercise"
+    ]
+  },
+  "forbidden_top_level_labels": [
+    "well-established",
+    "few reports",
+    "Another proton is removed",
+    "\uff08\u4e2d\u6027\u6761\u4ef6\uff09",
+    "\u786e\u5b9a\u919b\u7684\u6bcd\u4f53",
+    "\u7ea7\u9187\u9009\u62e9\u6027\u6c27\u5316"
+  ]
+}

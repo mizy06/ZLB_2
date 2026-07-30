@@ -7,11 +7,14 @@ runtime
 .secrets
 frontend/node_modules
 frontend/dist
+frontend/.pnpm-store
+frontend/.test-dist
+*.tsbuildinfo
 backend/uploads
 ZLB-apiKey-*.csv
 RAM.txt
-kimi.local.env
-kimi.enc.env.age
+*.local.env
+*.enc.env.age
 *.age.pub
 *-identity.txt
 *.pyc

@@ -1,0 +1,493 @@
+{
+  "$defs": {
+    "DocumentEvaluationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "title": "Document Id",
+          "type": "string"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "gate_decision": {
+          "$ref": "#/$defs/PilotGateDecision"
+        },
+        "mean_edge_jaccard": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Edge Jaccard"
+        },
+        "mean_node_jaccard": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Node Jaccard"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/PilotMetricResult"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "minimum_edge_jaccard": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Edge Jaccard"
+        },
+        "minimum_node_jaccard": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Node Jaccard"
+        },
+        "source_group_id": {
+          "title": "Source Group Id",
+          "type": "string"
+        },
+        "split": {
+          "$ref": "#/$defs/PilotSplit"
+        },
+        "stability_decision": {
+          "$ref": "#/$defs/PilotGateDecision"
+        }
+      },
+      "required": [
+        "document_id",
+        "source_group_id",
+        "split",
+        "metrics",
+        "stability_decision",
+        "gate_decision"
+      ],
+      "title": "DocumentEvaluationResult",
+      "type": "object"
+    },
+    "PilotGateDecision": {
+      "enum": [
+        "pass",
+        "block",
+        "incomplete"
+      ],
+      "title": "PilotGateDecision",
+      "type": "string"
+    },
+    "PilotMetric": {
+      "enum": [
+        "claim_precision",
+        "evidence_alignment",
+        "must_have_recall",
+        "region_accounting",
+        "replan_serious_error_recall",
+        "authority_compliance",
+        "direct_parent_precision",
+        "direct_parent_recall",
+        "ancestor_f1",
+        "source_order_score",
+        "branch_purity",
+        "branch_theme_clean_rate",
+        "sibling_granularity_consistency",
+        "fragment_root_free_rate",
+        "published_claim_coverage",
+        "high_value_resolution_rate"
+      ],
+      "title": "PilotMetric",
+      "type": "string"
+    },
+    "PilotMetricResult": {
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "$ref": "#/$defs/PilotMetric"
+        },
+        "passed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passed"
+        },
+        "success_weight": {
+          "minimum": 0,
+          "title": "Success Weight",
+          "type": "number"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        },
+        "total_weight": {
+          "exclusiveMinimum": 0,
+          "title": "Total Weight",
+          "type": "number"
+        },
+        "value": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "metric",
+        "success_weight",
+        "total_weight",
+        "value"
+      ],
+      "title": "PilotMetricResult",
+      "type": "object"
+    },
+    "PilotSplit": {
+      "enum": [
+        "development",
+        "calibration",
+        "sealed_blind"
+      ],
+      "title": "PilotSplit",
+      "type": "string"
+    },
+    "RiskCoveragePoint": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_included_risk": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Maximum Included Risk",
+          "type": "number"
+        },
+        "realized_coverage": {
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Realized Coverage",
+          "type": "number"
+        },
+        "retained_item_count": {
+          "minimum": 1,
+          "title": "Retained Item Count",
+          "type": "integer"
+        },
+        "retained_weight": {
+          "exclusiveMinimum": 0,
+          "title": "Retained Weight",
+          "type": "number"
+        },
+        "selective_risk": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Selective Risk",
+          "type": "number"
+        },
+        "target_coverage": {
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Target Coverage",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target_coverage",
+        "realized_coverage",
+        "selective_risk",
+        "retained_weight",
+        "retained_item_count",
+        "maximum_included_risk"
+      ],
+      "title": "RiskCoveragePoint",
+      "type": "object"
+    },
+    "SliceEvaluationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "document_count": {
+          "minimum": 1,
+          "title": "Document Count",
+          "type": "integer"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "gate_decision": {
+          "$ref": "#/$defs/PilotGateDecision"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/PilotMetricResult"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "slice_key": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Slice Key",
+          "type": "string"
+        },
+        "worst_document_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Worst Document Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "slice_key",
+        "document_count",
+        "metrics",
+        "gate_decision"
+      ],
+      "title": "SliceEvaluationResult",
+      "type": "object"
+    },
+    "SourceGroupLeakage": {
+      "additionalProperties": false,
+      "properties": {
+        "document_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "title": "Document Ids",
+          "type": "array"
+        },
+        "source_group_id": {
+          "title": "Source Group Id",
+          "type": "string"
+        },
+        "splits": {
+          "items": {
+            "$ref": "#/$defs/PilotSplit"
+          },
+          "minItems": 2,
+          "title": "Splits",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_group_id",
+        "splits",
+        "document_ids"
+      ],
+      "title": "SourceGroupLeakage",
+      "type": "object"
+    },
+    "StringValue": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 4096,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "StringValue",
+      "type": "object"
+    }
+  },
+  "$id": "urn:zlb:vnext:schema:pilot-evaluation-report:1.0.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "blockers": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Blockers",
+      "type": "array"
+    },
+    "dataset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Dataset Digest",
+      "type": "string"
+    },
+    "dataset_id": {
+      "pattern": "^pilot_[A-Za-z0-9._-]{1,96}$",
+      "title": "Dataset Id",
+      "type": "string"
+    },
+    "document_count": {
+      "minimum": 1,
+      "title": "Document Count",
+      "type": "integer"
+    },
+    "documents": {
+      "items": {
+        "$ref": "#/$defs/DocumentEvaluationResult"
+      },
+      "title": "Documents",
+      "type": "array"
+    },
+    "evaluated_at": {
+      "format": "date-time",
+      "title": "Evaluated At",
+      "type": "string"
+    },
+    "gate_decision": {
+      "$ref": "#/$defs/PilotGateDecision"
+    },
+    "incomplete_reasons": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Incomplete Reasons",
+      "type": "array"
+    },
+    "overall_metrics": {
+      "items": {
+        "$ref": "#/$defs/PilotMetricResult"
+      },
+      "title": "Overall Metrics",
+      "type": "array"
+    },
+    "policy_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Digest",
+      "type": "string"
+    },
+    "report_id": {
+      "pattern": "^pilot_report_[0-9a-f]{32}$",
+      "title": "Report Id",
+      "type": "string"
+    },
+    "risk_coverage": {
+      "items": {
+        "$ref": "#/$defs/RiskCoveragePoint"
+      },
+      "title": "Risk Coverage",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "slices": {
+      "items": {
+        "$ref": "#/$defs/SliceEvaluationResult"
+      },
+      "title": "Slices",
+      "type": "array"
+    },
+    "source_group_leakage": {
+      "items": {
+        "$ref": "#/$defs/SourceGroupLeakage"
+      },
+      "title": "Source Group Leakage",
+      "type": "array"
+    },
+    "split_counts": {
+      "items": {
+        "$ref": "#/$defs/StringValue"
+      },
+      "title": "Split Counts",
+      "type": "array"
+    },
+    "worst_document_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Worst Document Ids",
+      "type": "array"
+    },
+    "worst_slice_keys": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Worst Slice Keys",
+      "type": "array"
+    }
+  },
+  "required": [
+    "report_id",
+    "dataset_id",
+    "dataset_digest",
+    "policy_digest",
+    "evaluated_at",
+    "document_count",
+    "split_counts",
+    "overall_metrics",
+    "documents",
+    "slices",
+    "worst_document_ids",
+    "worst_slice_keys",
+    "risk_coverage",
+    "source_group_leakage",
+    "gate_decision"
+  ],
+  "title": "PilotEvaluationReport",
+  "type": "object"
+}

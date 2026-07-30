@@ -1,0 +1,935 @@
+{
+  "$defs": {
+    "ArtifactProducerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "model_revision": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Revision"
+        },
+        "producer_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Producer Id",
+          "type": "string"
+        },
+        "producer_version": {
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "prompt_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Digest"
+        },
+        "role": {
+          "$ref": "#/$defs/RuntimeRole"
+        }
+      },
+      "required": [
+        "producer_id",
+        "producer_version",
+        "role"
+      ],
+      "title": "ArtifactProducerRef",
+      "type": "object"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "pattern": "^art_[0-9a-f]{32}$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "artifact_type": {
+          "$ref": "#/$defs/ArtifactType"
+        },
+        "owner_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Owner Id",
+          "type": "string"
+        },
+        "payload_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Payload Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner_id",
+        "artifact_id",
+        "artifact_type",
+        "payload_digest"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ArtifactType": {
+      "enum": [
+        "source_observation_ir",
+        "source_inventory",
+        "region_plan",
+        "region_split_certificate",
+        "replan_request",
+        "claim_ledger",
+        "omission_audit",
+        "canonical_explicit_graph",
+        "diagnostic_projection"
+      ],
+      "title": "ArtifactType",
+      "type": "string"
+    },
+    "CanonicalBuildManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "builder": {
+          "$ref": "#/$defs/ArtifactProducerRef"
+        },
+        "input_digests": {
+          "items": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Input Digests",
+          "type": "array"
+        },
+        "parameters": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StringValue"
+          },
+          "title": "Parameters",
+          "type": "array"
+        },
+        "policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "builder",
+        "policy_digest",
+        "input_digests"
+      ],
+      "title": "CanonicalBuildManifest",
+      "type": "object"
+    },
+    "CanonicalConcept": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "canonical_name": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Canonical Name",
+          "type": "string"
+        },
+        "concept_id": {
+          "pattern": "^concept_[0-9a-f]{32}$",
+          "title": "Concept Id",
+          "type": "string"
+        },
+        "confidence_components": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ConfidenceComponent"
+          },
+          "title": "Confidence Components",
+          "type": "array"
+        },
+        "decision_history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DecisionEvent"
+          },
+          "title": "Decision History",
+          "type": "array"
+        },
+        "external_ref_ids": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "External Ref Ids",
+          "type": "array"
+        },
+        "origin": {
+          "$ref": "#/$defs/ConceptOrigin"
+        },
+        "pedagogical_role": {
+          "$ref": "#/$defs/PedagogicalRole"
+        },
+        "scope": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Scope",
+          "type": "string"
+        },
+        "semantic_kind": {
+          "$ref": "#/$defs/SemanticKind"
+        },
+        "source_claim_ids": {
+          "default": [],
+          "items": {
+            "pattern": "^claim_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Source Claim Ids",
+          "type": "array"
+        },
+        "source_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Source Evidence Refs",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/CanonicalStatus"
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "pattern": "^concept_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supersedes"
+        }
+      },
+      "required": [
+        "concept_id",
+        "canonical_name",
+        "semantic_kind",
+        "pedagogical_role",
+        "origin",
+        "scope",
+        "status"
+      ],
+      "title": "CanonicalConcept",
+      "type": "object"
+    },
+    "CanonicalRelation": {
+      "additionalProperties": false,
+      "properties": {
+        "decision_history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DecisionEvent"
+          },
+          "title": "Decision History",
+          "type": "array"
+        },
+        "edge_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Edge Evidence Refs",
+          "type": "array"
+        },
+        "evidence_authority": {
+          "$ref": "#/$defs/EvidenceAuthority"
+        },
+        "external_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "External Evidence Refs",
+          "type": "array"
+        },
+        "hierarchy_directness": {
+          "$ref": "#/$defs/HierarchyDirectness"
+        },
+        "region_plan_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rejection_reasons": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Rejection Reasons",
+          "type": "array"
+        },
+        "relation_id": {
+          "pattern": "^relation_[0-9a-f]{32}$",
+          "title": "Relation Id",
+          "type": "string"
+        },
+        "semantic_relation": {
+          "$ref": "#/$defs/SemanticRelation"
+        },
+        "source_claim_ids": {
+          "default": [],
+          "items": {
+            "pattern": "^claim_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Source Claim Ids",
+          "type": "array"
+        },
+        "source_id": {
+          "pattern": "^concept_[0-9a-f]{32}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CanonicalStatus"
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "pattern": "^relation_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supersedes"
+        },
+        "target_id": {
+          "pattern": "^concept_[0-9a-f]{32}$",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "verifier_decisions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/VerifierDecision"
+          },
+          "title": "Verifier Decisions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "relation_id",
+        "source_id",
+        "target_id",
+        "semantic_relation",
+        "hierarchy_directness",
+        "evidence_authority",
+        "status"
+      ],
+      "title": "CanonicalRelation",
+      "type": "object"
+    },
+    "CanonicalStatus": {
+      "enum": [
+        "candidate",
+        "accepted",
+        "conflicted",
+        "abstained",
+        "rejected",
+        "superseded"
+      ],
+      "title": "CanonicalStatus",
+      "type": "string"
+    },
+    "ConceptOrigin": {
+      "enum": [
+        "explicit",
+        "outline_anchor",
+        "planner_induced_region",
+        "external_reference"
+      ],
+      "title": "ConceptOrigin",
+      "type": "string"
+    },
+    "ConfidenceComponent": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "policy_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "score": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "score",
+        "policy_version"
+      ],
+      "title": "ConfidenceComponent",
+      "type": "object"
+    },
+    "DecisionEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeRole"
+            },
+            {
+              "pattern": "^human:[A-Za-z0-9._:@-]{1,128}$",
+              "type": "string"
+            }
+          ],
+          "title": "Actor"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "decision": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Decision",
+          "type": "string"
+        },
+        "decision_id": {
+          "pattern": "^decision_[0-9a-f]{32}$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "reason_codes": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "pattern": "^decision_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supersedes"
+        }
+      },
+      "required": [
+        "decision_id",
+        "actor",
+        "decision",
+        "created_at"
+      ],
+      "title": "DecisionEvent",
+      "type": "object"
+    },
+    "EvidenceAuthority": {
+      "enum": [
+        "courseware_direct",
+        "outline_structural",
+        "courseware_aggregate",
+        "external_only",
+        "retrieval_only"
+      ],
+      "title": "EvidenceAuthority",
+      "type": "string"
+    },
+    "EvidenceNamespace": {
+      "enum": [
+        "courseware",
+        "external",
+        "human",
+        "system"
+      ],
+      "title": "EvidenceNamespace",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "namespace": {
+                "const": "courseware"
+              }
+            },
+            "required": [
+              "namespace"
+            ]
+          },
+          "then": {
+            "properties": {
+              "ref_id": {
+                "pattern": "^src:[a-z][a-z0-9_-]{1,31}:[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "namespace": {
+                "const": "external"
+              }
+            },
+            "required": [
+              "namespace"
+            ]
+          },
+          "then": {
+            "properties": {
+              "ref_id": {
+                "pattern": "^ext:[A-Za-z0-9][A-Za-z0-9._:/-]{1,251}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "namespace": {
+                "const": "human"
+              }
+            },
+            "required": [
+              "namespace"
+            ]
+          },
+          "then": {
+            "properties": {
+              "ref_id": {
+                "pattern": "^human:[A-Za-z0-9][A-Za-z0-9._:@/-]{1,249}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "namespace": {
+                "const": "system"
+              }
+            },
+            "required": [
+              "namespace"
+            ]
+          },
+          "then": {
+            "properties": {
+              "ref_id": {
+                "pattern": "^sys:[A-Za-z0-9][A-Za-z0-9._:@/-]{1,251}$"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "content_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Digest"
+        },
+        "namespace": {
+          "$ref": "#/$defs/EvidenceNamespace"
+        },
+        "ref_id": {
+          "maxLength": 256,
+          "minLength": 6,
+          "title": "Ref Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "ref_id"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "GraphAuditItem": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "item_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Item Id",
+          "type": "string"
+        },
+        "item_type": {
+          "enum": [
+            "concept",
+            "relation",
+            "claim",
+            "region"
+          ],
+          "title": "Item Type",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "item_type",
+        "item_id",
+        "reason_codes"
+      ],
+      "title": "GraphAuditItem",
+      "type": "object"
+    },
+    "HierarchyDirectness": {
+      "enum": [
+        "direct",
+        "ancestor_only",
+        "non_hierarchical",
+        "uncertain"
+      ],
+      "title": "HierarchyDirectness",
+      "type": "string"
+    },
+    "PedagogicalRole": {
+      "enum": [
+        "definition",
+        "principle",
+        "procedure",
+        "comparison",
+        "application",
+        "exercise"
+      ],
+      "title": "PedagogicalRole",
+      "type": "string"
+    },
+    "RuntimeRole": {
+      "enum": [
+        "run_governor",
+        "document_interpreter",
+        "source_inventory_auditor",
+        "global_structure_planner",
+        "recursive_region_planner",
+        "region_decision_verifier",
+        "claim_atomizer",
+        "omission_auditor",
+        "bottom_up_region_auditor",
+        "claim_fidelity_verifier",
+        "domain_resolver",
+        "canonicalizer",
+        "relation_verifier_a",
+        "relation_verifier_b",
+        "arbiter",
+        "quality_auditor",
+        "projection_planner"
+      ],
+      "title": "RuntimeRole",
+      "type": "string"
+    },
+    "SemanticKind": {
+      "enum": [
+        "topic",
+        "concept",
+        "reaction_family",
+        "reaction",
+        "mechanism",
+        "method",
+        "property",
+        "condition",
+        "result",
+        "formula",
+        "example",
+        "exception"
+      ],
+      "title": "SemanticKind",
+      "type": "string"
+    },
+    "SemanticRelation": {
+      "enum": [
+        "topic_contains",
+        "is_a",
+        "part_of",
+        "stage_of",
+        "example_of",
+        "prerequisite",
+        "causes",
+        "precedes",
+        "contrasts",
+        "reacts_with",
+        "review_of",
+        "depends_on",
+        "used_for",
+        "condition_for",
+        "mechanism_of",
+        "transforms_to"
+      ],
+      "title": "SemanticRelation",
+      "type": "string"
+    },
+    "StringValue": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 4096,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "StringValue",
+      "type": "object"
+    },
+    "VerifierClassification": {
+      "enum": [
+        "direct",
+        "ancestor_only",
+        "sibling",
+        "semantic_link",
+        "unrelated",
+        "insufficient"
+      ],
+      "title": "VerifierClassification",
+      "type": "string"
+    },
+    "VerifierDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "$ref": "#/$defs/VerifierClassification"
+        },
+        "courseware_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Courseware Evidence Refs",
+          "type": "array"
+        },
+        "outline_evidence_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Outline Evidence Refs",
+          "type": "array"
+        },
+        "reason_codes": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "supports_relation": {
+          "title": "Supports Relation",
+          "type": "boolean"
+        },
+        "verifier": {
+          "$ref": "#/$defs/ArtifactProducerRef"
+        }
+      },
+      "required": [
+        "verifier",
+        "classification",
+        "supports_relation",
+        "reason_codes"
+      ],
+      "title": "VerifierDecision",
+      "type": "object"
+    }
+  },
+  "$id": "urn:zlb:vnext:schema:canonical-explicit-graph:0.1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "build_manifest": {
+      "$ref": "#/$defs/CanonicalBuildManifest"
+    },
+    "claim_ledger_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "concepts": {
+      "items": {
+        "$ref": "#/$defs/CanonicalConcept"
+      },
+      "title": "Concepts",
+      "type": "array"
+    },
+    "decision_log": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/DecisionEvent"
+      },
+      "title": "Decision Log",
+      "type": "array"
+    },
+    "graph_id": {
+      "pattern": "^graph_[0-9a-f]{32}$",
+      "title": "Graph Id",
+      "type": "string"
+    },
+    "region_plan_refs": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Region Plan Refs",
+      "type": "array"
+    },
+    "rejected_items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GraphAuditItem"
+      },
+      "title": "Rejected Items",
+      "type": "array"
+    },
+    "relations": {
+      "items": {
+        "$ref": "#/$defs/CanonicalRelation"
+      },
+      "title": "Relations",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "0.1.0",
+      "default": "0.1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_observation_ref": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "supersedes": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "unresolved_items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GraphAuditItem"
+      },
+      "title": "Unresolved Items",
+      "type": "array"
+    }
+  },
+  "required": [
+    "graph_id",
+    "source_observation_ref",
+    "claim_ledger_ref",
+    "region_plan_refs",
+    "concepts",
+    "relations",
+    "build_manifest"
+  ],
+  "title": "CanonicalExplicitGraph",
+  "type": "object"
+}

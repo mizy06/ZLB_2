@@ -1,0 +1,84 @@
+{
+  "catalyst_ee_claim_retained": true,
+  "claims": [
+    {
+      "claim_type": "instruction",
+      "page": 53,
+      "publication_status": "withheld",
+      "source_text": "\u5b8c\u6210\u4ee5\u4e0b\u8f6c\u5316"
+    }
+  ],
+  "continuity_hypotheses": [
+    {
+      "from_page": 13,
+      "relation": "returns_to",
+      "to_page": 9
+    }
+  ],
+  "outline_labels": [
+    "10.1 \u7ed3\u6784\u3001\u6027\u8d28\u4e0e\u547d\u540d",
+    "10.2 \u5236\u5907",
+    "10.3 \u4eb2\u6838\u52a0\u6210",
+    "10.4 \u6c27\u5316"
+  ],
+  "outline_entry_count": 55,
+  "outline_matches_section_titles": true,
+  "parentless_claim_disposition": "unresolved",
+  "reaction_regions": [
+    {
+      "page": 27,
+      "preserved_fields": [
+        "reactants",
+        "products",
+        "conditions",
+        "arrow",
+        "bbox",
+        "page"
+      ]
+    },
+    {
+      "page": 34,
+      "preserved_fields": [
+        "reactants",
+        "products",
+        "conditions",
+        "arrow",
+        "bbox",
+        "page"
+      ]
+    }
+  ],
+  "review_hypotheses": [
+    {
+      "page": 50,
+      "relation": "review_of",
+      "target_ref": "claim:earlier-courseware"
+    }
+  ],
+  "role_hypotheses": {
+    "10": [
+      "research_aside"
+    ],
+    "11": [
+      "research_aside"
+    ],
+    "12": [
+      "research_aside"
+    ],
+    "50": [
+      "review"
+    ],
+    "53": [
+      "exercise"
+    ]
+  },
+  "table_rows_preserve_header_context": true,
+  "top_level_labels": [
+    "\u7ed3\u6784\u3001\u6027\u8d28\u4e0e\u547d\u540d",
+    "\u5236\u5907",
+    "\u4eb2\u6838\u52a0\u6210",
+    "\u6c27\u5316",
+    "\u590d\u4e60\u4e0e\u7ec3\u4e60\u8d44\u6e90"
+  ],
+  "vetoed_parent_reintroduced": false
+}

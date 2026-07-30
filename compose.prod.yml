@@ -1,22 +1,98 @@
 services:
   app:
+    image: ${MINDMAP_IMAGE_REF:?MINDMAP_IMAGE_REF is required}
     build:
       context: .
-    container_name: zlb-mindmap
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    container_name: ${MINDMAP_CONTAINER_NAME:-zlb-mindmap}
     restart: unless-stopped
+    stop_grace_period: 60s
     ports:
-      - "5173:8000"
-      - "8000:8000"
+      - "${MINDMAP_BIND_HOST:-127.0.0.1}:${MINDMAP_PUBLIC_PORT:-5173}:8000"
     environment:
-      KIMI_SECRETS_FILE: /run/secrets/kimi.enc.env.age
-      KIMI_AGE_IDENTITY_FILE: /run/secrets/kimi-age-identity.txt
-      KIMI_REASONING_EFFORT: ${KIMI_REASONING_EFFORT:-low}
+      MINDMAP_ENV: production
+      MINDMAP_API_TOKEN: ${MINDMAP_API_TOKEN:?MINDMAP_API_TOKEN is required}
+      MINDMAP_SESSION_COOKIE_SECURE: ${MINDMAP_SESSION_COOKIE_SECURE:-true}
+      EXTERNAL_ENGINE_TOKEN: ${EXTERNAL_ENGINE_TOKEN:?EXTERNAL_ENGINE_TOKEN is required}
+      ASSET_ACCESS_TOKEN: ${ASSET_ACCESS_TOKEN:?ASSET_ACCESS_TOKEN is required}
+      QWEN_SECRETS_FILE: /run/secrets/qwen.enc.env.age
+      QWEN_AGE_IDENTITY_FILE: /run/secrets/qwen-age-identity.txt
+      QWEN_BASE_URL: ${QWEN_BASE_URL:?QWEN_BASE_URL is required}
+      QWEN_MODEL: ${QWEN_MODEL:?QWEN_MODEL is required}
+      QWEN_VISION_MODEL: ${QWEN_VISION_MODEL:?QWEN_VISION_MODEL is required}
+      QWEN_TEMPERATURE: ${QWEN_TEMPERATURE:-0.1}
+      MINDMAP_QWEN_PRODUCTION_PROFILE: ${MINDMAP_QWEN_PRODUCTION_PROFILE:-standard}
       MINDMAP_DATA_DIR: /app/.data/mindmap_engine
       MINDMAP_BLACKBOARD_PATH: /app/.data/mindmap_engine/blackboard.sqlite3
+      MINDMAP_PDF_TRANSCRIPTION_MODE: ${MINDMAP_PDF_TRANSCRIPTION_MODE:-vision_nodes_strict}
+      MINDMAP_PDF_PAGE_EXTRACTION_MODE: ${MINDMAP_PDF_PAGE_EXTRACTION_MODE:-direct_layout_fallback}
+      MINDMAP_PDF_TRANSCRIPTION_DPI: ${MINDMAP_PDF_TRANSCRIPTION_DPI:-192}
+      MINDMAP_PDF_TRANSCRIPTION_CONCURRENCY: ${MINDMAP_PDF_TRANSCRIPTION_CONCURRENCY:-8}
+      MINDMAP_PDF_TRANSCRIPTION_MAX_ATTEMPTS: ${MINDMAP_PDF_TRANSCRIPTION_MAX_ATTEMPTS:-3}
+      MINDMAP_PDF_TRANSCRIPTION_MIN_CONFIDENCE: ${MINDMAP_PDF_TRANSCRIPTION_MIN_CONFIDENCE:-0.85}
+      MINDMAP_MAX_CONCURRENT_JOBS: ${MINDMAP_MAX_CONCURRENT_JOBS:-1}
+      MINDMAP_PROVIDER_CONCURRENCY: ${MINDMAP_PROVIDER_CONCURRENCY:-8}
+      MINDMAP_PROVIDER_TIMEOUT_SECONDS: ${MINDMAP_PROVIDER_TIMEOUT_SECONDS:-90}
+      MINDMAP_PROVIDER_MAX_ATTEMPTS: ${MINDMAP_PROVIDER_MAX_ATTEMPTS:-1}
+      MINDMAP_PROVIDER_RETRY_BASE_SECONDS: ${MINDMAP_PROVIDER_RETRY_BASE_SECONDS:-0.5}
+      MINDMAP_PROVIDER_RETRY_DELAY_CAP_SECONDS: ${MINDMAP_PROVIDER_RETRY_DELAY_CAP_SECONDS:-30}
+      MINDMAP_PROVIDER_CIRCUIT_COOLDOWN_SECONDS: ${MINDMAP_PROVIDER_CIRCUIT_COOLDOWN_SECONDS:-120}
+      MINDMAP_EXPORT_CONCURRENCY: ${MINDMAP_EXPORT_CONCURRENCY:-1}
+      MINDMAP_MAX_UPLOAD_BYTES: ${MINDMAP_MAX_UPLOAD_BYTES:-83886080}
+      MINDMAP_MAX_IMAGE_PIXELS: ${MINDMAP_MAX_IMAGE_PIXELS:-40000000}
+      MINDMAP_MAX_DOCUMENT_PAGES: ${MINDMAP_MAX_DOCUMENT_PAGES:-150}
+      IMAGE_DIGEST: ${IMAGE_DIGEST:?IMAGE_DIGEST is required}
+    command:
+      - python
+      - -m
+      - backend.app.secret_preflight
+      - --expected-uid
+      - "0"
+      - --expected-gid
+      - "10001"
+      - --expected-mode
+      - "0440"
+      - /run/secrets/qwen-age-identity.txt
+      - /run/secrets/qwen.enc.env.age
+      - --exec
+      - python
+      - -m
+      - uvicorn
+      - backend.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
     volumes:
       - zlb-mindmap-data:/app/.data/mindmap_engine
-      - ./runtime/secrets/kimi.enc.env.age:/run/secrets/kimi.enc.env.age:ro
-      - ./runtime/secrets/kimi-age-identity.txt:/run/secrets/kimi-age-identity.txt:ro
+      - zlb-mindmap-uploads:/app/backend/uploads
+    secrets:
+      - source: qwen-age-identity
+        target: qwen-age-identity.txt
+      - source: qwen-encrypted-env
+        target: qwen.enc.env.age
+    read_only: true
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: ${MINDMAP_MEMORY_LIMIT:-3g}
+    cpus: 2.0
 
 volumes:
   zlb-mindmap-data:
+    name: ${MINDMAP_DATA_VOLUME_NAME:-zlb-mindmap-data}
+    external: ${MINDMAP_DATA_VOLUME_EXTERNAL:-false}
+  zlb-mindmap-uploads:
+    name: ${MINDMAP_UPLOADS_VOLUME_NAME:-zlb-mindmap-uploads}
+    external: ${MINDMAP_UPLOADS_VOLUME_EXTERNAL:-false}
+
+secrets:
+  qwen-age-identity:
+    file: ${QWEN_AGE_IDENTITY_SOURCE_FILE:-./runtime/secrets/qwen-age-identity.txt}
+  qwen-encrypted-env:
+    file: ${QWEN_ENCRYPTED_ENV_SOURCE_FILE:-./runtime/secrets/qwen.enc.env.age}

@@ -3,7 +3,7 @@ ZLB-apiKey-*.csv
 RAM.txt
 *.key
 .env
-kimi.local.env
+*.local.env
 .secrets/
 *.age.pub
 *-identity.txt
@@ -17,6 +17,7 @@ runtime/
 backend/uploads/
 frontend/node_modules/
 frontend/dist/
+frontend/.test-dist/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts

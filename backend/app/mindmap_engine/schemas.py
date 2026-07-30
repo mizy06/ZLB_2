@@ -112,6 +112,7 @@ class NormalizedNode(BaseModel):
     activation_cost: float
     is_root_candidate: bool
     evidence: list[EvidenceRef]
+    explicit_evidence_unit_ids: list[str] = Field(default_factory=list)
     support_unit_ids: list[str]
     media_asset_ids: list[str]
 

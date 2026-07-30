@@ -1,0 +1,325 @@
+{
+  "schema_version": "pdf-page-quality-oracle-v1",
+  "source_sha256": "a36cf7a439a5d06fe9830e5fa6219836ecc63326ed53903a323bdd4078db54f9",
+  "selected_pages": [
+    1,
+    6,
+    17,
+    20,
+    24,
+    25,
+    34,
+    44,
+    52,
+    69,
+    70,
+    71,
+    78,
+    79,
+    80,
+    82,
+    91,
+    92,
+    2,
+    11,
+    26,
+    43,
+    55,
+    68,
+    76,
+    89
+  ],
+  "pages": {
+    "1": {
+      "expected_has_knowledge": false,
+      "canonical_formulas": [],
+      "required_text": []
+    },
+    "6": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "ν̃=1/λ=R(1/n²-1/n′²)",
+        "hν=hc/λ=hcR(1/n²-1/n′²)"
+      ],
+      "required_text": [
+        "右端应为能量差",
+        "一看到巴耳末公式，整个问题对我来说就全部清楚了"
+      ]
+    },
+    "17": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "U=-e²/(4πε₀r)",
+        "L̂_x=iℏ(sinφ∂/∂θ+ctgθcosφ∂/∂φ)",
+        "L̂_y=iℏ(-cosφ∂/∂θ+ctgθsinφ∂/∂φ)",
+        "L̂_z=-iℏ∂/∂φ",
+        "L̂²=L̂⃗·L̂⃗=L̂_x²+L̂_y²+L̂_z²"
+      ],
+      "required_text": [
+        "氢原子中电子的电势能",
+        "在球极坐标中"
+      ]
+    },
+    "20": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "L̂²Y(θ,φ)=L²Y(θ,φ)",
+        "L²=l(l+1)ℏ²",
+        "L=√(l(l+1))ℏ"
+      ],
+      "required_text": [
+        "分离变量可解得",
+        "l称角量子数"
+      ]
+    },
+    "24": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "U=-e²/(4πε₀r)",
+        "Ĥ=-(ℏ²/(2m))∇²-e²/(4πε₀r)",
+        "Ĥψ=Eψ",
+        "ψ=ψ(r,θ,φ)",
+        "(1/r²)∂/∂r(r²∂ψ/∂r)+(1/(r²sinθ))∂/∂θ(sinθ∂ψ/∂θ)+(1/(r²sin²θ))∂²ψ/∂φ²+(2m/ℏ²)(E+e²/(4πε₀r))ψ=0"
+      ],
+      "required_text": [
+        "氢原子中电子的电势能",
+        "在球坐标中薛定谔方程"
+      ]
+    },
+    "25": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "ψ_{n,l,m_l}(r,θ,φ)=R_{nl}(r)Y_{lm_l}(θ,φ)",
+        "n=1,2,3,…，且(n-1)≥l；l=0,1,2,3,…,(n-1)"
+      ],
+      "required_text": [
+        "主量子数",
+        "拉让德函数"
+      ]
+    },
+    "34": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "L⃗→μ⃗",
+        "μ⃗=-i·πr²·n̂=(-v/(2πr))·e·πr²·n̂=(-e/(2m_e))·m_evr·n̂=(-e/(2m_e))L⃗",
+        "μ_z=(-e/(2m_e))L_z=(-e/(2m_e))·m_lℏ"
+      ],
+      "required_text": [
+        "角动量和磁矩的关系",
+        "验证角动量空间量子化"
+      ]
+    },
+    "44": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "L=√(1(1+1))ℏ=√2ℏ",
+        "S=√3ℏ/2",
+        "j=l±s=1±1/2=3/2,1/2",
+        "J=√15ℏ/2,√3ℏ/2"
+      ],
+      "required_text": [
+        "经典矢量耦合模型图",
+        "考虑到自旋轨道耦合，原子的状态可表示为"
+      ]
+    },
+    "52": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "3S(n=3,l=0)",
+        "3P(n=3,l=1)"
+      ],
+      "required_text": [
+        "5895.92Å",
+        "5889.95Å",
+        "碱金属的双线实验",
+        "l=0，无自旋轨道耦合"
+      ]
+    },
+    "69": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "(dN₁₂/dt)_吸收=W₁₂N₁",
+        "ν=(E₂-E₁)/h",
+        "W₁₂=B₁₂ρ(ν,T)"
+      ],
+      "required_text": [
+        "B₁₂——吸收系数",
+        "单个原子在单位时间内发生吸收过程的概率"
+      ]
+    },
+    "70": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "只靠自发辐射和吸收是不能达到热平衡的",
+        "同时放出一个与入射光子完全相同的光子"
+      ]
+    },
+    "71": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "(dN₂₁/dt)_受激=W₂₁N₂",
+        "W₂₁=B₂₁ρ(ν,T)",
+        ">10²⁰个光子/量子态"
+      ],
+      "required_text": [
+        "频率、相位、振动方向和传播方向相同",
+        "受激辐射有光放大作用"
+      ]
+    },
+    "78": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "碰撞转移",
+        "电子碰撞跃迁",
+        "与管壁碰撞发生“无辐射跃迁”",
+        "2¹S",
+        "2³S"
+      ]
+    },
+    "79": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "He的2³S和2¹S这两个能级都是亚稳态",
+        "很难回到基态",
+        "集聚了较多的原子"
+      ]
+    },
+    "80": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "能量的“共振转移”",
+        "还要设法减少下能级的粒子数",
+        "形成粒子数的反转"
+      ]
+    },
+    "82": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "632.8nm",
+        "1.15μm",
+        "3.39μm",
+        "红光",
+        "红外",
+        "较易实现粒子数反转"
+      ]
+    },
+    "91": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "~10^-4rad(~0.1′)"
+      ],
+      "required_text": [
+        "相干长度可达几十公里",
+        "投射到月球（38万公里）光斑直径仅约2公里"
+      ]
+    },
+    "92": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "B~10¹⁶W/m²·Sr~10¹⁰B_太阳",
+        "B=Δp/(ΔS·ΔΩ)",
+        "脉冲瞬时功率可达>10¹⁴W",
+        "I>10¹¹W/m²",
+        "I>10¹⁷W/cm²",
+        "10⁸K"
+      ],
+      "required_text": [
+        "非聚焦状态",
+        "引起核聚变"
+      ]
+    },
+    "2": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "ε=hν"
+      ],
+      "required_text": [
+        "卢瑟福原子核式模型",
+        "电子作圆周运动要辐射能量，原子不稳定"
+      ]
+    },
+    "11": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "玻尔理论很好地解释了氢原子光谱的波长",
+        "不能说明氢原子光谱线的强度和复杂原子的光谱结构"
+      ]
+    },
+    "26": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "R₁₀=(2/r₁^(3/2))e^(-r/r₁)",
+        "R₂₀=(1/(√2r₁^(3/2)))(1-r/(2r₁))e^(-r/(2r₁))",
+        "R₂₁=(1/(2√6r₁^(3/2)))(r/r₁)e^(-r/(2r₁))"
+      ],
+      "required_text": [
+        "n=1,l=0",
+        "n=2,l=1"
+      ]
+    },
+    "43": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "J⃗=L⃗+S⃗",
+        "J=√(j(j+1))ℏ",
+        "l=0:J⃗=S⃗,j=s=1/2",
+        "l≠0:j=l+s=l+1/2",
+        "l≠0:j=l-s=l-1/2"
+      ],
+      "required_text": [
+        "这一角动量的合成，叫自旋轨道耦合",
+        "总角动量量子数用j表示"
+      ]
+    },
+    "55": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "ψ(1,2)=ψ(2,1)",
+        "ψ(1,2)=-ψ(2,1)",
+        "ψ(1,2)=C[ψ_A(1)ψ_B(2)-ψ_A(2)ψ_B(1)]",
+        "ψ(1,2)=C[ψ_A(1)ψ_B(2)+ψ_A(2)ψ_B(1)]"
+      ],
+      "required_text": [
+        "波函数对称",
+        "波函数反对称",
+        "常量C是归一化因子"
+      ]
+    },
+    "68": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [
+        "hν=E₂-E₁"
+      ],
+      "required_text": [
+        "这个过程称为吸收",
+        "N₁、N₂分别为单位体积中处于E₁、E₂能级的原子数"
+      ]
+    },
+    "76": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "方向是杂乱的，不能产生很强的激光",
+        "必须使光沿某一方向反复放大",
+        "称为光振荡"
+      ]
+    },
+    "89": {
+      "expected_has_knowledge": true,
+      "canonical_formulas": [],
+      "required_text": [
+        "缩短腔长来加大Δν_k",
+        "L从1m缩短到0.1m",
+        "纵模个数N仅为1",
+        "极大地提高了单色性",
+        "损失了光强"
+      ]
+    }
+  }
+}

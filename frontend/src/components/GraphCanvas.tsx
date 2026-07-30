@@ -9,6 +9,13 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import {
+  collapseMindMapToBudget,
+  computeMindMapLayout,
+  findMindMapSpacingViolations,
+  mindMapLabelMaxLines,
+  wrapMindMapLabel,
+} from "../mindmapLayout";
 import type { AnalysisResult } from "../types";
 
 type GraphCanvasProps = {
@@ -34,26 +41,42 @@ const palette: Record<string, string> = {
   table: "#475569",
 };
 
-const layoutOptions = (rootId: string) =>
-  ({
-    name: "breadthfirst",
-    animate: false,
-    directed: true,
-    roots: `#${rootId}`,
-    fit: true,
-    padding: 54,
-    spacingFactor: 1.22,
-    avoidOverlap: true,
-    maximal: true,
-  }) as const;
-
-const runTreeLayout = (graph: Core, rootId: string) => {
-  const crossLinks = graph.edges(".cross-link").remove();
-  try {
-    graph.layout(layoutOptions(rootId)).run();
-  } finally {
-    crossLinks.restore();
+const runMindMapLayout = (graph: Core, rootId: string) => {
+  const nodes = graph.nodes();
+  const nodeIds = new Set(nodes.map((node) => node.id()));
+  const treeEdges: Array<{ source: string; target: string }> = [];
+  graph.edges().forEach((edge) => {
+    if (
+      !edge.hasClass("cross-link") &&
+      nodeIds.has(edge.source().id()) &&
+      nodeIds.has(edge.target().id())
+    ) {
+      treeEdges.push({
+        source: edge.source().id(),
+        target: edge.target().id(),
+      });
+    }
+  });
+  const layout = computeMindMapLayout({
+    nodes: nodes.map((node) => ({
+      id: node.id(),
+      width: Number(node.data("width")) || 180,
+      height: Number(node.data("height")) || 58,
+    })),
+    edges: treeEdges,
+    rootId,
+  });
+  const violations = findMindMapSpacingViolations(layout, 24);
+  if (violations.length) {
+    throw new Error(`布局安全间距校验失败：${violations.length} 对节点`);
   }
+
+  graph.startBatch();
+  nodes.forEach((node) => {
+    node.position(layout.positions.get(node.id()) || { x: 0, y: 0 });
+  });
+  graph.endBatch();
+  graph.fit(nodes, 64);
 };
 
 export function GraphCanvas({
@@ -71,42 +94,100 @@ export function GraphCanvas({
     setRenderError("");
     let graph: Core | null = null;
     try {
+      const assetById = new Map(
+        result.assets.map((asset) => [asset.asset_id, asset]),
+      );
+      const visibility = collapseMindMapToBudget({
+        nodeIds: result.nodes.map((node) => node.id),
+        edges: result.tree_edges,
+        rootId: result.root_id,
+        maxVisible: 120,
+      });
+      const visibleNodeIds = new Set(visibility.visibleNodeIds);
+      const visibleNodes = result.nodes.filter((node) =>
+        visibleNodeIds.has(node.id),
+      );
+      const hiddenCounts = visibility.hiddenCounts;
       graph = cytoscape({
         container: containerRef.current,
         elements: [
-        ...result.nodes.map((node) => {
+        ...visibleNodes.map((node) => {
           const isRoot = node.id === result.root_id;
           const isBranch = node.role === "branch_topic";
+          const mediaAsset = node.media_asset_ids
+            .map((assetId) => assetById.get(assetId))
+            .find((asset) => asset?.url);
+          const hiddenCount = hiddenCounts.get(node.id) || 0;
+          const label = hiddenCount ? `${node.name}  +${hiddenCount}` : node.name;
+          const unitsPerLine = mediaAsset
+            ? 13
+            : isRoot
+              ? 13
+              : isBranch
+                ? 11
+                : 10;
+          const maxLines = mindMapLabelMaxLines({
+            isRoot,
+            isBranch,
+            hasMedia: Boolean(mediaAsset),
+          });
+          const displayLabel = wrapMindMapLabel(label, unitsPerLine, maxLines);
+          const lineCount = displayLabel.split("\n").length;
+          const width = mediaAsset ? 180 : isRoot ? 230 : isBranch ? 190 : 180;
+          const height = mediaAsset
+            ? 132
+            : Math.max(
+                isRoot ? 72 : 58,
+                24 + lineCount * (isRoot ? 17 : 15) + (isRoot ? 0 : 14),
+              );
           return {
             data: {
               id: node.id,
-              label: node.name,
+              label: displayLabel,
+              fullLabel: node.name,
               role: node.role,
+              depth: node.depth,
               confidence: node.confidence,
               color: palette[node.role] || palette.concept,
-              width: isRoot ? 124 : isBranch ? 110 : 92,
-              height: isRoot ? 52 : 42,
+              width,
+              height,
+              textWidth: width - 18,
+              imageUrl: mediaAsset?.url || "",
               risk: node.risk_score,
+              hiddenCount,
             },
             classes: [
               isRoot ? "root-node" : "",
               node.status === "needs_review" ? "needs-review" : "",
+              mediaAsset ? "has-media" : "",
+              hiddenCount ? "collapsed" : "",
             ]
               .filter(Boolean)
               .join(" "),
           };
         }),
-        ...result.tree_edges.map((edge) => ({
+        ...result.tree_edges
+          .filter(
+            (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+          )
+          .map((edge) => ({
           data: {
             id: edge.id,
             source: edge.source,
             target: edge.target,
             label: edge.provisional ? "待确认" : "",
             score: edge.score,
+            color:
+              palette[result.nodes.find((node) => node.id === edge.target)?.role || "concept"] ||
+              palette.concept,
           },
           classes: edge.provisional ? "provisional" : "tree-edge",
         })),
-        ...result.cross_links.map((edge) => ({
+        ...result.cross_links
+          .filter(
+            (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+          )
+          .map((edge) => ({
           data: {
             id: edge.id,
             source: edge.source,
@@ -134,7 +215,7 @@ export function GraphCanvas({
             "font-size": 11,
             "font-weight": 600,
             "text-wrap": "wrap",
-            "text-max-width": "84px",
+            "text-max-width": "data(textWidth)",
             "text-valign": "center",
             "text-halign": "center",
           },
@@ -146,7 +227,29 @@ export function GraphCanvas({
             "border-color": "#1d4ed8",
             color: "#ffffff",
             "font-size": 12,
-            "text-max-width": "112px",
+            "text-max-width": "data(textWidth)",
+          },
+        },
+        {
+          selector: "node.has-media",
+          style: {
+            "background-image": "data(imageUrl)",
+            "background-fit": "contain",
+            "background-image-opacity": 1,
+            "background-color": "#ffffff",
+            color: "#172033",
+            "text-valign": "bottom",
+            "text-margin-y": -8,
+            "text-background-color": "#ffffff",
+            "text-background-opacity": 0.92,
+            "text-background-padding": "3px",
+          },
+        },
+        {
+          selector: "node.collapsed",
+          style: {
+            "border-width": 3,
+            "border-style": "double",
           },
         },
         {
@@ -169,12 +272,10 @@ export function GraphCanvas({
           selector: "edge.tree-edge",
           style: {
             width: 1.8,
-            "line-color": "#9aa9ba",
-            "target-arrow-color": "#9aa9ba",
-            "target-arrow-shape": "triangle",
-            "curve-style": "taxi",
-            "taxi-direction": "downward",
-            "taxi-turn": 20,
+            "line-color": "data(color)",
+            "line-opacity": 0.56,
+            "target-arrow-shape": "none",
+            "curve-style": "bezier",
           },
         },
         {
@@ -183,9 +284,9 @@ export function GraphCanvas({
             width: 2,
             "line-color": "#d97706",
             "target-arrow-color": "#d97706",
-            "target-arrow-shape": "triangle",
+            "target-arrow-shape": "none",
             "line-style": "dashed",
-            "curve-style": "taxi",
+            "curve-style": "bezier",
             label: "data(label)",
             color: "#92400e",
             "font-size": 8,
@@ -212,10 +313,10 @@ export function GraphCanvas({
         },
         ],
         layout: { name: "preset" },
-        minZoom: 0.25,
-        maxZoom: 2.4,
+        minZoom: 0.03,
+        maxZoom: 3.2,
       });
-      runTreeLayout(graph, result.root_id);
+      runMindMapLayout(graph, result.root_id);
       graph.on("tap", "node", (event) => onSelectNode(event.target.id()));
       graph.on("tap", (event) => {
         if (event.target === graph) onSelectNode(null);
@@ -275,7 +376,7 @@ export function GraphCanvas({
           aria-label="重新布局"
           onClick={() =>
             graphRef.current &&
-            runTreeLayout(graphRef.current, result.root_id)
+            runMindMapLayout(graphRef.current, result.root_id)
           }
         >
           <RotateCcw size={16} />

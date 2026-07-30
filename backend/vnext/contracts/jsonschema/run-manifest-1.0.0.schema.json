@@ -1,0 +1,623 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "pattern": "^art_[0-9a-f]{32}$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "artifact_type": {
+          "$ref": "#/$defs/ArtifactType"
+        },
+        "owner_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Owner Id",
+          "type": "string"
+        },
+        "payload_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Payload Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner_id",
+        "artifact_id",
+        "artifact_type",
+        "payload_digest"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ArtifactType": {
+      "enum": [
+        "source_observation_ir",
+        "source_inventory",
+        "region_plan",
+        "region_split_certificate",
+        "replan_request",
+        "claim_ledger",
+        "omission_audit",
+        "canonical_explicit_graph",
+        "diagnostic_projection"
+      ],
+      "title": "ArtifactType",
+      "type": "string"
+    },
+    "DeclaredRunManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/RunBudget"
+        },
+        "code_revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Code Revision",
+          "type": "string"
+        },
+        "dependency_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Dependency Digest",
+          "type": "string"
+        },
+        "evidence_mode": {
+          "$ref": "#/$defs/EvidenceMode"
+        },
+        "image_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image Digest"
+        },
+        "model_portfolio": {
+          "$ref": "#/$defs/ModelPortfolioManifest",
+          "default": {
+            "schema_version": "1.0.0",
+            "slots": []
+          }
+        },
+        "no_egress": {
+          "title": "No Egress",
+          "type": "boolean"
+        },
+        "parser_policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Parser Policy Digest",
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/RunProfile"
+        },
+        "prompt_policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Prompt Policy Digest",
+          "type": "string"
+        },
+        "random_seed": {
+          "minimum": 0,
+          "title": "Random Seed",
+          "type": "integer"
+        },
+        "renderer_policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Renderer Policy Digest",
+          "type": "string"
+        },
+        "schema_digests": {
+          "items": {
+            "$ref": "#/$defs/StringValue"
+          },
+          "title": "Schema Digests",
+          "type": "array"
+        },
+        "search_policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Search Policy Digest",
+          "type": "string"
+        },
+        "source_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Hash",
+          "type": "string"
+        },
+        "tool_policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Tool Policy Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_hash",
+        "profile",
+        "evidence_mode",
+        "no_egress",
+        "budget",
+        "code_revision",
+        "dependency_digest",
+        "parser_policy_digest",
+        "renderer_policy_digest",
+        "prompt_policy_digest",
+        "tool_policy_digest",
+        "search_policy_digest",
+        "schema_digests",
+        "random_seed"
+      ],
+      "title": "DeclaredRunManifest",
+      "type": "object"
+    },
+    "EvidenceMode": {
+      "enum": [
+        "source_only",
+        "grounded_assist",
+        "enriched_overlay"
+      ],
+      "title": "EvidenceMode",
+      "type": "string"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "waiting_retry",
+        "waiting_review",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "ModelPortfolioManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "slots": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelSlot"
+          },
+          "title": "Slots",
+          "type": "array"
+        }
+      },
+      "title": "ModelPortfolioManifest",
+      "type": "object"
+    },
+    "ModelSlot": {
+      "additionalProperties": false,
+      "properties": {
+        "calibration_score": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibration Score"
+        },
+        "context_limit": {
+          "minimum": 1,
+          "title": "Context Limit",
+          "type": "integer"
+        },
+        "independence_calibrated": {
+          "default": false,
+          "title": "Independence Calibrated",
+          "type": "boolean"
+        },
+        "independence_group": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Independence Group"
+        },
+        "model_family": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Model Family",
+          "type": "string"
+        },
+        "model_revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Model Revision",
+          "type": "string"
+        },
+        "price_input_microunits_per_million": {
+          "minimum": 0,
+          "title": "Price Input Microunits Per Million",
+          "type": "integer"
+        },
+        "price_output_microunits_per_million": {
+          "minimum": 0,
+          "title": "Price Output Microunits Per Million",
+          "type": "integer"
+        },
+        "provider": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "region": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Region",
+          "type": "string"
+        },
+        "slot": {
+          "enum": [
+            "vlm_reader",
+            "claim_extractor",
+            "global_structure_planner",
+            "recursive_region_planner",
+            "region_decision_verifier",
+            "verifier_a",
+            "verifier_b",
+            "arbiter",
+            "tool_researcher"
+          ],
+          "title": "Slot",
+          "type": "string"
+        },
+        "structured_output": {
+          "title": "Structured Output",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "slot",
+        "provider",
+        "model_revision",
+        "model_family",
+        "context_limit",
+        "structured_output",
+        "region",
+        "price_input_microunits_per_million",
+        "price_output_microunits_per_million"
+      ],
+      "title": "ModelSlot",
+      "type": "object"
+    },
+    "ObservedRunManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_microunits": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cost Microunits",
+          "type": "integer"
+        },
+        "degraded_components": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Degraded Components",
+          "type": "array"
+        },
+        "model_call_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Model Call Count",
+          "type": "integer"
+        },
+        "replay_mode": {
+          "$ref": "#/$defs/ReplayMode",
+          "default": "live"
+        },
+        "search_fetch_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Search Fetch Count",
+          "type": "integer"
+        },
+        "search_query_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Search Query Count",
+          "type": "integer"
+        },
+        "search_snapshot_refs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Search Snapshot Refs",
+          "type": "array"
+        },
+        "stages": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ObservedStage"
+          },
+          "title": "Stages",
+          "type": "array"
+        }
+      },
+      "title": "ObservedRunManifest",
+      "type": "object"
+    },
+    "ObservedStage": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Artifact Refs",
+          "type": "array"
+        },
+        "metrics": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StringValue"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "reused": {
+          "default": false,
+          "title": "Reused",
+          "type": "boolean"
+        },
+        "stage_key": {
+          "pattern": "^[a-z][a-z0-9._:-]{1,127}$",
+          "title": "Stage Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage_key"
+      ],
+      "title": "ObservedStage",
+      "type": "object"
+    },
+    "PublicationStatus": {
+      "enum": [
+        "draft",
+        "release_candidate",
+        "published",
+        "superseded",
+        "withdrawn"
+      ],
+      "title": "PublicationStatus",
+      "type": "string"
+    },
+    "QualityStatus": {
+      "enum": [
+        "unassessed",
+        "blocked_document",
+        "blocked_claim",
+        "blocked_semantic",
+        "blocked_evidence",
+        "review_required",
+        "passed"
+      ],
+      "title": "QualityStatus",
+      "type": "string"
+    },
+    "ReplayMode": {
+      "enum": [
+        "live",
+        "recorded_response_replay",
+        "deterministic_replay",
+        "migration_replay",
+        "full_recompute"
+      ],
+      "title": "ReplayMode",
+      "type": "string"
+    },
+    "RunBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_cost_microunits": {
+          "minimum": 0,
+          "title": "Max Cost Microunits",
+          "type": "integer"
+        },
+        "max_model_calls": {
+          "minimum": 0,
+          "title": "Max Model Calls",
+          "type": "integer"
+        },
+        "max_search_fetches": {
+          "minimum": 0,
+          "title": "Max Search Fetches",
+          "type": "integer"
+        },
+        "max_search_queries": {
+          "minimum": 0,
+          "title": "Max Search Queries",
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "minimum": 1,
+          "title": "Max Wall Seconds",
+          "type": "integer"
+        },
+        "search_concurrency": {
+          "minimum": 0,
+          "title": "Search Concurrency",
+          "type": "integer"
+        },
+        "text_concurrency": {
+          "minimum": 0,
+          "title": "Text Concurrency",
+          "type": "integer"
+        },
+        "vlm_concurrency": {
+          "minimum": 0,
+          "title": "Vlm Concurrency",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_wall_seconds",
+        "max_model_calls",
+        "max_search_queries",
+        "max_search_fetches",
+        "max_cost_microunits",
+        "vlm_concurrency",
+        "text_concurrency",
+        "search_concurrency"
+      ],
+      "title": "RunBudget",
+      "type": "object"
+    },
+    "RunProfile": {
+      "enum": [
+        "standard",
+        "precision"
+      ],
+      "title": "RunProfile",
+      "type": "string"
+    },
+    "StringValue": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 4096,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "StringValue",
+      "type": "object"
+    }
+  },
+  "$id": "urn:zlb:vnext:schema:run-manifest:1.0.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "declared": {
+      "$ref": "#/$defs/DeclaredRunManifest"
+    },
+    "execution_status": {
+      "$ref": "#/$defs/ExecutionStatus",
+      "default": "queued"
+    },
+    "manifest_id": {
+      "pattern": "^run_manifest_[0-9a-f]{32}$",
+      "title": "Manifest Id",
+      "type": "string"
+    },
+    "observed": {
+      "$ref": "#/$defs/ObservedRunManifest",
+      "default": {
+        "cost_microunits": 0,
+        "degraded_components": [],
+        "model_call_count": 0,
+        "replay_mode": "live",
+        "search_fetch_count": 0,
+        "search_query_count": 0,
+        "search_snapshot_refs": [],
+        "stages": []
+      }
+    },
+    "owner_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Owner Id",
+      "type": "string"
+    },
+    "publication_status": {
+      "$ref": "#/$defs/PublicationStatus",
+      "default": "draft"
+    },
+    "quality_status": {
+      "$ref": "#/$defs/QualityStatus",
+      "default": "unassessed"
+    },
+    "revision": {
+      "minimum": 1,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "run_id": {
+      "pattern": "^run_[0-9a-f]{32}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "supersedes": {
+      "anyOf": [
+        {
+          "pattern": "^run_manifest_[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Supersedes"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "manifest_id",
+    "run_id",
+    "revision",
+    "owner_id",
+    "declared",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "RunManifest",
+  "type": "object"
+}
