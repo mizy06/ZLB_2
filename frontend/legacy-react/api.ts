@@ -3,6 +3,7 @@ import type {
   Health,
   HistoryItem,
   Job,
+  MindMapLoopConfig,
   ModelProvider,
   ReviewResolution,
 } from "./types";
@@ -17,16 +18,6 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 export async function getHealth(): Promise<Health> {
   return parseResponse(await fetch("/api/health"));
-}
-
-export async function createSession(token: string): Promise<void> {
-  await parseResponse(
-    await fetch("/api/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    }),
-  );
 }
 
 export async function getModels(provider: ModelProvider): Promise<string[]> {
@@ -52,18 +43,21 @@ export async function createJob(
   file: File,
   provider: ModelProvider,
   model: string,
-  useAi: boolean,
-  mode: "standard" | "precision",
+  loopConfig: MindMapLoopConfig,
 ): Promise<Job> {
   const form = new FormData();
   form.append("file", file);
   form.append("provider", provider);
   form.append("model", model);
-  form.append("use_ai", String(useAi));
-  form.append("mode", mode);
+  form.append("use_ai", "true");
+  form.append("loop_config", JSON.stringify(loopConfig));
   return parseResponse(
     await fetch("/api/jobs", { method: "POST", body: form }),
   );
+}
+
+export function jobEventsUrl(id: string): string {
+  return `/api/jobs/${encodeURIComponent(id)}/events`;
 }
 
 export async function getJob(id: string): Promise<Job> {

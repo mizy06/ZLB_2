@@ -8,6 +8,7 @@ import {
   X,
 } from "lucide-react";
 
+import { isRenderableNodeMedia } from "../mindmapMedia";
 import type { AnalysisResult } from "../types";
 
 type InspectorProps = {
@@ -45,7 +46,8 @@ export function Inspector({ result, nodeId, onClose }: InspectorProps) {
     (item) => item.subject_id === node.id || item.subject_id === parentEdge?.id,
   );
   const assets = result.assets.filter((asset) =>
-    node.media_asset_ids.includes(asset.asset_id),
+    node.media_asset_ids.includes(asset.asset_id)
+    && isRenderableNodeMedia(asset),
   );
 
   return (

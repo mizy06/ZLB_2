@@ -1,6 +1,7 @@
 import { FileImage, Images } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { isPageEvidenceAsset } from "../mindmapMedia";
 import type { AnalysisResult } from "../types";
 
 type VisualGalleryProps = {
@@ -25,15 +26,15 @@ export function VisualGallery({ result, onSelectNode }: VisualGalleryProps) {
   const assets = useMemo(
     () =>
       result.assets.filter((asset) => {
-        if (filter === "pages") return asset.visual_kind === "full_page";
-        if (filter === "knowledge") return asset.visual_kind !== "full_page";
+        if (filter === "pages") return isPageEvidenceAsset(asset);
+        if (filter === "knowledge") return !isPageEvidenceAsset(asset);
         return true;
       }),
     [filter, result.assets],
   );
 
   const knowledgeCount = result.assets.filter(
-    (asset) => asset.visual_kind !== "full_page",
+    (asset) => !isPageEvidenceAsset(asset),
   ).length;
   const pageCount = result.assets.length - knowledgeCount;
 

@@ -10,18 +10,23 @@ import {
   History,
   Images,
   Link2,
-  ListChecks,
-  LockKeyhole,
   LoaderCircle,
+  Menu,
   Network,
+  Paperclip,
+  PanelRightClose,
   Play,
+  Plus,
   RotateCcw,
+  Search,
+  Send,
+  Settings2,
   Square,
+  SquareTerminal,
   Sparkles,
   TableProperties,
   Trash2,
   Upload,
-  Workflow,
   X,
 } from "lucide-react";
 import {
@@ -36,44 +41,69 @@ import {
 import {
   cancelJob,
   checkModel,
-  createSession,
   createJob,
   deleteJob,
   getHealth,
   getHistory,
   getJob,
   getModels,
-  resolveReview,
+  jobEventsUrl,
 } from "./api";
+import {
+  AgentActivityFeed,
+  type StreamConnectionState,
+} from "./components/AgentActivityFeed";
 import { ChunkList } from "./components/ChunkList";
 import { DataTable } from "./components/DataTable";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { Inspector } from "./components/Inspector";
-import { ReviewQueue } from "./components/ReviewQueue";
+import { LoopBuilder } from "./components/LoopBuilder";
+import { MindmapAttachment } from "./components/MindmapAttachment";
 import { VisualGallery } from "./components/VisualGallery";
 import {
+  canAdoptRestoredJob,
   canReplaceActiveJob,
+  canStartJobSubmission,
   nextPollDelay,
   qualityPresentation,
   shouldContinuePolling,
 } from "./jobLifecycle";
+import {
+  emptyJobStreamState,
+  mergeJobEvents,
+} from "./jobStream";
+import {
+  createExampleLoop,
+  normalizeLoopConfig,
+  selectedLoopModels,
+} from "./loopConfig";
 import { createSampleFile } from "./sample";
 import type {
   AnalysisResult,
   Health,
   HistoryItem,
   Job,
+  JobEvent,
+  MindMapLoopConfig,
   ModelProvider,
-  ReviewResolution,
 } from "./types";
 
-type View = "graph" | "visuals" | "nodes" | "chunks" | "reviews";
+type View = "graph" | "visuals" | "nodes" | "chunks" | "stream";
 const ACTIVE_TASK_KEY = "zlb-mindmap-active-task";
+const PRODUCT_NAME = "Agent";
+const PRODUCT_DESCRIPTION = "Mindmap workspace";
 
 const stageLabels: Record<string, string> = {
   queued: "等待",
   starting: "启动",
   model_check: "模型角色",
+  render: "幻灯片渲染",
+  render_cache: "渲染缓存",
+  encode: "图片编码",
+  upload: "图片上下文",
+  editorial_draft: "主编起稿",
+  editorial_review: "并行审稿",
+  editorial_revision: "主编修订",
   parse: "文档解析",
   ledger: "内容账本",
   themes: "全局主题",
@@ -100,28 +130,39 @@ function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [provider] = useState<ModelProvider>("qwen");
-  const [model, setModel] = useState("qwen3.7-max");
-  const [mode, setMode] = useState<"standard" | "precision">("standard");
+  const [loopExample, setLoopExample] = useState<MindMapLoopConfig>(
+    createExampleLoop("qwen3.8-max-preview"),
+  );
+  const [loopConfig, setLoopConfig] = useState<MindMapLoopConfig>(
+    createExampleLoop("qwen3.8-max-preview"),
+  );
   const [modelStatus, setModelStatus] = useState<
     "idle" | "checking" | "available" | "denied"
   >("idle");
   const [modelMessage, setModelMessage] = useState("");
-  const [useAi, setUseAi] = useState(true);
   const [file, setFile] = useState<File | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
+  const submittingRef = useRef(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [view, setView] = useState<View>("graph");
   const [showCrossLinks, setShowCrossLinks] = useState(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [busyReviewId, setBusyReviewId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(() =>
+    window.matchMedia("(min-width: 901px)").matches,
+  );
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [artifactOpen, setArtifactOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
-  const [authenticated, setAuthenticated] = useState(false);
-  const [authToken, setAuthToken] = useState("");
-  const [authBusy, setAuthBusy] = useState(false);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  const [streamState, setStreamState] = useState(emptyJobStreamState);
+  const [streamConnection, setStreamConnection] =
+    useState<StreamConnectionState>("idle");
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -142,19 +183,22 @@ function App() {
         if (disposed) return;
         setHealth(data);
         const defaultModel = data.providers.qwen.default_model;
-        setModel(defaultModel);
+        const example = normalizeLoopConfig(
+          data.architecture.loop?.example,
+          defaultModel,
+        );
+        setLoopExample(example);
+        setLoopConfig(example);
         try {
           const available = await getModels("qwen");
           if (disposed) return;
           setModels(available);
-          setAuthenticated(true);
         } catch (caught) {
           if (disposed) return;
           setModels([defaultModel]);
-          setAuthenticated(!data.auth_required);
-          if (!data.auth_required) {
-            setError(caught instanceof Error ? caught.message : "模型列表加载失败");
-          }
+          setError(caught instanceof Error ? caught.message : "模型列表加载失败");
+        } finally {
+          if (!disposed) setWorkspaceReady(true);
         }
       } catch (caught) {
         if (!disposed) {
@@ -168,23 +212,185 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!authenticated) return;
+    if (!workspaceReady) return;
+    let disposed = false;
     void refreshHistory().catch(() => undefined);
     const activeTaskId = window.localStorage.getItem(ACTIVE_TASK_KEY);
-    if (!activeTaskId || job?.id === activeTaskId) return;
+    if (!activeTaskId) return;
     void getJob(activeTaskId)
       .then((restored) => {
+        if (
+          disposed
+          || !canAdoptRestoredJob(
+            activeTaskId,
+            currentJobIdRef.current,
+          )
+        ) {
+          return;
+        }
+        currentJobIdRef.current = restored.id;
         setJob(restored);
+        if (restored.loop_config) {
+          setLoopConfig(
+            normalizeLoopConfig(
+              restored.loop_config,
+              restored.loop_config.rounds[0]?.editor_model ||
+                "qwen3.8-max-preview",
+            ),
+          );
+        }
         if (restored.result) {
           setResult(restored.result);
           setSelectedNodeId(restored.result.root_id);
+        } else if (shouldContinuePolling(restored.status)) {
+          setView("stream");
         }
       })
-      .catch(() => window.localStorage.removeItem(ACTIVE_TASK_KEY));
-  }, [authenticated, job?.id, refreshHistory]);
+      .catch(() => {
+        if (
+          !disposed
+          && window.localStorage.getItem(ACTIVE_TASK_KEY) === activeTaskId
+        ) {
+          window.localStorage.removeItem(ACTIVE_TASK_KEY);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [workspaceReady, refreshHistory]);
 
   useEffect(() => {
-    if (!job || !shouldContinuePolling(job.status) || !authenticated) return;
+    currentJobIdRef.current = job?.id ?? null;
+  }, [job?.id]);
+
+  useEffect(() => {
+    setStreamState(emptyJobStreamState());
+    setStreamConnection(job ? "connecting" : "idle");
+  }, [job?.id]);
+
+  useEffect(() => {
+    if (!job || !shouldContinuePolling(job.status) || !workspaceReady) {
+      if (job && !shouldContinuePolling(job.status)) {
+        setStreamConnection("closed");
+      }
+      return;
+    }
+    const taskId = job.id;
+    let disposed = false;
+    let flushTimer: number | undefined;
+    let terminalHandled = false;
+    let pending: JobEvent[] = [];
+    const source = new EventSource(jobEventsUrl(taskId));
+    setStreamConnection("connecting");
+
+    const refreshTerminalJob = () => {
+      if (terminalHandled) return;
+      terminalHandled = true;
+      void getJob(taskId)
+        .then((next) => {
+          if (disposed || currentJobIdRef.current !== taskId) return;
+          setJob(next);
+          if (next.status === "completed" && next.result) {
+            setResult(next.result);
+            setSelectedNodeId(next.result.root_id);
+            void refreshHistory();
+          } else if (next.status === "failed") {
+            setError(next.error || "任务执行失败");
+          } else if (next.status === "cancelled") {
+            setError("任务已取消，源文件仍保留在服务端。");
+          }
+        })
+        .catch((caught) => {
+          if (!disposed) {
+            setError(
+              caught instanceof Error ? caught.message : "任务状态读取失败",
+            );
+          }
+        });
+    };
+
+    const flush = () => {
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      flushTimer = undefined;
+      setStreamState((current) => mergeJobEvents(current, batch));
+      const statusEvent = [...batch]
+        .reverse()
+        .find((event) => event.kind === "status");
+      if (statusEvent) {
+        setJob((current) =>
+          current?.id === taskId
+            ? {
+                ...current,
+                stage: statusEvent.stage || current.stage,
+                progress: Math.max(
+                  current.progress,
+                  statusEvent.progress ?? current.progress,
+                ),
+                message: statusEvent.message || current.message,
+              }
+            : current,
+        );
+      }
+      if (
+        batch.some((event) =>
+          ["job_complete", "job_failed", "job_cancelled"].includes(
+            event.kind,
+          ),
+        )
+      ) {
+        source.close();
+        setStreamConnection("closed");
+        refreshTerminalJob();
+      }
+    };
+
+    const scheduleFlush = (immediate = false) => {
+      if (immediate) {
+        if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+        flush();
+        return;
+      }
+      if (flushTimer === undefined) {
+        flushTimer = window.setTimeout(flush, 50);
+      }
+    };
+
+    source.onopen = () => {
+      if (!disposed) setStreamConnection("live");
+    };
+    source.onmessage = (message) => {
+      if (disposed) return;
+      try {
+        const event = JSON.parse(message.data) as JobEvent;
+        if (event.task_id !== taskId) return;
+        pending.push(event);
+        scheduleFlush(
+          ["job_complete", "job_failed", "job_cancelled"].includes(
+            event.kind,
+          ),
+        );
+      } catch {
+        setError("实时输出包含无法解析的事件。");
+      }
+    };
+    source.onerror = () => {
+      if (!disposed && !terminalHandled) {
+        setStreamConnection("reconnecting");
+      }
+    };
+
+    return () => {
+      if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+      flush();
+      disposed = true;
+      source.close();
+    };
+  }, [workspaceReady, job?.id, job?.status, refreshHistory]);
+
+  useEffect(() => {
+    if (!job || !shouldContinuePolling(job.status) || !workspaceReady) return;
     let disposed = false;
     let timer: number | undefined;
     let failures = 0;
@@ -193,9 +399,15 @@ function App() {
       timer = window.setTimeout(() => void poll(), delay);
     };
     const poll = async () => {
+      const taskId = job.id;
       try {
-        const next = await getJob(job.id);
-        if (disposed) return;
+        const next = await getJob(taskId);
+        if (
+          disposed
+          || currentJobIdRef.current !== taskId
+        ) {
+          return;
+        }
         failures = 0;
         setJob(next);
         if (next.status === "completed" && next.result) {
@@ -223,7 +435,7 @@ function App() {
       disposed = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [authenticated, job?.id, job?.status, refreshHistory]);
+  }, [workspaceReady, job?.id, job?.status, refreshHistory]);
 
   useEffect(() => {
     if (!job) return;
@@ -235,13 +447,21 @@ function App() {
   }, [job]);
 
   useEffect(() => {
-    if (!historyOpen) return;
+    if (!historyOpen && !settingsOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setHistoryOpen(false);
+      if (event.key === "Escape") {
+        if (document.querySelector(".mindmap-viewer")) return;
+        setHistoryOpen(false);
+        setSettingsOpen(false);
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [historyOpen]);
+  }, [historyOpen, settingsOpen]);
+
+  useEffect(() => {
+    if (result) setArtifactOpen(false);
+  }, [result?.task_id]);
 
   const running = job ? shouldContinuePolling(job.status) : false;
   const workspaceLabel = health
@@ -274,43 +494,40 @@ function App() {
   };
 
   const run = async () => {
-    if (!file || !authenticated) return;
+    if (
+      !canStartJobSubmission(
+        Boolean(file),
+        workspaceReady,
+        running,
+        submittingRef.current,
+      )
+      || !file
+    ) {
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
     setError("");
     setResult(null);
     setSelectedNodeId(null);
-    setView("graph");
+    setView("stream");
+    setSettingsOpen(false);
     try {
-      const next = await createJob(file, provider, model, useAi, mode);
+      const primaryModel = loopConfig.rounds[0].editor_model;
+      const next = await createJob(
+        file,
+        provider,
+        primaryModel,
+        loopConfig,
+      );
+      currentJobIdRef.current = next.id;
+      window.localStorage.setItem(ACTIVE_TASK_KEY, next.id);
       setJob(next);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "提交任务失败");
-    }
-  };
-
-  const authenticate = async () => {
-    if (!authToken.trim()) return;
-    setAuthBusy(true);
-    setError("");
-    try {
-      await createSession(authToken.trim());
-      setAuthenticated(true);
-      setAuthToken("");
-      void getModels("qwen")
-        .then((available) => {
-          setModels(available);
-          setModelStatus("idle");
-          setModelMessage("");
-        })
-        .catch(() => {
-          setModels((current) => (current.length > 0 ? current : [model]));
-          setModelStatus("denied");
-          setModelMessage("模型列表不可用");
-        });
-    } catch (caught) {
-      setAuthenticated(false);
-      setError(caught instanceof Error ? caught.message : "工作台鉴权失败");
     } finally {
-      setAuthBusy(false);
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -330,56 +547,23 @@ function App() {
     setModelStatus("checking");
     setModelMessage("");
     try {
-      const checked = await checkModel(provider, model);
-      setModelStatus(checked.ok ? "available" : "denied");
+      const selectedModels = selectedLoopModels(loopConfig);
+      const checks = await Promise.all(
+        selectedModels.map(async (model) => ({
+          model,
+          ...(await checkModel(provider, model)),
+        })),
+      );
+      const unavailable = checks.filter((check) => !check.ok);
+      setModelStatus(unavailable.length === 0 ? "available" : "denied");
       setModelMessage(
-        checked.ok ? "Qwen 全流程模型可用" : checked.message,
+        unavailable.length === 0
+          ? `${selectedModels.length} 个模型均可用`
+          : `${unavailable.map((check) => check.model).join("、")} 不可用`,
       );
     } catch (caught) {
       setModelStatus("denied");
       setModelMessage(caught instanceof Error ? caught.message : "检查失败");
-    }
-  };
-
-  const handleReview = async (
-    reviewId: string,
-    resolution: ReviewResolution,
-  ) => {
-    if (!result) return;
-    setBusyReviewId(reviewId);
-    setError("");
-    try {
-      const updated = await resolveReview(
-        result.task_id,
-        reviewId,
-        resolution,
-        result.graph_version,
-      );
-      setResult(updated);
-      setJob((current) =>
-        current ? { ...current, result: updated } : current,
-      );
-      void refreshHistory().catch(() => undefined);
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "复核操作失败";
-      if (message.includes("版本冲突")) {
-        try {
-          const refreshed = await getJob(result.task_id);
-          if (refreshed.result) {
-            setJob(refreshed);
-            setResult(refreshed.result);
-            setError("图版本已更新，已载入最新版本，请重新确认该操作。");
-          } else {
-            setError(message);
-          }
-        } catch {
-          setError(message);
-        }
-      } else {
-        setError(message);
-      }
-    } finally {
-      setBusyReviewId(null);
     }
   };
 
@@ -389,10 +573,19 @@ function App() {
     try {
       const restored = await getJob(item.task_id);
       setJob(restored);
+      if (restored.loop_config) {
+        setLoopConfig(
+          normalizeLoopConfig(
+            restored.loop_config,
+            restored.loop_config.rounds[0]?.editor_model ||
+              "qwen3.8-max-preview",
+          ),
+        );
+      }
       if (restored.result) {
         setResult(restored.result);
-        setMode(restored.result.mode);
         setSelectedNodeId(restored.result.root_id);
+        setArtifactOpen(false);
       } else {
         setResult(null);
         setSelectedNodeId(null);
@@ -400,9 +593,11 @@ function App() {
           setError(restored.error || "该历史任务执行失败。");
         }
       }
-      setView("graph");
+      setView(
+        shouldContinuePolling(restored.status) ? "stream" : "graph",
+      );
       setFile(null);
-      setHistoryOpen(false);
+      if (window.innerWidth <= 700) setHistoryOpen(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "历史记录加载失败");
     } finally {
@@ -434,13 +629,11 @@ function App() {
     if (!result) return "";
     if (result.extraction_mode === "qwen") return "Qwen 生成";
     if (result.extraction_mode === "deepseek") return "历史 DeepSeek 任务";
-    if (result.extraction_mode === "kimi") return "历史 Kimi 任务";
+    if (result.extraction_mode === "kimi") return "历史模型任务";
     if (result.extraction_mode === "mixed") return "模型与本地混合";
     return "本地确定性降级";
   }, [result]);
 
-  const pendingReviews =
-    result?.review_items.filter((item) => item.status === "pending").length || 0;
   const qualityState = result
     ? qualityPresentation({
         topology_valid: result.quality_report.topology_valid,
@@ -451,34 +644,87 @@ function App() {
         quality_gate_passed:
           result.quality_report.quality_gate_passed,
         degraded_components: result.degraded_components,
-        pending_reviews: pendingReviews,
+        pending_reviews: 0,
       })
     : null;
+  const sourceFilename = file?.name || result?.document.filename || "";
+  const visibleHistory = useMemo(() => {
+    const query = historyQuery.trim().toLocaleLowerCase();
+    if (!query) return history;
+    return history.filter((item) =>
+      `${item.title} ${item.filename}`.toLocaleLowerCase().includes(query),
+    );
+  }, [history, historyQuery]);
+
+  const clearFileSelection = () => {
+    setFile(null);
+    if (fileInput.current) fileInput.current.value = "";
+  };
+
+  const startNewTask = () => {
+    if (running) {
+      setError("当前任务仍在运行，请先取消任务再新建会话。");
+      return;
+    }
+    clearFileSelection();
+    setResult(null);
+    setJob(null);
+    setSelectedNodeId(null);
+    setView("graph");
+    setArtifactOpen(false);
+    if (window.innerWidth <= 700) setHistoryOpen(false);
+    setError("");
+  };
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell agent-shell ${historyOpen ? "sidebar-open" : ""}`}
+    >
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">
-            <Network size={20} />
-          </span>
-          <div>
-            <strong>ZLB 思维导图 Agent</strong>
-            <span>C+ 课程知识工作台</span>
-          </div>
+        <div className="topbar-primary">
+          <button
+            type="button"
+            className="topbar-icon"
+            aria-label="历史记录"
+            title="历史记录"
+            onClick={() => setHistoryOpen((current) => !current)}
+            disabled={!workspaceReady}
+          >
+            <Menu size={18} />
+          </button>
+          <button
+            type="button"
+            className="agent-selector"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <span className="brand-mark">
+              <Network size={17} />
+            </span>
+            <span>
+              <strong>{PRODUCT_NAME}</strong>
+              <small>{PRODUCT_DESCRIPTION}</small>
+            </span>
+            <ChevronDown size={15} />
+          </button>
         </div>
         <div className="topbar-actions">
           <button
             type="button"
-            className="history-toggle"
-            aria-label="历史记录"
-            title="历史记录"
-            onClick={() => setHistoryOpen(true)}
-            disabled={!authenticated}
+            className="topbar-command"
+            onClick={startNewTask}
+            disabled={running}
           >
-            <History size={16} />
-            <span>历史记录</span>
-            {history.length > 0 && <b>{history.length}</b>}
+            <Plus size={16} />
+            <span>新建会话</span>
+          </button>
+          <button
+            type="button"
+            className="topbar-icon"
+            aria-label="Agent 设置"
+            title="Agent 设置"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings2 size={17} />
           </button>
           <div className="workspace-status">
             <span
@@ -489,39 +735,37 @@ function App() {
         </div>
       </header>
 
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".pdf,.pptx,.docx,.txt,.md"
+        hidden
+        onChange={(event) => acceptFile(event.target.files?.[0])}
+      />
+
       <div className="workspace-layout">
-        <aside className="control-panel">
-          {health?.auth_required && !authenticated && (
-            <div className="auth-card">
-              <LockKeyhole size={20} />
-              <div>
-                <strong>生产工作台鉴权</strong>
-                <span>输入部署时配置的访问令牌。</span>
-              </div>
-              <input
-                type="password"
-                value={authToken}
-                autoComplete="current-password"
-                placeholder="访问令牌"
-                onChange={(event) => setAuthToken(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void authenticate();
-                }}
-              />
-              <button
-                type="button"
-                disabled={authBusy || !authToken.trim()}
-                onClick={() => void authenticate()}
-              >
-                {authBusy ? (
-                  <LoaderCircle className="spin" size={15} />
-                ) : (
-                  <LockKeyhole size={15} />
-                )}
-                进入工作台
-              </button>
+        {settingsOpen && (
+          <aside
+            className="control-panel settings-drawer open"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Agent 设置"
+          >
+          <header className="settings-drawer-header">
+            <div>
+              <span className="eyebrow">Agent configuration</span>
+              <h2>{PRODUCT_NAME}</h2>
             </div>
-          )}
+            <button
+              type="button"
+              className="topbar-icon"
+              aria-label="关闭 Agent 设置"
+              title="关闭"
+              onClick={() => setSettingsOpen(false)}
+            >
+              <X size={18} />
+            </button>
+          </header>
           <div className="panel-heading">
             <span className="step-number">01</span>
             <div>
@@ -547,13 +791,6 @@ function App() {
               }
             }}
           >
-            <input
-              ref={fileInput}
-              type="file"
-              accept=".pdf,.pptx,.docx,.txt,.md"
-              hidden
-              onChange={(event) => acceptFile(event.target.files?.[0])}
-            />
             {file ? (
               <>
                 <FileStack size={25} />
@@ -582,72 +819,28 @@ function App() {
           <div className="panel-heading compact">
             <span className="step-number">02</span>
             <div>
-              <h2>运行配置</h2>
-              <p>生成、校验、仲裁与视觉统一调度</p>
+              <h2>编排 loop</h2>
+              <p>逐轮选择 Agent 角色与模型</p>
             </div>
           </div>
 
-          <label className="field-label">运行档位</label>
-          <div className="mode-control" aria-label="运行档位">
-            <button
-              type="button"
-              className={mode === "standard" ? "active" : ""}
-              onClick={() => setMode("standard")}
-              title="单校验器与全局拓扑求解"
-            >
-              标准档
-            </button>
-            <button
-              type="button"
-              className={mode === "precision" ? "active" : ""}
-              onClick={() => setMode("precision")}
-              title="高风险项双校验并按需仲裁"
-            >
-              高精档
-            </button>
-          </div>
-
-          <label className="field-label">模型角色</label>
-          <div className="role-models" aria-label="模型角色">
-            <div className="role-model-row">
-              <span className="role-kind">全部</span>
-              <div>
-                <strong>Qwen</strong>
-                <small>{model}</small>
-              </div>
-              <span
-                className={`role-status ${health?.providers.qwen.configured ? "online" : ""}`}
-                title={health?.providers.qwen.configured ? "已配置" : "未配置"}
-              />
-            </div>
-          </div>
-          <label className="field-label model-label" htmlFor="model-select">
-            全流程模型
-          </label>
-          <div className="select-wrap">
-            <select
-              id="model-select"
-              value={model}
-              onChange={(event) => {
-                setModel(event.target.value);
-                setModelStatus("idle");
-              }}
-            >
-              {!models.includes(model) && <option value={model}>{model}</option>}
-              {models.map((item) => (
-                <option value={item} key={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-            <ChevronDown size={15} />
-          </div>
+          <LoopBuilder
+            config={loopConfig}
+            example={loopExample}
+            models={models}
+            disabled={running || submitting}
+            onChange={(next) => {
+              setLoopConfig(next);
+              setModelStatus("idle");
+              setModelMessage("");
+            }}
+          />
 
           <button
             type="button"
             className={`model-check ${modelStatus}`}
             onClick={verifyModel}
-            disabled={modelStatus === "checking" || !authenticated}
+            disabled={modelStatus === "checking" || !workspaceReady}
           >
             {modelStatus === "checking" ? (
               <LoaderCircle className="spin" size={15} />
@@ -659,37 +852,35 @@ function App() {
               <CircleGauge size={15} />
             )}
             {modelStatus === "idle"
-              ? "检查全部模型"
+              ? "检查所选模型"
               : modelStatus === "checking"
                 ? "正在检查"
                 : modelMessage}
           </button>
 
-          <label className="toggle-row">
-            <span>
-              <strong>启用模型 Agent</strong>
-              <small>失败阶段自动切换确定性实现</small>
-            </span>
-            <input
-              type="checkbox"
-              checked={useAi}
-              onChange={(event) => setUseAi(event.target.checked)}
-            />
-            <i />
-          </label>
-
           <button
             type="button"
             className="run-button"
             onClick={run}
-            disabled={!file || running || !authenticated}
+            disabled={
+              !canStartJobSubmission(
+                Boolean(file),
+                workspaceReady,
+                running,
+                submitting,
+              )
+            }
           >
-            {running ? (
+            {running || submitting ? (
               <LoaderCircle className="spin" size={18} />
             ) : (
               <Play size={18} fill="currentColor" />
             )}
-            {running ? "正在构建思维导图" : "开始构建"}
+            {submitting
+              ? "正在提交任务"
+              : running
+                ? "正在构建思维导图"
+                : "开始构建"}
           </button>
 
           {running && job && (
@@ -719,10 +910,11 @@ function App() {
               <span>{error}</span>
             </div>
           )}
-        </aside>
+          </aside>
+        )}
 
         <main className="main-workspace">
-          {result ? (
+          {result && artifactOpen ? (
             <>
               <div className="result-header">
                 <div>
@@ -750,9 +942,9 @@ function App() {
                     </strong>
                     <span>内容覆盖</span>
                   </div>
-                  <div className={pendingReviews > 0 ? "attention" : ""}>
-                    <strong>{pendingReviews}</strong>
-                    <span>待复核</span>
+                  <div>
+                    <strong>{result.quality_report.cross_link_count}</strong>
+                    <span>跨链</span>
                   </div>
                 </div>
               </div>
@@ -816,14 +1008,18 @@ function App() {
                 >
                   <FileStack size={16} /> 内容单元
                 </button>
-                <button
-                  type="button"
-                  className={view === "reviews" ? "active" : ""}
-                  onClick={() => setView("reviews")}
-                >
-                  <ListChecks size={16} /> 复核
-                  {pendingReviews > 0 && <span className="tab-count">{pendingReviews}</span>}
-                </button>
+                {streamState.calls.length > 0 && (
+                  <button
+                    type="button"
+                    className={view === "stream" ? "active" : ""}
+                    onClick={() => setView("stream")}
+                  >
+                    <SquareTerminal size={16} /> 运行输出
+                    <span className="tab-count">
+                      {streamState.calls.length}
+                    </span>
+                  </button>
+                )}
                 {view === "graph" && result.cross_links.length > 0 && (
                   <button
                     type="button"
@@ -850,15 +1046,19 @@ function App() {
                   className="reset-action"
                   aria-label="新建任务"
                   title="新建任务"
-                  onClick={() => {
-                    setResult(null);
-                    setJob(null);
-                    setSelectedNodeId(null);
-                    setView("graph");
-                  }}
+                  onClick={startNewTask}
                 >
                   <RotateCcw size={15} />
                   <span>新建任务</span>
+                </button>
+                <button
+                  type="button"
+                  className="artifact-close"
+                  aria-label="关闭工作区"
+                  title="关闭工作区"
+                  onClick={() => setArtifactOpen(false)}
+                >
+                  <PanelRightClose size={15} />
                 </button>
               </div>
 
@@ -904,114 +1104,328 @@ function App() {
                   />
                 )}
                 {view === "chunks" && <ChunkList chunks={result.chunks} />}
-                {view === "reviews" && (
-                  <ReviewQueue
-                    result={result}
-                    busyReviewId={busyReviewId}
-                    onResolve={(reviewId, resolution) =>
-                      void handleReview(reviewId, resolution)
-                    }
-                    onSelectNode={(id) => {
-                      setSelectedNodeId(id);
-                      setView("graph");
-                    }}
+                {view === "stream" && job && (
+                  <AgentActivityFeed
+                    job={job}
+                    calls={streamState.calls}
+                    steps={streamState.steps}
+                    connectionState={streamConnection}
                   />
                 )}
               </div>
             </>
+          ) : result ? (
+            <div className="conversation-complete">
+              <div className="message-thread">
+                <article className="chat-message user-message">
+                  <div className="message-avatar user-avatar">你</div>
+                  <div className="message-content">
+                    <p>为这份课程材料构建思维导图。</p>
+                    <span className="message-file">
+                      <FileStack size={15} />
+                      {sourceFilename}
+                    </span>
+                  </div>
+                </article>
+                <article className="chat-message assistant-message">
+                  <div className="message-avatar agent-avatar">
+                    <Network size={17} />
+                  </div>
+                  <div className="message-content">
+                    {job && (
+                      <AgentActivityFeed
+                        job={job}
+                        calls={streamState.calls}
+                        steps={streamState.steps}
+                        connectionState={streamConnection}
+                      />
+                    )}
+                    <strong>思维导图已完成</strong>
+                    <p>
+                      已生成 {result.quality_report.node_count} 个节点、
+                      {result.quality_report.tree_edge_count} 条主树边，内容覆盖率
+                      {Math.round(
+                        result.quality_report.weighted_content_coverage * 100,
+                      )}
+                      %。
+                    </p>
+                    <MindmapAttachment result={result} />
+                    <button
+                      type="button"
+                      className="open-artifact"
+                      onClick={() => setArtifactOpen(true)}
+                    >
+                      <TableProperties size={16} />
+                      查看结构数据
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <button
+                type="button"
+                className="new-conversation-action"
+                onClick={startNewTask}
+              >
+                <Plus size={16} />
+                新建会话
+              </button>
+            </div>
+          ) : job && (running || streamState.calls.length > 0) ? (
+            <div className="conversation-running">
+              <div className="message-thread">
+                <article className="chat-message user-message">
+                  <div className="message-avatar user-avatar">你</div>
+                  <div className="message-content">
+                    <p>为这份课程材料构建思维导图。</p>
+                    <span className="message-file">
+                      <FileStack size={15} />
+                      {sourceFilename}
+                    </span>
+                  </div>
+                </article>
+                <article className="chat-message assistant-message">
+                  <div className="message-avatar agent-avatar">
+                    <Network size={17} />
+                  </div>
+                  <div className="message-content">
+                    <AgentActivityFeed
+                      job={job}
+                      calls={streamState.calls}
+                      steps={streamState.steps}
+                      connectionState={streamConnection}
+                      onCancel={() => void cancelActiveJob()}
+                    />
+                  </div>
+                </article>
+              </div>
+            </div>
           ) : (
             <div className="empty-workspace">
-              <div className="empty-state-icon">
-                <Workflow size={34} />
+              <div className="chat-welcome">
+                <div className="empty-state-icon">
+                  <Network size={28} />
+                </div>
+                <h1>今天想整理哪份课程材料？</h1>
+                <p>上传课件，Agent 会生成完整的课程思维导图。</p>
+                {!file && (
+                  <button
+                    type="button"
+                    className="sample-button welcome-sample"
+                    onClick={() => acceptFile(createSampleFile())}
+                  >
+                    <Sparkles size={15} />
+                    载入机器学习示例
+                  </button>
+                )}
               </div>
-              <span className="eyebrow">C+ Supervisor ready</span>
-              <h1>{running ? "正在组织分支团队" : "等待课程材料"}</h1>
-              <p>{running ? job?.message : "选择左侧课件后开始构建。"}</p>
+              <div
+                className={`composer-stage ${dragging ? "dragging" : ""}`}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={handleDrop}
+              >
+                {file && (
+                  <div className="composer-file">
+                    <span>
+                      <FileStack size={15} />
+                      <strong>{file.name}</strong>
+                      <small>{(file.size / 1024).toFixed(1)} KB</small>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="移除文件"
+                      title="移除文件"
+                      onClick={clearFileSelection}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                )}
+                <div className="agent-composer">
+                  <button
+                    type="button"
+                    className="composer-icon"
+                    aria-label="上传课件"
+                    title="上传课件"
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    <Paperclip size={18} />
+                  </button>
+                  <div className="composer-copy">
+                    <strong>
+                      {file ? "构建课程思维导图" : "上传课程文件"}
+                    </strong>
+                    <span>
+                      {file
+                        ? file.name
+                        : "PDF、PPTX、DOCX、TXT 或 Markdown"}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="composer-icon"
+                    aria-label="Agent 设置"
+                    title="Agent 设置"
+                    onClick={() => setSettingsOpen(true)}
+                  >
+                    <Settings2 size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-send"
+                    aria-label="开始构建"
+                    title="开始构建"
+                    onClick={() => void run()}
+                    disabled={
+                      !canStartJobSubmission(
+                        Boolean(file),
+                        workspaceReady,
+                        running,
+                        submitting,
+                      )
+                    }
+                  >
+                    {submitting ? (
+                      <LoaderCircle className="spin" size={18} />
+                    ) : (
+                      <Send size={18} fill="currentColor" />
+                    )}
+                  </button>
+                </div>
+                <span className="composer-note">
+                  {dragging
+                    ? "松开即可添加课程文件"
+                    : `${workspaceLabel} · 最多 150 页或幻灯片`}
+                </span>
+              </div>
+              {error && (
+                <div className="chat-error" role="alert">
+                  <AlertCircle size={16} />
+                  <span>{error}</span>
+                </div>
+              )}
             </div>
           )}
         </main>
       </div>
-      {historyOpen && (
-        <div
-          className="history-overlay"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setHistoryOpen(false);
-          }}
-        >
-          <aside
-            className="history-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-label="历史记录"
-          >
-            <header>
-              <div>
-                <span className="eyebrow">SQLite history</span>
-                <h2>历史记录</h2>
-              </div>
-              <button
-                type="button"
-                title="关闭"
-                aria-label="关闭历史记录"
-                onClick={() => setHistoryOpen(false)}
-              >
-                <X size={18} />
-              </button>
-            </header>
-            {historyLoading ? (
-              <div className="history-state">
-                <LoaderCircle className="spin" size={20} />
-                <span>正在读取历史记录</span>
-              </div>
-            ) : history.length === 0 ? (
-              <div className="history-state">
-                <History size={23} />
-                <strong>还没有历史记录</strong>
-                <span>完成一次思维导图构建后会自动保存在这里。</span>
-              </div>
-            ) : (
-              <div className="history-list">
-                {history.map((item) => (
-                  <div className="history-item" key={item.task_id}>
-                    <button
-                      type="button"
-                      className="history-open"
-                      disabled={historyBusyId === item.task_id}
-                      onClick={() => void openHistoryItem(item)}
-                    >
-                      <div>
-                        <strong>{item.title}</strong>
-                        <time dateTime={item.updated_at}>
-                          {historyTime(item.updated_at)}
-                        </time>
-                      </div>
-                      <p>{item.filename}</p>
-                      <span>
-                        {item.file_type.toUpperCase()} · {item.node_count} 节点 ·
-                        v{item.graph_version}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="history-delete"
-                      title="删除历史记录"
-                      aria-label={`删除 ${item.title}`}
-                      disabled={historyBusyId === item.task_id}
-                      onClick={() => void removeHistoryItem(item)}
-                    >
-                      {historyBusyId === item.task_id ? (
-                        <LoaderCircle className="spin" size={15} />
-                      ) : (
-                        <Trash2 size={15} />
-                      )}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </aside>
-        </div>
+      {settingsOpen && (
+        <button
+          type="button"
+          className="settings-scrim"
+          aria-label="关闭 Agent 设置"
+          onClick={() => setSettingsOpen(false)}
+        />
       )}
+      <div
+        className={`history-overlay ${historyOpen ? "open" : ""}`}
+        onMouseDown={(event) => {
+          if (
+            window.innerWidth <= 700
+            && event.target === event.currentTarget
+          ) {
+            setHistoryOpen(false);
+          }
+        }}
+      >
+        <aside className="history-drawer" aria-label="会话">
+          <header>
+            <div>
+              <span className="eyebrow">{PRODUCT_NAME}</span>
+              <h2>会话</h2>
+            </div>
+            <button
+              type="button"
+              title="关闭"
+              aria-label="关闭历史记录"
+              onClick={() => setHistoryOpen(false)}
+            >
+              <X size={18} />
+            </button>
+          </header>
+          <button
+            type="button"
+            className="sidebar-new-session"
+            onClick={startNewTask}
+            disabled={running}
+          >
+            <Plus size={15} />
+            新建会话
+          </button>
+          <label className="sidebar-search">
+            <Search size={14} />
+            <input
+              value={historyQuery}
+              onChange={(event) => setHistoryQuery(event.target.value)}
+              placeholder="搜索会话"
+              aria-label="搜索会话"
+            />
+          </label>
+          {historyLoading ? (
+            <div className="history-state">
+              <LoaderCircle className="spin" size={20} />
+              <span>正在读取历史记录</span>
+            </div>
+          ) : history.length === 0 ? (
+            <div className="history-state">
+              <History size={23} />
+              <strong>还没有历史记录</strong>
+              <span>完成一次思维导图构建后会自动保存在这里。</span>
+            </div>
+          ) : visibleHistory.length === 0 ? (
+            <div className="history-state compact">
+              <Search size={20} />
+              <strong>没有匹配的会话</strong>
+            </div>
+          ) : (
+            <div className="history-list">
+              {visibleHistory.map((item) => (
+                <div
+                  className={`history-item ${
+                    item.task_id === job?.id ? "active" : ""
+                  }`}
+                  key={item.task_id}
+                >
+                  <button
+                    type="button"
+                    className="history-open"
+                    disabled={historyBusyId === item.task_id}
+                    onClick={() => void openHistoryItem(item)}
+                  >
+                    <div>
+                      <strong>{item.title}</strong>
+                      <time dateTime={item.updated_at}>
+                        {historyTime(item.updated_at)}
+                      </time>
+                    </div>
+                    <p>{item.filename}</p>
+                    <span>
+                      {item.file_type.toUpperCase()} · {item.node_count} 节点 ·
+                      v{item.graph_version}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="history-delete"
+                    title="删除历史记录"
+                    aria-label={`删除 ${item.title}`}
+                    disabled={historyBusyId === item.task_id}
+                    onClick={() => void removeHistoryItem(item)}
+                  >
+                    {historyBusyId === item.task_id ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Trash2 size={15} />
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </aside>
+      </div>
     </div>
   );
 }
