@@ -58,6 +58,13 @@ def evidence(unit_id: str, excerpt: str = "可审计原文") -> EvidenceRef:
     return EvidenceRef(unit_id=unit_id, chunk_id=unit_id, excerpt=excerpt)
 
 
+TERMINAL_GOLD_GATE = {
+    "name_teaches_novice": True,
+    "no_further_bullet_decomposition": True,
+    "minimum_knowledge_atom": False,
+}
+
+
 def real_export_claim_candidates() -> dict[str, NodeCandidateIn]:
     cases = {
         "node_7bf97ce023f0": (
@@ -328,6 +335,7 @@ class AttachOnlyBranchClient:
                     "type": "concept",
                     "origin": "explicit",
                     "confidence": 0.9,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                     "evidence": [
                         {
                             "unit_id": "visual-attach",
@@ -350,6 +358,7 @@ class PartiallyMalformedBranchClient:
                     "definition": "概率密度由波函数模平方给出。",
                     "origin": "explicit",
                     "confidence": 0.92,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                     "evidence": [
                         {
                             "unit_id": "u1",
@@ -371,6 +380,86 @@ class PartiallyMalformedBranchClient:
         }
 
 
+class StructuralContextBranchClient:
+    def __init__(self):
+        self.prompts: dict[str, dict] = {}
+
+    async def complete_json(self, **kwargs):
+        prompt = json.loads(kwargs["user_prompt"])
+        branch_id = prompt["branch"]["id"]
+        self.prompts[branch_id] = prompt
+        unit = prompt["content_units"][0]
+        return {
+            "nodes": [
+                {
+                    "temp_id": f"{branch_id}:node",
+                    "name": unit["text"].rstrip("。"),
+                    "definition": unit["text"],
+                    "origin": "explicit",
+                    "confidence": 0.9,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
+                    "evidence": [
+                        {
+                            "unit_id": unit["unit_id"],
+                            "excerpt": unit["text"],
+                        }
+                    ],
+                    "support_unit_ids": [unit["unit_id"]],
+                }
+            ],
+            "cross_links": [],
+        }
+
+
+class DiscardingBranchClient:
+    def __init__(self):
+        self.search_enabled = False
+
+    async def complete_json(self, **kwargs):
+        self.search_enabled = kwargs.get("enable_search") is True
+        prompt = json.loads(kwargs["user_prompt"])
+        units = {
+            unit["unit_id"]: unit
+            for unit in prompt["content_units"]
+        }
+        core = units["u-core"]
+        return {
+            "nodes": [
+                {
+                    "temp_id": "core-node",
+                    "name": "受激辐射产生与入射光同频同相的光子",
+                    "definition": (
+                        "受激辐射发生时，新产生光子与入射光子的频率、"
+                        "相位和传播方向一致。"
+                    ),
+                    "origin": "explicit",
+                    "confidence": 0.92,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
+                    "evidence": [
+                        {
+                            "unit_id": core["unit_id"],
+                            "excerpt": core["text"],
+                        }
+                    ],
+                    "support_unit_ids": [core["unit_id"]],
+                }
+            ],
+            "cross_links": [],
+            "discarded_units": [
+                {
+                    "unit_id": "u-intro",
+                    "category": "popularization",
+                    "reason": "仅为不影响课程主线的科普导入",
+                },
+                {
+                    "unit_id": "u-formula",
+                    "category": "edge",
+                    "reason": "模型错误地建议丢弃公式",
+                },
+            ],
+        }
+
+
 class NonObjectBranchClient:
     async def complete_json(self, **_kwargs):
         return ["unexpected", "top-level", "array"]
@@ -386,6 +475,7 @@ class ClaimFidelityBranchClient:
                     "definition": "谐振腔驻波条件为 nkλ/2=L。",
                     "origin": "explicit",
                     "confidence": 0.95,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                     "evidence": [
                         {
                             "unit_id": "standing-wave",
@@ -400,6 +490,7 @@ class ClaimFidelityBranchClient:
                     "definition": "输出线宽可小到10^-15量级。",
                     "origin": "explicit",
                     "confidence": 0.9,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                     "evidence": [
                         {
                             "unit_id": "linewidth",
@@ -414,6 +505,7 @@ class ClaimFidelityBranchClient:
                     "definition": "谐振腔驻波边界条件。",
                     "origin": "explicit",
                     "confidence": 0.9,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                     "evidence": [
                         {
                             "unit_id": "standing-wave",
@@ -428,6 +520,7 @@ class ClaimFidelityBranchClient:
                     "definition": "相对线宽满足 Δν/ν≈10^-15。",
                     "origin": "explicit",
                     "confidence": 0.92,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                     "evidence": [
                         {
                             "unit_id": "linewidth",
@@ -451,6 +544,7 @@ class SoftClaimFidelityBranchClient:
                     "definition": "氢原子能级满足 E_n=E_1/n²。",
                     "origin": "explicit",
                     "confidence": 0.88,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                     "evidence": [
                         {
                             "unit_id": "energy-level",
@@ -468,6 +562,43 @@ class GraphQualityTDDTests(unittest.IsolatedAsyncioTestCase):
     def test_non_object_branch_payload_is_a_fallback_safe_validation_error(self):
         with self.assertRaisesRegex(ValueError, "JSON 对象"):
             _validate_branch_extraction_payload([])  # type: ignore[arg-type]
+
+    def test_branch_nodes_require_novice_name_and_or_terminal_gold_gate(self):
+        extraction, warnings = _validate_branch_extraction_payload(
+            {
+                "nodes": [
+                    {
+                        "temp_id": "missing-gate",
+                        "name": "待查询短词",
+                    },
+                    {
+                        "temp_id": "failed-or-gate",
+                        "name": "仍可继续拆分的知识",
+                        "terminal_gold_gate": {
+                            "name_teaches_novice": True,
+                            "no_further_bullet_decomposition": False,
+                            "minimum_knowledge_atom": False,
+                        },
+                    },
+                    {
+                        "temp_id": "valid-gate",
+                        "name": "温度升高使该平衡向吸热方向移动",
+                        "terminal_gold_gate": {
+                            "name_teaches_novice": True,
+                            "no_further_bullet_decomposition": False,
+                            "minimum_knowledge_atom": True,
+                        },
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(
+            [node.temp_id for node in extraction.nodes],
+            ["valid-gate"],
+        )
+        self.assertTrue(any("缺少 terminal_gold_gate" in item for item in warnings))
+        self.assertTrue(any("schema 无效" in item for item in warnings))
 
     def test_branch_budget_keeps_one_candidate_per_supported_unit_first(self):
         candidates = [
@@ -883,6 +1014,27 @@ class GraphQualityTDDTests(unittest.IsolatedAsyncioTestCase):
             [],
         )
 
+    def test_label_gate_rejects_spaced_chemical_structure_fragments(self):
+        malformed = (
+            "OH O Na₂Cr₂O₇ H₂SO₄, H₂O R R R R",
+            "O H₂SO₄, H₂O HgSO₄ R R CH₃",
+            "O O Cl R AlCl₃ R",
+        )
+        for label in malformed:
+            with self.subTest(label=label):
+                self.assertIn(
+                    "spaced_chemical_structure_fragment",
+                    label_quality_issues(label),
+                )
+                self.assertFalse(is_publishable_label(label))
+
+        self.assertTrue(
+            is_publishable_label(
+                "RO OR + H_2O [H^+] → O + 2 ROH",
+                allow_formula_label=True,
+            )
+        )
+
     def test_definition_gate_rejects_real_export_fragments_only(self):
         malformed = [
             (
@@ -1268,6 +1420,184 @@ class GraphQualityTDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["nodes"], [])
         self.assertTrue(
             any("attach_as_media" in warning for warning in state["warnings"])
+        )
+
+    async def test_branch_prompt_separates_path_other_path_and_section_context(
+        self,
+    ):
+        client = StructuralContextBranchClient()
+        theme_plan = ThemePlanOutput(
+            root_candidates=[
+                ThemeNodeSpec(
+                    temp_id="root",
+                    name="醛和酮",
+                    definition="醛和酮的课程知识体系",
+                    support_unit_ids=["u-physical", "u-naming", "u-reaction"],
+                )
+            ],
+            branch_topics=[],
+        )
+        plans = [
+            BranchPlan(
+                id="properties",
+                label="醛酮的物理性质",
+                description="比较醛酮的沸点和溶解性",
+                unit_ids=["u-physical", "u-naming"],
+                leaf=False,
+            ),
+            BranchPlan(
+                id="boiling",
+                label="醛酮的沸点",
+                description="总结具体物质的沸点数据",
+                unit_ids=["u-physical"],
+                parent_branch_id="properties",
+                depth=2,
+            ),
+            BranchPlan(
+                id="solubility",
+                label="醛酮的溶解性",
+                description="总结水溶性规律",
+                unit_ids=["u-naming"],
+                parent_branch_id="properties",
+                depth=2,
+            ),
+            BranchPlan(
+                id="reactions",
+                label="羰基亲核加成",
+                description="总结羰基的反应规律",
+                unit_ids=["u-reaction"],
+            ),
+        ]
+        units = [
+            ContentUnit(
+                id="u-physical",
+                document_id="doc",
+                kind="text",
+                text="丙醛的沸点为49 °C。",
+                evidence_excerpt="丙醛的沸点为49 °C。",
+            ),
+            ContentUnit(
+                id="u-naming",
+                document_id="doc",
+                kind="text",
+                text="低级醛酮可与水混溶。",
+                evidence_excerpt="低级醛酮可与水混溶。",
+            ),
+            ContentUnit(
+                id="u-reaction",
+                document_id="doc",
+                kind="text",
+                text="醛的亲核加成活性通常高于酮。",
+                evidence_excerpt="醛的亲核加成活性通常高于酮。",
+            ),
+        ]
+
+        await run_branch_teams(
+            plans,
+            units,
+            [],
+            RoleRuntime(
+                provider="qwen",
+                model="test",
+                client=client,
+                available=True,
+            ),
+            theme_plan=theme_plan,
+        )
+
+        prompt = client.prompts["boiling"]
+        context = prompt["structural_context"]
+        self.assertEqual(
+            [item["id"] for item in context["root_candidates"]],
+            ["root"],
+        )
+        self.assertEqual(
+            [item["id"] for item in context["same_path_upper_nodes"]],
+            ["properties", "boiling"],
+        )
+        self.assertEqual(
+            [item["id"] for item in context["other_path_upper_nodes"]],
+            ["solubility", "reactions"],
+        )
+        self.assertEqual(
+            [item["id"] for item in context["same_section_nodes"]],
+            ["solubility"],
+        )
+        self.assertEqual(
+            [item["unit_id"] for item in prompt["content_units"]],
+            ["u-physical"],
+            msg="结构上下文不得扩大当前分支的事实证据范围",
+        )
+
+    async def test_leaf_search_and_conservative_discard_gate(self):
+        client = DiscardingBranchClient()
+        branch = BranchPlan(
+            id="laser-leaf",
+            label="受激辐射",
+            description="解释受激辐射的核心规律",
+            unit_ids=["u-core", "u-intro", "u-formula"],
+            depth=2,
+            leaf=True,
+        )
+        units = [
+            ContentUnit(
+                id="u-core",
+                document_id="doc",
+                kind="text",
+                importance=0.95,
+                unit_role="principle",
+                text="受激辐射产生的光子与入射光同频、同相、同方向。",
+                evidence_excerpt=(
+                    "受激辐射产生的光子与入射光同频、同相、同方向。"
+                ),
+            ),
+            ContentUnit(
+                id="u-intro",
+                document_id="doc",
+                kind="text",
+                importance=0.4,
+                unit_role="other",
+                heading_path=["科普介绍"],
+                text="知识窗：激光一词来自英文缩写。",
+                evidence_excerpt="知识窗：激光一词来自英文缩写。",
+            ),
+            ContentUnit(
+                id="u-formula",
+                document_id="doc",
+                kind="text",
+                importance=0.2,
+                unit_role="formula",
+                text="受激辐射跃迁率为 B21ρ(ν)。",
+                evidence_excerpt="受激辐射跃迁率为 B21ρ(ν)。",
+            ),
+        ]
+
+        result = (
+            await run_branch_teams(
+                [branch],
+                units,
+                [],
+                RoleRuntime(
+                    provider="qwen",
+                    model="qwen3.7-max",
+                    client=client,
+                    available=True,
+                ),
+            )
+        )[0]
+
+        self.assertTrue(client.search_enabled)
+        self.assertEqual(result.discarded_unit_ids, ["u-intro"])
+        self.assertTrue(
+            any(
+                "拒绝丢弃受保护或重要度过高" in warning
+                and "u-formula" in warning
+                for warning in result.warnings
+            )
+        )
+        self.assertIn(
+            "受激辐射产生与入射光同频同相的光子",
+            {node.name for node in result.nodes},
         )
 
     def test_unfused_attach_as_media_is_deferred_not_coverage_repaired(self):

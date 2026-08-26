@@ -398,8 +398,9 @@ PDF 全页渲染与严格 PageExtraction（AI PDF）
   与对应凭据，并验证实际调用和 run manifest 记录。`preview`、Token Plan/
   Coding Plan、无效 endpoint 或 text-only 视觉模型会阻止生产启动。
 - 为视觉资产配置公网 HTTPS `ASSET_PUBLIC_BASE_URL`。
-- 配置 `MINDMAP_API_TOKEN`、`EXTERNAL_ENGINE_TOKEN` 和
-  `ASSET_ACCESS_TOKEN`，并用 TLS 反向代理转发回环端口。
+- 工作台采用公开单工作区，不再配置浏览器访问令牌、登录 session 或资产
+  读取令牌；仅为外部引擎写接口配置 `EXTERNAL_ENGINE_TOKEN`。公网入口仍应
+  由 TLS 反向代理转发回环端口。
 - 使用开发集、校准集和盲测集校准业务阈值。
 - 用真实源 PPTX 和人工多解金标评估节点摘要与直接父边；当前测试不能给出
   节点精确率、父边准确率或“30 分钟已降至多少分钟”的生产结论。

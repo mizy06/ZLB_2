@@ -15,7 +15,7 @@ COPY frontend/ ./
 RUN pnpm build
 
 
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS app-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -33,6 +33,7 @@ RUN sed -i \
         age=1.2.1-1+b5 \
         fonts-noto-cjk=1:20240730+repack1-1 \
         libreoffice-impress=4:25.2.3-2+deb13u6 \
+        libreoffice-writer=4:25.2.3-2+deb13u6 \
         poppler-utils=25.03.0-5+deb13u4 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -64,3 +65,16 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 USER 10001:10001
 
 CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+FROM app-base AS single-shot-ppt
+
+ENV MINDMAP_PIPELINE_MODE=single_shot_ppt_vision
+
+
+FROM app-base AS editorial-ppt
+
+ENV MINDMAP_PIPELINE_MODE=editorial_ppt_vision
+
+
+FROM app-base AS production

@@ -42,6 +42,7 @@ STANDARD_QWEN_HOSTS = frozenset(
         "dashscope-intl.aliyuncs.com",
         "dashscope-us.aliyuncs.com",
         "cn-hongkong.dashscope.aliyuncs.com",
+        "ws-r1lp2twiz8lj5t79.cn-beijing.maas.aliyuncs.com",
     }
 )
 QWEN_WORKSPACE_HOST = re.compile(
@@ -264,7 +265,7 @@ class Settings:
     qwen_vision_model: str = DEFAULT_QWEN_VISION_MODEL
     qwen_production_profile: str = QWEN_PRODUCTION_PROFILE_STANDARD
     pdf_transcription_mode: str = "vision_nodes_strict"
-    pdf_page_extraction_mode: str = "direct_layout_fallback"
+    pdf_page_extraction_mode: str = "direct"
     pdf_transcription_dpi: int = 192
     pdf_transcription_concurrency: int = 8
     pdf_transcription_max_attempts: int = 3
@@ -274,9 +275,7 @@ class Settings:
     chunk_overlap_chars: int = 240
     extraction_concurrency: int = 4
     environment: str = "development"
-    api_access_token: str = ""
-    session_cookie_name: str = "zlb_mindmap_session"
-    session_cookie_secure: bool | None = None
+    workbench_owner_id: str = "public-workbench"
     max_upload_bytes: int = 80 * 1024 * 1024
     max_image_pixels: int = 40_000_000
     max_document_pages: int = 150
@@ -291,13 +290,13 @@ class Settings:
     provider_retry_base_seconds: float = 0.5
     provider_retry_delay_cap_seconds: float = 30.0
     provider_circuit_cooldown_seconds: float = 120.0
-    parser_version: str = "parser-v8-page-knowledge-extraction"
-    prompt_version: str = "cplus-prompts-v9-theme-completeness"
+    parser_version: str = "parser-v9-direct-visual-only"
+    prompt_version: str = "cplus-prompts-v13-direct-visual-only"
     theme_prompt_version: str = (
-        "theme-synthesizer-v3-bounded-hybrid-routing"
+        "theme-synthesizer-v4-semantic-partition"
     )
     pdf_page_knowledge_prompt_version: str = (
-        "cplus-prompts-v8-page-knowledge"
+        "cplus-prompts-v13-direct-visual-only"
     )
     pdf_page_transcription_prompt_version: str = (
         "cplus-prompts-v8-page-knowledge"
@@ -312,13 +311,6 @@ class Settings:
     @property
     def production(self) -> bool:
         return self.environment.lower() in {"production", "prod"}
-
-    @property
-    def session_cookie_secure_enabled(self) -> bool:
-        if self.session_cookie_secure is None:
-            return self.production
-        return self.session_cookie_secure
-
 
 def production_qwen_configuration_issues(
     configured: Settings,
@@ -417,34 +409,24 @@ def _float_setting(
     return max(value, minimum)
 
 
-def _optional_bool_setting(name: str) -> bool | None:
-    raw_value = os.getenv(name)
-    if raw_value is None or not raw_value.strip():
-        return None
-    value = raw_value.strip().lower()
-    if value in {"0", "false", "no", "off"}:
-        return False
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    return None
-
-
 def load_settings() -> Settings:
     qwen_api_key, qwen_secret_source, qwen_secret_error = _load_qwen_secret()
     qwen_model = (
         os.getenv("QWEN_MODEL", DEFAULT_QWEN_MODEL).strip()
         or DEFAULT_QWEN_MODEL
     )
+    pdf_transcription_mode = os.getenv(
+        "MINDMAP_PDF_TRANSCRIPTION_MODE",
+        "vision_nodes_strict",
+    ).strip().casefold()
+    if pdf_transcription_mode != "vision_nodes_strict":
+        pdf_transcription_mode = "vision_nodes_strict"
     pdf_page_extraction_mode = os.getenv(
         "MINDMAP_PDF_PAGE_EXTRACTION_MODE",
-        "direct_layout_fallback",
-    ).strip().casefold()
-    if pdf_page_extraction_mode not in {
         "direct",
-        "layout_nodes",
-        "direct_layout_fallback",
-    }:
-        pdf_page_extraction_mode = "direct_layout_fallback"
+    ).strip().casefold()
+    if pdf_page_extraction_mode != "direct":
+        pdf_page_extraction_mode = "direct"
     try:
         qwen_temperature = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
     except ValueError:
@@ -497,11 +479,7 @@ def load_settings() -> Settings:
             QWEN_PRODUCTION_PROFILE_STANDARD,
         ).strip().casefold()
         or QWEN_PRODUCTION_PROFILE_STANDARD,
-        pdf_transcription_mode=os.getenv(
-            "MINDMAP_PDF_TRANSCRIPTION_MODE",
-            "vision_nodes_strict",
-        ).strip()
-        or "vision_nodes_strict",
+        pdf_transcription_mode=pdf_transcription_mode,
         pdf_page_extraction_mode=pdf_page_extraction_mode,
         pdf_transcription_dpi=_int_setting(
             "MINDMAP_PDF_TRANSCRIPTION_DPI",
@@ -538,15 +516,11 @@ def load_settings() -> Settings:
             4,
         ),
         environment=os.getenv("MINDMAP_ENV", "development").strip().lower(),
-        api_access_token=os.getenv("MINDMAP_API_TOKEN", "").strip(),
-        session_cookie_name=os.getenv(
-            "MINDMAP_SESSION_COOKIE",
-            "zlb_mindmap_session",
+        workbench_owner_id=os.getenv(
+            "MINDMAP_WORKBENCH_OWNER_ID",
+            "public-workbench",
         ).strip()
-        or "zlb_mindmap_session",
-        session_cookie_secure=_optional_bool_setting(
-            "MINDMAP_SESSION_COOKIE_SECURE"
-        ),
+        or "public-workbench",
         max_upload_bytes=_int_setting(
             "MINDMAP_MAX_UPLOAD_BYTES",
             80 * 1024 * 1024,
@@ -613,19 +587,19 @@ def load_settings() -> Settings:
         ),
         parser_version=os.getenv(
             "MINDMAP_PARSER_VERSION",
-            "parser-v8-page-knowledge-extraction",
+            "parser-v9-direct-visual-only",
         ),
         prompt_version=os.getenv(
             "MINDMAP_PROMPT_VERSION",
-            "cplus-prompts-v9-theme-completeness",
+            "cplus-prompts-v13-direct-visual-only",
         ),
         theme_prompt_version=os.getenv(
             "MINDMAP_THEME_PROMPT_VERSION",
-            "theme-synthesizer-v3-bounded-hybrid-routing",
+            "theme-synthesizer-v4-semantic-partition",
         ),
         pdf_page_knowledge_prompt_version=os.getenv(
             "MINDMAP_PDF_PAGE_KNOWLEDGE_PROMPT_VERSION",
-            "cplus-prompts-v8-page-knowledge",
+            "cplus-prompts-v13-direct-visual-only",
         ),
         pdf_page_transcription_prompt_version=os.getenv(
             "MINDMAP_PDF_PAGE_TRANSCRIPTION_PROMPT_VERSION",

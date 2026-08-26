@@ -23,7 +23,9 @@ from .architecture_schemas import (
     ContentUnit,
     ModelVote,
     RunMode,
+    TerminalGoldGate,
 )
+from .human_loop import attach_human_guidance
 from .claim_fidelity import claim_fidelity_issues
 from .model_provider import (
     ModelProviderError,
@@ -214,11 +216,19 @@ class BranchNodeOutput(BaseModel):
     evidence: list[EvidenceRef] = Field(default_factory=list)
     support_unit_ids: list[str] = Field(default_factory=list)
     media_asset_ids: list[str] = Field(default_factory=list)
+    terminal_gold_gate: TerminalGoldGate | None = None
+
+
+class DiscardedUnitOutput(BaseModel):
+    unit_id: str
+    category: Literal["edge", "popularization", "introduction"]
+    reason: str = Field(min_length=2, max_length=240)
 
 
 class BranchExtractionOutput(BaseModel):
     nodes: list[BranchNodeOutput] = Field(default_factory=list)
     cross_links: list[CrossLinkCandidateIn] = Field(default_factory=list)
+    discarded_units: list[DiscardedUnitOutput] = Field(default_factory=list)
 
 
 def _validate_branch_extraction_payload(
@@ -233,9 +243,16 @@ def _validate_branch_extraction_payload(
     warnings: list[str] = []
     for index, raw_node in enumerate(raw_nodes):
         try:
-            nodes.append(BranchNodeOutput.model_validate(raw_node))
+            node = BranchNodeOutput.model_validate(raw_node)
         except ValueError:
             warnings.append(f"nodes[{index}] schema 无效，已丢弃")
+            continue
+        if node.terminal_gold_gate is None:
+            warnings.append(
+                f"nodes[{index}] 缺少 terminal_gold_gate，已丢弃"
+            )
+            continue
+        nodes.append(node)
 
     raw_cross_links = payload.get("cross_links", [])
     cross_links: list[CrossLinkCandidateIn] = []
@@ -251,8 +268,26 @@ def _validate_branch_extraction_payload(
                 warnings.append(
                     f"cross_links[{index}] schema 无效，已丢弃"
                 )
+    raw_discarded_units = payload.get("discarded_units", [])
+    discarded_units: list[DiscardedUnitOutput] = []
+    if not isinstance(raw_discarded_units, list):
+        warnings.append("discarded_units schema 无效，已整体丢弃")
+    else:
+        for index, raw_discarded_unit in enumerate(raw_discarded_units):
+            try:
+                discarded_units.append(
+                    DiscardedUnitOutput.model_validate(raw_discarded_unit)
+                )
+            except ValueError:
+                warnings.append(
+                    f"discarded_units[{index}] schema 无效，已丢弃"
+                )
     return (
-        BranchExtractionOutput(nodes=nodes, cross_links=cross_links),
+        BranchExtractionOutput(
+            nodes=nodes,
+            cross_links=cross_links,
+            discarded_units=discarded_units,
+        ),
         warnings,
     )
 
@@ -314,10 +349,13 @@ class BranchTeamState(TypedDict, total=False):
     units: list[ContentUnit]
     chunks: list[Chunk]
     runtime: RoleRuntime
+    generation_context: dict[str, object]
+    human_guidance: dict[str, object]
     seed_nodes: list[NodeCandidateIn]
     seed_source_unit_ids: list[str]
     seeded_unit_ids: list[str]
     nodes: list[NodeCandidateIn]
+    discarded_unit_ids: list[str]
     parent_candidates: list[ParentCandidateIn]
     cross_links: list[CrossLinkCandidateIn]
     warnings: list[str]
@@ -327,6 +365,7 @@ class BranchTeamState(TypedDict, total=False):
 class BranchTeamResult(BaseModel):
     branch: BranchPlan
     nodes: list[NodeCandidateIn]
+    discarded_unit_ids: list[str] = Field(default_factory=list)
     parent_candidates: list[ParentCandidateIn]
     cross_links: list[CrossLinkCandidateIn]
     warnings: list[str] = Field(default_factory=list)
@@ -978,6 +1017,8 @@ async def synthesize_themes(
     document: ParsedDocument,
     units: list[ContentUnit],
     runtime: RoleRuntime,
+    *,
+    human_guidance: dict[str, object] | None = None,
 ) -> tuple[ThemePlanOutput, bool, list[str]]:
     fallback = _fallback_theme_plan(document, units)
     if not runtime.available or not runtime.client:
@@ -1005,7 +1046,8 @@ async def synthesize_themes(
         for unit in sampled_units
     ]
     prompt = json.dumps(
-        {
+        attach_human_guidance(
+            {
             "document_title": document.title,
             "content_units": summaries,
             "sampling": {
@@ -1018,7 +1060,9 @@ async def synthesize_themes(
                 ),
                 "sample_limit": THEME_SAMPLE_LIMIT,
             },
-        },
+            },
+            human_guidance,
+        ),
         ensure_ascii=False,
     )
     try:
@@ -2378,6 +2422,128 @@ def _branch_prompt_unit(unit: ContentUnit) -> dict[str, object]:
     return payload
 
 
+_DISCARDABLE_UNIT_MARKERS = re.compile(
+    r"(?:"
+    r"简介|介绍|科普|背景|拓展|扩展阅读|延伸阅读|趣闻|导入|"
+    r"历史沿革|人物生平|前言|绪论|了解即可|知识窗|小资料|"
+    r"introduction|background|further reading|fun fact|overview"
+    r")",
+    re.IGNORECASE,
+)
+_DISCARD_PROTECTED_ROLES = {
+    "definition",
+    "principle",
+    "step",
+    "formula",
+    "warning",
+}
+
+
+def _discard_proposal_is_eligible(
+    unit: ContentUnit,
+    category: Literal["edge", "popularization", "introduction"],
+) -> bool:
+    if unit.status not in {"uncovered", "covered"}:
+        return False
+    if unit.unit_role in _DISCARD_PROTECTED_ROLES:
+        return False
+    if unit.importance >= 0.7:
+        return False
+    if category == "edge":
+        return unit.importance <= 0.35
+    source = " ".join(
+        [
+            *unit.heading_path,
+            unit.branch_hint or "",
+            unit.text[:360],
+            unit.summary[:360],
+            unit.ocr_text[:360],
+        ]
+    )
+    return unit.importance <= 0.55 and bool(
+        _DISCARDABLE_UNIT_MARKERS.search(source)
+    )
+
+
+def _branch_context_node(plan: BranchPlan) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": plan.id,
+        "name": plan.label,
+        "depth": plan.depth,
+    }
+    if plan.description:
+        payload["description"] = plan.description
+    if plan.parent_branch_id:
+        payload["parent_id"] = plan.parent_branch_id
+    return payload
+
+
+def _branch_generation_context(
+    branch: BranchPlan,
+    branch_plans: list[BranchPlan],
+    theme_plan: ThemePlanOutput | None,
+) -> dict[str, object]:
+    plan_by_id = {plan.id: plan for plan in branch_plans}
+    same_path: list[BranchPlan] = [branch]
+    seen = {branch.id}
+    parent_id = branch.parent_branch_id
+    while parent_id and parent_id not in seen:
+        parent = plan_by_id.get(parent_id)
+        if parent is None:
+            break
+        same_path.append(parent)
+        seen.add(parent.id)
+        parent_id = parent.parent_branch_id
+    same_path.reverse()
+    same_path_ids = {plan.id for plan in same_path}
+
+    visible_upper_nodes = [
+        plan
+        for plan in branch_plans
+        if plan.depth <= branch.depth
+    ]
+    other_path = [
+        plan
+        for plan in visible_upper_nodes
+        if plan.id not in same_path_ids
+    ]
+    same_section = [
+        plan
+        for plan in other_path
+        if (
+            plan.depth == branch.depth
+            and plan.parent_branch_id == branch.parent_branch_id
+        )
+    ]
+
+    root_candidates = []
+    if theme_plan is not None:
+        for root in theme_plan.root_candidates:
+            item: dict[str, object] = {
+                "id": root.temp_id,
+                "name": root.name,
+            }
+            if root.definition:
+                item["description"] = root.definition
+            root_candidates.append(item)
+
+    return {
+        "root_candidates": root_candidates,
+        "same_path_upper_nodes": [
+            _branch_context_node(plan)
+            for plan in same_path
+        ],
+        "other_path_upper_nodes": [
+            _branch_context_node(plan)
+            for plan in other_path
+        ],
+        "same_section_nodes": [
+            _branch_context_node(plan)
+            for plan in same_section
+        ],
+    }
+
+
 async def _branch_scout(state: BranchTeamState) -> dict:
     branch = state["branch"]
     all_units = [
@@ -2437,6 +2603,7 @@ async def _branch_scout(state: BranchTeamState) -> dict:
     if not branch.leaf:
         return {
             "nodes": [],
+            "discarded_unit_ids": [],
             "cross_links": [],
             "used_model": False,
             "warnings": warnings,
@@ -2445,6 +2612,7 @@ async def _branch_scout(state: BranchTeamState) -> dict:
     if seeded_nodes and not units:
         return {
             "nodes": seeded_nodes,
+            "discarded_unit_ids": [],
             "cross_links": [],
             "used_model": True,
             "warnings": warnings,
@@ -2475,6 +2643,7 @@ async def _branch_scout(state: BranchTeamState) -> dict:
             )
         return {
             "nodes": fallback_nodes,
+            "discarded_unit_ids": [],
             "cross_links": fallback.cross_links,
             "used_model": bool(seeded_nodes),
             "warnings": warnings,
@@ -2489,16 +2658,24 @@ async def _branch_scout(state: BranchTeamState) -> dict:
             model=runtime.model,
             system_prompt=BRANCH_EXTRACTOR_PROMPT,
             user_prompt=json.dumps(
-                {
+                attach_human_guidance(
+                    {
                     "branch": branch.model_dump(mode="json"),
+                    "structural_context": state.get(
+                        "generation_context",
+                        {},
+                    ),
                     "content_units": prompt_units,
-                },
+                    },
+                    state.get("human_guidance"),
+                ),
                 ensure_ascii=False,
             ),
             **_structured_json_call_kwargs(
                 runtime,
                 answer_token_budget,
             ),
+            enable_search=True,
         )
         extraction, schema_warnings = _validate_branch_extraction_payload(
             payload
@@ -2635,7 +2812,57 @@ async def _branch_scout(state: BranchTeamState) -> dict:
                     branch,
                 )
             )
-        if not validated_nodes:
+        claimed_unit_ids = {
+            unit_id
+            for candidate in validated_nodes
+            for unit_id in _candidate_unit_ids(candidate)
+        }
+        discarded_unit_ids: list[str] = []
+        seen_discarded_unit_ids: set[str] = set()
+        for discarded in extraction.discarded_units:
+            unit = unit_by_id.get(discarded.unit_id)
+            if unit is None:
+                warnings.append(
+                    f"分支“{branch.label}”忽略了未知丢弃单元"
+                    f"“{discarded.unit_id}”。"
+                )
+                continue
+            if discarded.unit_id in seen_discarded_unit_ids:
+                continue
+            seen_discarded_unit_ids.add(discarded.unit_id)
+            if discarded.unit_id in claimed_unit_ids:
+                warnings.append(
+                    f"分支“{branch.label}”拒绝同时建点并丢弃内容单元"
+                    f"“{discarded.unit_id}”。"
+                )
+                continue
+            if not _discard_proposal_is_eligible(unit, discarded.category):
+                warnings.append(
+                    f"分支“{branch.label}”拒绝丢弃受保护或重要度过高的"
+                    f"内容单元“{discarded.unit_id}”。"
+                )
+                continue
+            discarded_unit_ids.append(discarded.unit_id)
+            warnings.append(
+                f"分支“{branch.label}”已丢弃"
+                f"{discarded.category} 内容单元“{discarded.unit_id}”："
+                f"{discarded.reason}"
+            )
+        if discarded_unit_ids and set(discarded_unit_ids) == valid_unit_ids:
+            retained_unit_id = max(
+                discarded_unit_ids,
+                key=lambda unit_id: (
+                    unit_by_id[unit_id].importance,
+                    unit_id,
+                ),
+            )
+            discarded_unit_ids.remove(retained_unit_id)
+            warnings.append(
+                f"分支“{branch.label}”不能整体丢弃，已保留重要度最高的"
+                f"内容单元“{retained_unit_id}”进入抽取或复核。"
+            )
+        remaining_required_ids = valid_unit_ids - set(discarded_unit_ids)
+        if not validated_nodes and remaining_required_ids:
             raise ValueError("模型没有返回带有效证据的节点")
         if len(validated_nodes) > branch.coverage_budget:
             warnings.append(
@@ -2650,6 +2877,7 @@ async def _branch_scout(state: BranchTeamState) -> dict:
         validated_nodes = [*seeded_nodes, *validated_nodes]
         return {
             "nodes": validated_nodes,
+            "discarded_unit_ids": discarded_unit_ids,
             "cross_links": extraction.cross_links,
             "used_model": True,
             "warnings": warnings,
@@ -2675,6 +2903,7 @@ async def _branch_scout(state: BranchTeamState) -> dict:
             )
         return {
             "nodes": fallback_nodes,
+            "discarded_unit_ids": [],
             "cross_links": fallback.cross_links,
             "used_model": bool(seeded_nodes),
             "warnings": warnings,
@@ -2957,6 +3186,12 @@ async def _abstraction_induction(state: BranchTeamState) -> dict:
             ]
         )
     )
+    discarded_unit_ids = set(state.get("discarded_unit_ids", []))
+    support_unit_ids = [
+        unit_id
+        for unit_id in support_unit_ids
+        if unit_id not in discarded_unit_ids
+    ]
     topic_index = next(
         (
             index
@@ -3121,7 +3356,7 @@ async def _local_verifier(state: BranchTeamState) -> dict:
     valid_units = {
         *branch.unit_ids,
         *state.get("seed_source_unit_ids", []),
-    }
+    } - set(state.get("discarded_unit_ids", []))
     for node in state.get("nodes", []):
         evidence_units = {
             item.unit_id or item.chunk_id
@@ -3163,9 +3398,11 @@ async def run_branch_teams(
     chunks: list[Chunk],
     runtime: RoleRuntime,
     *,
+    theme_plan: ThemePlanOutput | None = None,
     concurrency: int = 4,
     seed_nodes: list[NodeCandidateIn] | None = None,
     seed_unit_projection: dict[str, str] | None = None,
+    human_guidance: dict[str, object] | None = None,
 ) -> list[BranchTeamResult]:
     unit_by_id = {unit.id: unit for unit in units}
     chunk_by_id = {chunk.id: chunk for chunk in chunks}
@@ -3219,6 +3456,12 @@ async def run_branch_teams(
                         "units": branch_units,
                         "chunks": branch_chunks,
                         "runtime": runtime,
+                        "generation_context": _branch_generation_context(
+                            branch,
+                            branch_plans,
+                            theme_plan,
+                        ),
+                        "human_guidance": human_guidance or {},
                         "seed_nodes": branch_seed_nodes,
                         "seed_source_unit_ids": sorted(
                             branch_seed_source_ids
@@ -3226,6 +3469,7 @@ async def run_branch_teams(
                         "seeded_unit_ids": sorted(seeded_unit_ids),
                         "warnings": [],
                         "nodes": [],
+                        "discarded_unit_ids": [],
                         "parent_candidates": [],
                         "cross_links": [],
                         "used_model": False,
@@ -3234,6 +3478,7 @@ async def run_branch_teams(
             return BranchTeamResult(
                 branch=branch,
                 nodes=state.get("nodes", []),
+                discarded_unit_ids=state.get("discarded_unit_ids", []),
                 parent_candidates=state.get("parent_candidates", []),
                 cross_links=state.get("cross_links", []),
                 warnings=state.get("warnings", []),

@@ -839,6 +839,36 @@ def _parse_text(path: Path) -> list[SourceBlock]:
     return blocks
 
 
+def parse_visual_document(
+    path: Path,
+    original_filename: str | None = None,
+) -> ParsedDocument:
+    """Create the PDF document shell without extracting page text."""
+
+    suffix = path.suffix.lower()
+    if suffix != ".pdf":
+        raise ValueError("视觉直抽文档壳仅支持 PDF。")
+
+    reader = PdfReader(str(path))
+    page_count = len(reader.pages)
+    if page_count < 1:
+        raise ValueError("PDF 没有可渲染页面。")
+
+    filename = original_filename or path.name
+    return ParsedDocument(
+        document_id=_document_id(path),
+        filename=filename,
+        file_type="pdf",
+        title=Path(filename).stem,
+        blocks=[],
+        parse_metadata={
+            "pdf_page_count": page_count,
+            "pdf_input_mode": "direct_visual_only",
+            "pdf_text_extraction_performed": False,
+        },
+    )
+
+
 def parse_document(path: Path, original_filename: str | None = None) -> ParsedDocument:
     suffix = path.suffix.lower()
     if suffix not in SUPPORTED_TYPES:
@@ -877,4 +907,57 @@ def parse_document(path: Path, original_filename: str | None = None) -> ParsedDo
         blocks=blocks,
         parse_metadata=parse_metadata,
         warnings=warnings,
+    )
+
+def parse_documents(
+    paths: list[Path],
+    original_filenames: list[str] | None = None,
+) -> ParsedDocument:
+    if not paths:
+        raise ValueError("未提供任何待解析文档。")
+    if len(paths) == 1:
+        return parse_document(
+            paths[0],
+            original_filenames[0] if original_filenames else None,
+        )
+
+    all_blocks: list[SourceBlock] = []
+    all_warnings: list[str] = []
+    combined_metadata: dict[str, Any] = {"multi_document": True, "documents": []}
+    filenames = original_filenames or [p.name for p in paths]
+
+    for idx, (p, fn) in enumerate(zip(paths, filenames, strict=False)):
+        doc = parse_document(p, fn)
+        all_warnings.extend(doc.warnings)
+        combined_metadata["documents"].append(
+            {
+                "index": idx + 1,
+                "filename": fn,
+                "document_id": doc.document_id,
+                "block_count": len(doc.blocks),
+            }
+        )
+        for b in doc.blocks:
+            heading = f"[{fn}] {b.heading}" if b.heading else f"[{fn}]"
+            all_blocks.append(
+                SourceBlock(
+                    heading=heading,
+                    text=b.text,
+                    page=b.page,
+                    slide=b.slide,
+                )
+            )
+
+    titles = [fn for fn in filenames[:3]]
+    title_summary = " & ".join(titles) + (f" 等共 {len(paths)} 份文档" if len(paths) > 3 else "")
+    combined_id = hashlib.sha256("::".join(str(p) for p in paths).encode()).hexdigest()[:16]
+
+    return ParsedDocument(
+        document_id=combined_id,
+        filename=title_summary,
+        file_type="multi",
+        title=title_summary,
+        blocks=all_blocks,
+        parse_metadata=combined_metadata,
+        warnings=all_warnings,
     )

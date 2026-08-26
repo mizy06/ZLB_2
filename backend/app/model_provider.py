@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 import httpx
 
@@ -58,6 +58,8 @@ class ModelProviderError(RuntimeError):
 
 
 AttemptRecorder = Callable[[dict[str, Any]], Any | Awaitable[Any]]
+ModelStreamCallback = Callable[[str], Any | Awaitable[Any]]
+StreamEventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 DEFAULT_RETRY_DELAY_CAP_SECONDS = 30.0
 HARD_RETRY_DELAY_CAP_SECONDS = 300.0
@@ -71,6 +73,23 @@ SAFE_FINISH_REASONS = {
     "tool_calls",
     "function_call",
 }
+SAFE_RESPONSE_STATUSES = {
+    "completed",
+    "failed",
+    "in_progress",
+    "incomplete",
+    "queued",
+    "cancelled",
+}
+RESPONSE_REASONING_EFFORTS = {
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +100,14 @@ class ModelCallContext:
     branch_id: str | None = None
     input_unit_ids: tuple[str, ...] = ()
     stage: str = ""
+
+
+@dataclass(frozen=True)
+class StoredResponseJSON:
+    payload: dict[str, Any]
+    response_id: str
+    status: str
+    usage: dict[str, Any]
 
 
 _MODEL_CALL_CONTEXT: ContextVar[ModelCallContext | None] = ContextVar(
@@ -358,6 +385,9 @@ class OpenAICompatibleClient:
         reasoning_effort: str | None = None,
         thinking_budget: int | None = None,
         timeout_seconds: float | None = None,
+        enable_search: bool = False,
+        accept_complete_json_on_length: bool = False,
+        stream_callback: ModelStreamCallback | None = None,
     ) -> dict[str, Any]:
         content = await self._chat(
             model=model,
@@ -372,6 +402,9 @@ class OpenAICompatibleClient:
             reasoning_effort=reasoning_effort,
             thinking_budget=thinking_budget,
             timeout_seconds=timeout_seconds,
+            enable_search=enable_search,
+            accept_complete_json_on_length=accept_complete_json_on_length,
+            stream_callback=stream_callback,
         )
         return self._parse_json(content)
 
@@ -388,6 +421,8 @@ class OpenAICompatibleClient:
         reasoning_effort: str | None = None,
         thinking_budget: int | None = None,
         timeout_seconds: float | None = None,
+        accept_complete_json_on_length: bool = False,
+        stream_callback: ModelStreamCallback | None = None,
     ) -> dict[str, Any]:
         content = await self._chat(
             model=model,
@@ -411,8 +446,269 @@ class OpenAICompatibleClient:
             reasoning_effort=reasoning_effort,
             thinking_budget=thinking_budget,
             timeout_seconds=timeout_seconds,
+            accept_complete_json_on_length=accept_complete_json_on_length,
+            stream_callback=stream_callback,
         )
         return self._parse_json(content)
+
+    async def complete_multi_image_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        images: Sequence[tuple[str, str]],
+        cache_static_images: bool = False,
+        max_tokens: int = 5000,
+        max_completion_tokens: int | None = None,
+        max_attempts: int | None = None,
+        reasoning_effort: str | None = None,
+        thinking_budget: int | None = None,
+        timeout_seconds: float | None = None,
+        accept_complete_json_on_length: bool = False,
+        stream_callback: ModelStreamCallback | None = None,
+    ) -> dict[str, Any]:
+        if not images:
+            raise ValueError("multi-image completion requires at least one image")
+        user_content: list[dict[str, Any]] = []
+        if not cache_static_images:
+            user_content.append({"type": "text", "text": user_prompt})
+        for vision_id, image_data_url in images:
+            label = str(vision_id).strip()
+            if not label:
+                raise ValueError("multi-image completion requires image labels")
+            user_content.extend(
+                [
+                    {
+                        "type": "text",
+                        "text": f"vision_id={label}",
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_data_url},
+                    },
+                ]
+            )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt}
+        ]
+        if cache_static_images:
+            user_content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "以上是按 vision_id 顺序排列的原始幻灯片，"
+                        "后续动态审稿请求均以这组图片为准。"
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+            messages.extend(
+                [
+                    {"role": "user", "content": user_content},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+        else:
+            messages.append({"role": "user", "content": user_content})
+        content = await self._chat(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            max_completion_tokens=max_completion_tokens,
+            json_mode=True,
+            max_attempts=max_attempts,
+            reasoning_effort=reasoning_effort,
+            thinking_budget=thinking_budget,
+            timeout_seconds=timeout_seconds,
+            accept_complete_json_on_length=accept_complete_json_on_length,
+            stream_callback=stream_callback,
+        )
+        return self._parse_json(content)
+
+    async def complete_response_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        images: Sequence[tuple[str, str]] = (),
+        previous_response_id: str | None = None,
+        session_cache: bool = False,
+        max_attempts: int | None = None,
+        reasoning_effort: str | None = None,
+        timeout_seconds: float | None = None,
+        accept_complete_json_on_length: bool = False,
+        stream_callback: ModelStreamCallback | None = None,
+    ) -> StoredResponseJSON:
+        if not self.api_key:
+            raise ModelProviderError(f"未配置 {self.api_key_env_name}")
+        if session_cache and self.provider_name.casefold() != "qwen":
+            raise ValueError("session cache is only supported for Qwen")
+        if reasoning_effort not in RESPONSE_REASONING_EFFORTS | {None}:
+            raise ValueError("unsupported Responses reasoning effort")
+
+        image_content: list[dict[str, Any]] = []
+        has_oss_resource = False
+        for vision_id, image_url in images:
+            label = str(vision_id).strip()
+            resolved_url = str(image_url).strip()
+            if not label or not resolved_url:
+                raise ValueError("Responses images require labels and URLs")
+            if resolved_url.casefold().startswith("data:"):
+                raise ValueError(
+                    "Responses image context requires stable URLs, not data URIs"
+                )
+            has_oss_resource = (
+                has_oss_resource
+                or resolved_url.casefold().startswith("oss://")
+            )
+            image_content.extend(
+                [
+                    {
+                        "type": "input_text",
+                        "text": f"vision_id={label}",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": resolved_url,
+                    },
+                ]
+            )
+
+        if images:
+            image_content.append(
+                {
+                    "type": "input_text",
+                    "text": (
+                        "以上是按 vision_id 顺序排列的原始幻灯片。"
+                        "后续任务必须继续以这些原图为事实依据。"
+                    ),
+                }
+            )
+            response_input: str | list[dict[str, Any]] = [
+                {
+                    "role": "user",
+                    "content": image_content,
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": user_prompt,
+                        }
+                    ],
+                },
+            ]
+        else:
+            response_input = user_prompt
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "instructions": system_prompt,
+            "input": response_input,
+            "store": True,
+            "temperature": self.temperature,
+        }
+        if previous_response_id:
+            payload["previous_response_id"] = previous_response_id
+        if reasoning_effort is not None:
+            payload["reasoning"] = {"effort": reasoning_effort}
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if session_cache:
+            headers["x-dashscope-session-cache"] = "enable"
+        if has_oss_resource:
+            headers["X-DashScope-OssResourceResolve"] = "enable"
+
+        request_timeout = self._normalize_timeout(timeout_seconds)
+        if stream_callback is not None:
+            return await self._complete_response_json_stream(
+                model=model,
+                payload=payload,
+                headers=headers,
+                image_count=len(images),
+                prompt_chars=len(system_prompt) + len(user_prompt),
+                session_cache=session_cache,
+                max_attempts=max_attempts,
+                request_timeout=request_timeout,
+                accept_complete_json_on_length=(
+                    accept_complete_json_on_length
+                ),
+                stream_callback=stream_callback,
+            )
+        request_kwargs: dict[str, Any] = {}
+        if request_timeout is not None:
+            request_kwargs["timeout"] = request_timeout
+        response = await self._request(
+            "post",
+            f"{self.base_url}/responses",
+            model=model,
+            operation="response_completion",
+            headers=headers,
+            json=payload,
+            max_attempts=max_attempts,
+            telemetry=self._responses_request_telemetry(
+                payload=payload,
+                image_count=len(images),
+                prompt_chars=len(system_prompt) + len(user_prompt),
+                session_cache=session_cache,
+                timeout_seconds=request_timeout,
+            ),
+            total_timeout_seconds=request_timeout,
+            **request_kwargs,
+        )
+        try:
+            response_payload = response.json()
+        except ValueError as exc:
+            raise ModelProviderError(
+                f"{self.provider_name} Responses 响应不是有效 JSON"
+            ) from exc
+        if not isinstance(response_payload, dict):
+            raise ModelProviderError(
+                f"{self.provider_name} Responses 响应格式无效"
+            )
+
+        response_id = response_payload.get("id")
+        status = response_payload.get("status")
+        if not isinstance(response_id, str) or not response_id.strip():
+            raise ModelProviderError(
+                f"{self.provider_name} Responses 响应缺少 id"
+            )
+        if status not in SAFE_RESPONSE_STATUSES:
+            raise ModelProviderError(
+                f"{self.provider_name} Responses 响应缺少有效状态"
+            )
+
+        content = self._responses_output_text(response_payload)
+        if status != "completed":
+            if (
+                status == "incomplete"
+                and accept_complete_json_on_length
+                and content
+            ):
+                parsed = self._parse_json(content)
+            else:
+                raise ModelProviderError(
+                    f"{self.provider_name} Responses 响应未完成"
+                )
+        else:
+            if not content:
+                raise ModelProviderError(
+                    f"{self.provider_name} Responses 返回了空输出"
+                )
+            parsed = self._parse_json(content)
+
+        return StoredResponseJSON(
+            payload=parsed,
+            response_id=response_id,
+            status=status,
+            usage=self._numeric_usage(response_payload.get("usage")),
+        )
 
     def _chat_payload(
         self,
@@ -424,6 +720,7 @@ class OpenAICompatibleClient:
         reasoning_effort: str | None = None,
         thinking_budget: int | None = None,
         max_completion_tokens: int | None = None,
+        enable_search: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -457,6 +754,10 @@ class OpenAICompatibleClient:
             payload["thinking_budget"] = parsed_thinking_budget
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if enable_search:
+            if self.provider_name.casefold() != "qwen":
+                raise ValueError("enable_search is only supported for Qwen")
+            payload["enable_search"] = True
         return payload
 
     async def _chat(
@@ -470,6 +771,9 @@ class OpenAICompatibleClient:
         thinking_budget: int | None = None,
         max_completion_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        enable_search: bool = False,
+        accept_complete_json_on_length: bool = False,
+        stream_callback: ModelStreamCallback | None = None,
     ) -> str:
         if not self.api_key:
             raise ModelProviderError(f"未配置 {self.api_key_env_name}")
@@ -482,7 +786,21 @@ class OpenAICompatibleClient:
             reasoning_effort=reasoning_effort,
             thinking_budget=thinking_budget,
             max_completion_tokens=max_completion_tokens,
+            enable_search=enable_search,
         )
+        if stream_callback is not None:
+            return await self._chat_stream(
+                model=model,
+                payload=payload,
+                messages=messages,
+                max_attempts=max_attempts,
+                request_timeout=request_timeout,
+                json_mode=json_mode,
+                accept_complete_json_on_length=(
+                    accept_complete_json_on_length
+                ),
+                stream_callback=stream_callback,
+            )
         request_kwargs: dict[str, Any] = {}
         if request_timeout is not None:
             request_kwargs["timeout"] = request_timeout
@@ -522,6 +840,17 @@ class OpenAICompatibleClient:
             ) from exc
         if finish_reason is not None and finish_reason != "stop":
             if finish_reason == "length":
+                if (
+                    json_mode
+                    and accept_complete_json_on_length
+                    and isinstance(content, str)
+                ):
+                    try:
+                        self._parse_json(content)
+                    except ModelProviderError:
+                        pass
+                    else:
+                        return content
                 raise ModelProviderError(
                     f"{self.provider_name} 响应因输出长度限制被截断"
                 )
@@ -531,6 +860,429 @@ class OpenAICompatibleClient:
         if not isinstance(content, str) or not content.strip():
             raise ModelProviderError(f"{self.provider_name} 返回了空输出")
         return content
+
+    async def _chat_stream(
+        self,
+        *,
+        model: str,
+        payload: dict[str, Any],
+        messages: list[dict[str, Any]],
+        max_attempts: int | None,
+        request_timeout: float | None,
+        json_mode: bool,
+        accept_complete_json_on_length: bool,
+        stream_callback: ModelStreamCallback,
+    ) -> str:
+        stream_payload = {**payload, "stream": True}
+        content_parts: list[str] = []
+        finish_reason: str | None = None
+
+        async def handle_event(event: dict[str, Any]) -> None:
+            nonlocal finish_reason
+            error_message = self._stream_error_message(event)
+            if error_message:
+                raise ModelProviderError(error_message)
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                return
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                return
+            candidate_finish_reason = choice.get("finish_reason")
+            if isinstance(candidate_finish_reason, str):
+                finish_reason = candidate_finish_reason
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                return
+            fragment = self._stream_delta_text(delta.get("content"))
+            if not fragment:
+                return
+            content_parts.append(fragment)
+            await self._emit_stream_delta(stream_callback, fragment)
+
+        await self._stream_json_events(
+            "post",
+            f"{self.base_url}/chat/completions",
+            model=model,
+            operation="chat_completion_stream",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=stream_payload,
+            max_attempts=max_attempts,
+            telemetry=self._chat_request_telemetry(
+                payload=stream_payload,
+                messages=messages,
+                timeout_seconds=request_timeout,
+            ),
+            total_timeout_seconds=request_timeout,
+            event_handler=handle_event,
+            timeout=request_timeout,
+        )
+        content = "".join(content_parts)
+        if finish_reason is not None and finish_reason != "stop":
+            if finish_reason == "length":
+                if json_mode and accept_complete_json_on_length and content:
+                    try:
+                        self._parse_json(content)
+                    except ModelProviderError:
+                        pass
+                    else:
+                        return content
+                raise ModelProviderError(
+                    f"{self.provider_name} 响应因输出长度限制被截断"
+                )
+            raise ModelProviderError(
+                f"{self.provider_name} 响应未正常结束"
+            )
+        if not content.strip():
+            raise ModelProviderError(f"{self.provider_name} 返回了空输出")
+        return content
+
+    async def _complete_response_json_stream(
+        self,
+        *,
+        model: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        image_count: int,
+        prompt_chars: int,
+        session_cache: bool,
+        max_attempts: int | None,
+        request_timeout: float | None,
+        accept_complete_json_on_length: bool,
+        stream_callback: ModelStreamCallback,
+    ) -> StoredResponseJSON:
+        stream_payload = {**payload, "stream": True}
+        content_parts: list[str] = []
+        response_payload: dict[str, Any] = {}
+        response_id = ""
+        status = ""
+
+        async def handle_event(event: dict[str, Any]) -> None:
+            nonlocal response_id, response_payload, status
+            event_type = event.get("type")
+            if event_type == "response.output_text.delta":
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    content_parts.append(delta)
+                    await self._emit_stream_delta(stream_callback, delta)
+                return
+            error_message = self._stream_error_message(event)
+            if error_message:
+                raise ModelProviderError(error_message)
+            candidate = event.get("response")
+            if not isinstance(candidate, dict):
+                return
+            candidate_id = candidate.get("id")
+            candidate_status = candidate.get("status")
+            if isinstance(candidate_id, str):
+                response_id = candidate_id
+            if isinstance(candidate_status, str):
+                status = candidate_status
+            if event_type in {
+                "response.completed",
+                "response.failed",
+                "response.incomplete",
+            }:
+                response_payload = candidate
+
+        await self._stream_json_events(
+            "post",
+            f"{self.base_url}/responses",
+            model=model,
+            operation="response_completion_stream",
+            headers=headers,
+            json=stream_payload,
+            max_attempts=max_attempts,
+            telemetry=self._responses_request_telemetry(
+                payload=stream_payload,
+                image_count=image_count,
+                prompt_chars=prompt_chars,
+                session_cache=session_cache,
+                timeout_seconds=request_timeout,
+            ),
+            total_timeout_seconds=request_timeout,
+            event_handler=handle_event,
+            timeout=request_timeout,
+        )
+
+        if response_payload:
+            response_id = str(response_payload.get("id") or response_id)
+            status = str(response_payload.get("status") or status)
+        if not response_id.strip():
+            raise ModelProviderError(
+                f"{self.provider_name} Responses 响应缺少 id"
+            )
+        if status not in SAFE_RESPONSE_STATUSES:
+            raise ModelProviderError(
+                f"{self.provider_name} Responses 响应缺少有效状态"
+            )
+        content = "".join(content_parts)
+        if not content:
+            content = self._responses_output_text(response_payload)
+        if status != "completed":
+            if (
+                status == "incomplete"
+                and accept_complete_json_on_length
+                and content
+            ):
+                parsed = self._parse_json(content)
+            else:
+                raise ModelProviderError(
+                    f"{self.provider_name} Responses 响应未完成"
+                )
+        else:
+            if not content:
+                raise ModelProviderError(
+                    f"{self.provider_name} Responses 返回了空输出"
+                )
+            parsed = self._parse_json(content)
+        return StoredResponseJSON(
+            payload=parsed,
+            response_id=response_id,
+            status=status,
+            usage=self._numeric_usage(response_payload.get("usage")),
+        )
+
+    async def _stream_json_events(
+        self,
+        method: str,
+        url: str,
+        *,
+        model: str,
+        operation: str,
+        event_handler: StreamEventHandler,
+        max_attempts: int | None = None,
+        telemetry: dict[str, Any] | None = None,
+        total_timeout_seconds: float | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._ensure_circuit_closed()
+        safe_telemetry = dict(telemetry or {})
+        absolute_timeout = self._normalize_timeout(
+            total_timeout_seconds
+            if total_timeout_seconds is not None
+            else self.settings.provider_timeout_seconds
+        )
+        attempt_limit = (
+            self.max_attempts
+            if max_attempts is None
+            else max(int(max_attempts), 1)
+        )
+        logical_call_id = uuid.uuid4().hex[:16]
+        last_error = ""
+        for attempt in range(1, attempt_limit + 1):
+            started = self.monotonic()
+            response: httpx.Response | None = None
+            event_count = 0
+            try:
+                async with asyncio.timeout(absolute_timeout):
+                    async with self._limiter():
+                        async with self._http_client().stream(
+                            method,
+                            url,
+                            **kwargs,
+                        ) as response:
+                            if not response.is_error:
+                                data_lines: list[str] = []
+
+                                async def dispatch() -> None:
+                                    nonlocal event_count
+                                    if not data_lines:
+                                        return
+                                    raw = "\n".join(data_lines)
+                                    data_lines.clear()
+                                    if raw.strip() == "[DONE]":
+                                        return
+                                    try:
+                                        payload = json.loads(raw)
+                                    except ValueError as exc:
+                                        raise ModelProviderError(
+                                            f"{self.provider_name} 流式响应"
+                                            "包含无效 JSON"
+                                        ) from exc
+                                    if not isinstance(payload, dict):
+                                        raise ModelProviderError(
+                                            f"{self.provider_name} 流式响应"
+                                            "事件格式无效"
+                                        )
+                                    event_count += 1
+                                    await event_handler(payload)
+
+                                async for line in response.aiter_lines():
+                                    if line == "":
+                                        await dispatch()
+                                    elif line.startswith("data:"):
+                                        data_lines.append(
+                                            line[5:].lstrip(" ")
+                                        )
+                                await dispatch()
+                            else:
+                                await response.aread()
+            except (httpx.TimeoutException, TimeoutError) as exc:
+                last_error = f"{self.provider_name} 请求超时"
+                await self._record_attempt(
+                    logical_call_id=logical_call_id,
+                    attempt=attempt,
+                    model=model,
+                    operation=operation,
+                    status="retryable_error",
+                    latency_ms=self._latency_ms(started),
+                    max_attempts=attempt_limit,
+                    details={
+                        **safe_telemetry,
+                        "error_type": "timeout",
+                        "stream_event_count": event_count,
+                    },
+                )
+                if event_count or attempt >= attempt_limit:
+                    raise ModelProviderError(last_error) from exc
+                await self.retry_sleep(self._backoff(attempt))
+                continue
+            except httpx.HTTPError as exc:
+                error_type = exc.__class__.__name__
+                last_error = (
+                    f"{self.provider_name} 传输失败"
+                    f"（{error_type}）"
+                )
+                await self._record_attempt(
+                    logical_call_id=logical_call_id,
+                    attempt=attempt,
+                    model=model,
+                    operation=operation,
+                    status="transport_error",
+                    latency_ms=self._latency_ms(started),
+                    max_attempts=attempt_limit,
+                    details={
+                        **safe_telemetry,
+                        "error_type": error_type,
+                        "stream_event_count": event_count,
+                    },
+                )
+                raise ModelProviderError(last_error) from exc
+            except ModelProviderError as exc:
+                await self._record_attempt(
+                    logical_call_id=logical_call_id,
+                    attempt=attempt,
+                    model=model,
+                    operation=operation,
+                    status="permanent_error",
+                    latency_ms=self._latency_ms(started),
+                    max_attempts=attempt_limit,
+                    details={
+                        **safe_telemetry,
+                        "error_type": "stream_event",
+                        "stream_event_count": event_count,
+                    },
+                )
+                raise
+
+            if response is not None and not response.is_error:
+                self._close_circuit()
+                await self._record_attempt(
+                    logical_call_id=logical_call_id,
+                    attempt=attempt,
+                    model=model,
+                    operation=operation,
+                    status="success",
+                    latency_ms=self._latency_ms(started),
+                    max_attempts=attempt_limit,
+                    details={
+                        **safe_telemetry,
+                        "status_code": response.status_code,
+                        "stream_event_count": event_count,
+                    },
+                )
+                return
+            if response is None:
+                last_error = f"{self.provider_name} 流式请求没有响应"
+                break
+
+            (
+                last_error,
+                provider_error_context,
+                error_code,
+            ) = self._http_error_details(response)
+            retryable = self._is_retryable(response)
+            permanent = self._is_permanent(
+                response,
+                provider_error_context,
+            )
+            error_details: dict[str, Any] = {
+                **safe_telemetry,
+                "status_code": response.status_code,
+                "stream_event_count": event_count,
+            }
+            if error_code is not None:
+                error_details["error_code"] = error_code
+            await self._record_attempt(
+                logical_call_id=logical_call_id,
+                attempt=attempt,
+                model=model,
+                operation=operation,
+                status=(
+                    "retryable_error"
+                    if retryable and not permanent
+                    else "permanent_error"
+                ),
+                latency_ms=self._latency_ms(started),
+                max_attempts=attempt_limit,
+                details=error_details,
+            )
+            if permanent:
+                if self._should_open_circuit(
+                    response,
+                    provider_error_context,
+                ):
+                    self._open_circuit(last_error)
+                raise ModelProviderError(last_error)
+            if not retryable or attempt >= attempt_limit:
+                break
+            await self.retry_sleep(self._retry_delay(response, attempt))
+
+        raise ModelProviderError(
+            f"{self.provider_name} 请求失败（已尝试 "
+            f"{attempt_limit} 次）：{last_error or '未知错误'}"
+        )
+
+    def _stream_error_message(self, payload: dict[str, Any]) -> str:
+        error = payload.get("error")
+        event_type = payload.get("type")
+        if not error and event_type != "error":
+            return ""
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return f"{self.provider_name} 流式响应失败：{message.strip()}"
+        if isinstance(error, str) and error.strip():
+            return f"{self.provider_name} 流式响应失败：{error.strip()}"
+        return f"{self.provider_name} 流式响应失败"
+
+    @staticmethod
+    async def _emit_stream_delta(
+        callback: ModelStreamCallback,
+        delta: str,
+    ) -> None:
+        outcome = callback(delta)
+        if inspect.isawaitable(outcome):
+            await outcome
+
+    @staticmethod
+    def _stream_delta_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, list):
+            return ""
+        parts: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
 
     async def _request(
         self,
@@ -743,6 +1495,39 @@ class OpenAICompatibleClient:
             request_policy["thinking_budget"] = thinking_budget
         return {"request_policy": request_policy}
 
+    def _responses_request_telemetry(
+        self,
+        *,
+        payload: dict[str, Any],
+        image_count: int,
+        prompt_chars: int,
+        session_cache: bool,
+        timeout_seconds: float | None,
+    ) -> dict[str, Any]:
+        reasoning = payload.get("reasoning")
+        reasoning_effort = (
+            reasoning.get("effort")
+            if isinstance(reasoning, dict)
+            else None
+        )
+        request_policy: dict[str, Any] = {
+            "prompt_chars": prompt_chars,
+            "image_count": image_count,
+            "previous_response_id_present": bool(
+                payload.get("previous_response_id")
+            ),
+            "session_cache_enabled": session_cache,
+            "store": payload.get("store") is True,
+            "timeout_seconds": (
+                timeout_seconds
+                if timeout_seconds is not None
+                else float(self.settings.provider_timeout_seconds)
+            ),
+        }
+        if reasoning_effort in RESPONSE_REASONING_EFFORTS:
+            request_policy["reasoning_effort"] = reasoning_effort
+        return {"request_policy": request_policy}
+
     @classmethod
     def _response_telemetry(
         cls,
@@ -759,6 +1544,10 @@ class OpenAICompatibleClient:
         usage = cls._numeric_usage(payload.get("usage"))
         if usage:
             telemetry["usage"] = usage
+
+        response_status = payload.get("status")
+        if response_status in SAFE_RESPONSE_STATUSES:
+            telemetry["response_status"] = response_status
 
         choices = payload.get("choices")
         if isinstance(choices, list) and choices:
@@ -790,6 +1579,35 @@ class OpenAICompatibleClient:
             if nested:
                 sanitized[key] = nested
         return sanitized
+
+    @staticmethod
+    def _responses_output_text(payload: dict[str, Any]) -> str:
+        direct = payload.get("output_text")
+        if isinstance(direct, str) and direct.strip():
+            return direct
+
+        parts: list[str] = []
+        output = payload.get("output")
+        if not isinstance(output, list):
+            return ""
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+                continue
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "output_text":
+                    continue
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts).strip()
 
     @staticmethod
     def _is_finite_number(value: Any) -> bool:

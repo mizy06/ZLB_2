@@ -11,13 +11,11 @@ from fastapi import (
     File,
     Header,
     HTTPException,
-    Request,
     UploadFile,
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ..auth import AuthenticationError, authenticate_session
 from ..chunking import chunk_document
 from ..config import settings
 from ..schemas import ParsedDocument
@@ -86,42 +84,6 @@ def require_engine_token(
     provided = _provided_token(authorization, x_engine_token)
     if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="外部引擎鉴权失败。")
-
-
-def require_asset_token(
-    request: Request,
-    authorization: str | None = Header(default=None),
-    x_engine_token: str | None = Header(default=None),
-) -> None:
-    expected = settings.asset_access_token
-    provided = _provided_token(authorization, x_engine_token)
-    if expected and provided and secrets.compare_digest(provided, expected):
-        return
-
-    session_value = request.cookies.get(settings.session_cookie_name, "")
-    if settings.api_access_token and session_value:
-        try:
-            authenticate_session(settings, session_value)
-        except AuthenticationError:
-            pass
-        else:
-            return
-
-    if not expected and not settings.api_access_token:
-        if settings.production:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "生产环境未配置 ASSET_ACCESS_TOKEN 或 "
-                    "MINDMAP_API_TOKEN，视觉资产已关闭。"
-                ),
-            )
-        return
-    raise HTTPException(
-        status_code=401,
-        detail="视觉资产鉴权失败。",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
 
 
 @router.get("/mindmap/health")
@@ -256,10 +218,7 @@ async def crop_visual_regions(request: CropRequest):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.get(
-    "/mindmap/assets/{render_id}/{filename}",
-    dependencies=[Depends(require_asset_token)],
-)
+@router.get("/mindmap/assets/{render_id}/{filename}")
 async def get_visual_asset(render_id: str, filename: str):
     try:
         path = resolve_asset_path(

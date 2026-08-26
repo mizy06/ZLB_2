@@ -10,7 +10,6 @@ import httpx
 from fastapi import FastAPI
 
 import backend.app.mindmap_engine.router as router_module
-from backend.app.auth import create_session_value
 from backend.app.config import Settings
 from backend.app.mindmap_engine.visuals import _asset_url
 
@@ -32,7 +31,6 @@ def configured_settings(root: Path, **updates) -> Settings:
         mindmap_data_dir=root,
         blackboard_path=root / "blackboard.sqlite3",
         environment="production",
-        api_access_token="api-secret",
     )
     return base.__class__(**{**base.__dict__, **updates})
 
@@ -60,7 +58,6 @@ class AssetRouteAuthenticationTDDTests(unittest.IsolatedAsyncioTestCase):
         configured: Settings,
         *,
         headers: dict[str, str] | None = None,
-        cookies: dict[str, str] | None = None,
         query: str = "",
     ) -> httpx.Response:
         render_dir = configured.mindmap_data_dir / "assets" / "render123"
@@ -74,72 +71,32 @@ class AssetRouteAuthenticationTDDTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://mindmap.test",
-                cookies=cookies,
             ) as client:
                 return await client.get(
                     f"/v1/mindmap/assets/render123/page.png{query}",
                     headers=headers,
                 )
 
-    async def test_production_without_asset_token_or_session_fails_closed(self):
+    async def test_public_workbench_can_read_assets_without_credentials(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             response = await self._request_asset(
                 configured_settings(Path(temp_dir)),
             )
 
-        self.assertEqual(response.status_code, 401)
-
-    async def test_production_without_any_asset_auth_configuration_returns_503(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            response = await self._request_asset(
-                configured_settings(
-                    Path(temp_dir),
-                    api_access_token="",
-                ),
-            )
-
-        self.assertEqual(response.status_code, 503)
-
-    async def test_invalid_api_session_never_grants_asset_access(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            configured = configured_settings(Path(temp_dir))
-            response = await self._request_asset(
-                configured,
-                cookies={
-                    configured.session_cookie_name: "forged-session",
-                },
-            )
-
-        self.assertEqual(response.status_code, 401)
-
-    async def test_valid_same_origin_api_session_can_read_asset(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            configured = configured_settings(Path(temp_dir))
-            session_value = create_session_value(configured)
-            response = await self._request_asset(
-                configured,
-                cookies={
-                    configured.session_cookie_name: session_value,
-                },
-            )
-
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"asset-bytes")
 
-    async def test_asset_token_still_works_in_bearer_header(self):
+    async def test_configured_asset_token_does_not_gate_public_assets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             configured = configured_settings(
                 Path(temp_dir),
                 asset_access_token="asset-secret",
             )
-            response = await self._request_asset(
-                configured,
-                headers={"Authorization": "Bearer asset-secret"},
-            )
+            response = await self._request_asset(configured)
 
         self.assertEqual(response.status_code, 200)
 
-    async def test_asset_token_still_works_in_engine_header(self):
+    async def test_legacy_asset_header_remains_harmless(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             configured = configured_settings(
                 Path(temp_dir),
@@ -152,7 +109,7 @@ class AssetRouteAuthenticationTDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
 
-    async def test_query_string_token_is_not_an_authentication_channel(self):
+    async def test_query_string_does_not_change_public_asset_response(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             configured = configured_settings(
                 Path(temp_dir),
@@ -163,4 +120,5 @@ class AssetRouteAuthenticationTDDTests(unittest.IsolatedAsyncioTestCase):
                 query="?token=asset-secret",
             )
 
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"asset-bytes")

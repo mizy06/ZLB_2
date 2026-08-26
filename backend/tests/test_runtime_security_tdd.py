@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from pypdf import PdfWriter
 
-from backend.app.auth import (
-    AuthConfigurationError,
-    AuthenticationError,
-    authenticate_token,
-)
+from backend.app.auth import workbench_principal
 from backend.app.config import Settings
 from backend.app.job_runtime import JobRuntime, monotonic_progress
 from backend.app.upload_validation import (
+    OLE_COMPOUND_MAGIC,
     UploadValidationError,
+    convert_legacy_office,
     validate_upload_path,
 )
 
@@ -91,44 +91,100 @@ class JobRuntimeTDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monotonic_progress(0, -4), 0)
 
 
-class AuthenticationTDDTests(unittest.TestCase):
-    def test_production_without_secret_fails_closed(self):
+class PublicWorkbenchTDDTests(unittest.TestCase):
+    def test_production_uses_configured_public_owner(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             configured = settings(
                 Path(temp_dir),
                 environment="production",
-                api_access_token="",
+                workbench_owner_id="legacy-owner",
             )
-            with self.assertRaises(AuthConfigurationError):
-                authenticate_token(configured, "")
+            principal = workbench_principal(configured)
 
-    def test_production_rejects_wrong_token_and_returns_stable_principal(self):
+        self.assertEqual(principal.id, "legacy-owner")
+
+    def test_public_owner_is_stable_without_credentials(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             configured = settings(
                 Path(temp_dir),
                 environment="production",
-                api_access_token="correct-token",
+                workbench_owner_id="public-workbench",
             )
-            with self.assertRaises(AuthenticationError):
-                authenticate_token(configured, "wrong-token")
-            first = authenticate_token(configured, "correct-token")
-            second = authenticate_token(configured, "correct-token")
+            first = workbench_principal(configured)
+            second = workbench_principal(configured)
 
         self.assertEqual(first.id, second.id)
-        self.assertNotIn("correct-token", first.id)
-
-    def test_development_without_secret_is_local_only_principal(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            configured = settings(
-                Path(temp_dir),
-                environment="development",
-                api_access_token="",
-            )
-            principal = authenticate_token(configured, "")
-        self.assertEqual(principal.id, "local-development")
+        self.assertEqual(first.id, "public-workbench")
 
 
 class UploadValidationTDDTests(unittest.TestCase):
+    def test_legacy_ppt_and_doc_signatures_are_accepted_for_conversion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ppt = root / "lesson.ppt"
+            ppt.write_bytes(OLE_COMPOUND_MAGIC + b"legacy-powerpoint")
+            doc = root / "lesson.doc"
+            doc.write_bytes(b"{\\rtf1\\ansi legacy word}")
+
+            ppt_inspection = validate_upload_path(
+                ppt,
+                filename=ppt.name,
+                content_type="application/vnd.ms-powerpoint",
+                settings=settings(root),
+            )
+            doc_inspection = validate_upload_path(
+                doc,
+                filename=doc.name,
+                content_type="application/msword",
+                settings=settings(root),
+            )
+
+        self.assertEqual(ppt_inspection.suffix, ".ppt")
+        self.assertEqual(doc_inspection.suffix, ".doc")
+
+    def test_spoofed_legacy_office_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "spoofed.doc"
+            source.write_bytes(b"plain text pretending to be word")
+            with self.assertRaisesRegex(UploadValidationError, "签名"):
+                validate_upload_path(
+                    source,
+                    filename=source.name,
+                    content_type="application/msword",
+                    settings=settings(root),
+                )
+
+    def test_legacy_office_conversion_uses_isolated_headless_profile(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "lesson.ppt"
+            source.write_bytes(OLE_COMPOUND_MAGIC + b"legacy-powerpoint")
+            captured: list[str] = []
+
+            def fake_run(args, **_kwargs):
+                captured.extend(args)
+                source.with_suffix(".pptx").write_bytes(b"converted")
+                return subprocess.CompletedProcess(args, 0)
+
+            with (
+                patch(
+                    "backend.app.upload_validation.shutil.which",
+                    return_value="/usr/bin/libreoffice",
+                ),
+                patch(
+                    "backend.app.upload_validation.subprocess.run",
+                    side_effect=fake_run,
+                ),
+            ):
+                converted = convert_legacy_office(source)
+
+        self.assertEqual(converted.suffix, ".pptx")
+        self.assertIn("--headless", captured)
+        self.assertTrue(
+            any(arg.startswith("-env:UserInstallation=file://") for arg in captured)
+        )
+
     def test_extension_spoofing_is_rejected_by_magic(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

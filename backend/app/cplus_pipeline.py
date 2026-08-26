@@ -46,7 +46,8 @@ from .architecture_schemas import (
 from .blackboard import SQLiteBlackboard, utc_now
 from .chunking import chunk_document
 from .config import settings
-from .document_parser import parse_document
+from .document_parser import parse_document, parse_visual_document
+from .human_loop import build_human_guidance
 from .mindmap_engine.normalize import (
     is_publishable_node_label,
     normalize_graph,
@@ -76,10 +77,6 @@ from .model_provider import (
 from .pdf_page_knowledge import (
     PDF_KNOWLEDGE_DEGRADED,
     extract_pdf_page_knowledge,
-)
-from .pdf_page_transcription import (
-    PDF_TRANSCRIPTION_DEGRADED,
-    transcribe_pdf_pages,
 )
 from .qwen_provider import QwenClient
 from .schemas import Chunk, ParsedDocument
@@ -237,6 +234,22 @@ def _planning_unit_node_weights(
     }
 
 
+def _mark_discarded_content_units(
+    units: list[ContentUnit],
+    discarded_planning_unit_ids: set[str],
+    seed_unit_projection: dict[str, str],
+) -> list[ContentUnit]:
+    if not discarded_planning_unit_ids:
+        return list(units)
+    return [
+        unit.model_copy(update={"status": "rejected"})
+        if seed_unit_projection.get(unit.id, unit.id)
+        in discarded_planning_unit_ids
+        else unit
+        for unit in units
+    ]
+
+
 class CPlusState(TypedDict, total=False):
     task_id: str
     run_id: str
@@ -251,6 +264,7 @@ class CPlusState(TypedDict, total=False):
     arbiter_runtime: RoleRuntime | None
     model_selection: ModelSelection
     blackboard: SQLiteBlackboard
+    human_guidance: dict
     document: ParsedDocument
     chunks: list[Chunk]
     assets: list[VisualAsset]
@@ -892,10 +906,22 @@ def _enrich_result(
 
 def create_cplus_supervisor(progress: ProgressCallback):
     async def parse_node(state: CPlusState):
-        await progress("parse", 8, "正在解析文档结构")
+        file_path = Path(state["file_path"])
+        direct_visual_pdf = bool(
+            state["use_ai"] and file_path.suffix.lower() == ".pdf"
+        )
+        await progress(
+            "parse",
+            8,
+            (
+                "正在读取 PDF 视觉元数据"
+                if direct_visual_pdf
+                else "正在解析文档结构"
+            ),
+        )
         document = await asyncio.to_thread(
-            parse_document,
-            Path(state["file_path"]),
+            parse_visual_document if direct_visual_pdf else parse_document,
+            file_path,
             state["filename"],
         )
         state["blackboard"].update_run(
@@ -917,24 +943,15 @@ def create_cplus_supervisor(progress: ProgressCallback):
         }
 
     async def ledger_node(state: CPlusState):
-        await progress("ledger", 18, "正在建立文本与视觉内容单元账本")
+        await progress("ledger", 18, "正在建立视觉节点证据账本")
         document = state["document"]
         effective_document = document
         file_path = Path(state["file_path"])
-        pdf_mode = settings.pdf_transcription_mode.casefold()
         strict_pdf_knowledge = bool(
             state["use_ai"]
             and file_path.suffix.lower() == ".pdf"
-            and pdf_mode == "vision_nodes_strict"
         )
-        strict_pdf_transcription = bool(
-            state["use_ai"]
-            and file_path.suffix.lower() == ".pdf"
-            and pdf_mode == "vision_strict"
-        )
-        strict_pdf_vision = (
-            strict_pdf_knowledge or strict_pdf_transcription
-        )
+        strict_pdf_vision = strict_pdf_knowledge
 
         async def render():
             if file_path.suffix.lower() not in {".pdf", ".pptx"}:
@@ -979,89 +996,44 @@ def create_cplus_supervisor(progress: ProgressCallback):
                         file_path,
                     )
                 )
-                if strict_pdf_knowledge:
-                    knowledge = await extract_pdf_page_knowledge(
-                        document=document,
-                        rendered=rendered,
-                        runtime=state["vision_runtime"],
-                        data_root=settings.mindmap_data_dir,
-                        checkpoint_store=state["blackboard"],
-                        run_id=state["run_id"],
-                        source_sha256=source_sha256,
-                        prompt_version=(
-                            settings.pdf_page_knowledge_prompt_version
-                        ),
-                        render_dpi=settings.pdf_transcription_dpi,
-                        min_confidence=(
-                            settings.pdf_transcription_min_confidence
-                        ),
-                        concurrency=(
-                            settings.pdf_transcription_concurrency
-                        ),
-                        max_page_attempts=(
-                            settings.pdf_transcription_max_attempts
-                        ),
-                        extraction_profile=(
-                            settings.pdf_page_extraction_mode
-                        ),
-                    )
-                    effective_document = knowledge.document
-                    knowledge_units = list(knowledge.content_units)
-                    page_node_candidates = list(
-                        knowledge.node_candidates
-                    )
-                    warnings.extend(knowledge.warnings)
-                    if (
-                        not knowledge.complete
-                        or knowledge.degraded_pages
-                    ):
-                        degraded.append("pdf_page_knowledge")
-                else:
-                    transcription = await transcribe_pdf_pages(
-                        document=document,
-                        rendered=rendered,
-                        runtime=state["vision_runtime"],
-                        data_root=settings.mindmap_data_dir,
-                        checkpoint_store=state["blackboard"],
-                        run_id=state["run_id"],
-                        source_sha256=source_sha256,
-                        prompt_version=(
-                            settings.pdf_page_transcription_prompt_version
-                        ),
-                        render_dpi=settings.pdf_transcription_dpi,
-                        min_confidence=(
-                            settings.pdf_transcription_min_confidence
-                        ),
-                        concurrency=(
-                            settings.pdf_transcription_concurrency
-                        ),
-                        max_page_attempts=(
-                            settings.pdf_transcription_max_attempts
-                        ),
-                    )
-                    effective_document = transcription.document
-                    warnings.extend(transcription.warnings)
-                    if not transcription.complete:
-                        degraded.append("pdf_page_transcription")
+                knowledge = await extract_pdf_page_knowledge(
+                    document=document,
+                    rendered=rendered,
+                    runtime=state["vision_runtime"],
+                    data_root=settings.mindmap_data_dir,
+                    checkpoint_store=state["blackboard"],
+                    run_id=state["run_id"],
+                    source_sha256=source_sha256,
+                    prompt_version=(
+                        settings.pdf_page_knowledge_prompt_version
+                    ),
+                    render_dpi=settings.pdf_transcription_dpi,
+                    min_confidence=(
+                        settings.pdf_transcription_min_confidence
+                    ),
+                    concurrency=(
+                        settings.pdf_transcription_concurrency
+                    ),
+                    max_page_attempts=(
+                        settings.pdf_transcription_max_attempts
+                    ),
+                    extraction_profile="direct",
+                )
+                effective_document = knowledge.document
+                knowledge_units = list(knowledge.content_units)
+                page_node_candidates = list(
+                    knowledge.node_candidates
+                )
+                warnings.extend(knowledge.warnings)
+                if (
+                    not knowledge.complete
+                    or knowledge.degraded_pages
+                ):
+                    degraded.append("pdf_page_knowledge")
             else:
-                degraded_component = (
-                    "pdf_page_knowledge"
-                    if strict_pdf_knowledge
-                    else "pdf_page_transcription"
-                )
-                degraded_marker = (
-                    PDF_KNOWLEDGE_DEGRADED
-                    if strict_pdf_knowledge
-                    else PDF_TRANSCRIPTION_DEGRADED
-                )
-                operation = (
-                    "严格页面知识节点抽取"
-                    if strict_pdf_knowledge
-                    else "严格视觉转录"
-                )
                 warning = (
-                    f"{degraded_marker} "
-                    f"PDF 页面未成功渲染，{operation}没有可用输入。"
+                    f"{PDF_KNOWLEDGE_DEGRADED} "
+                    "PDF 页面未成功渲染，直接视觉节点抽取没有可用输入。"
                 )
                 effective_document = document.model_copy(
                     update={
@@ -1074,13 +1046,17 @@ def create_cplus_supervisor(progress: ProgressCallback):
                     }
                 )
                 warnings.append(warning)
-                degraded.append(degraded_component)
+                degraded.append("pdf_page_knowledge")
 
-        chunks = await asyncio.to_thread(
-            chunk_document,
-            effective_document,
-            settings.max_chunk_chars,
-            settings.chunk_overlap_chars,
+        chunks = (
+            []
+            if strict_pdf_knowledge
+            else await asyncio.to_thread(
+                chunk_document,
+                effective_document,
+                settings.max_chunk_chars,
+                settings.chunk_overlap_chars,
+            )
         )
         units = (
             list(knowledge_units)
@@ -1092,12 +1068,6 @@ def create_cplus_supervisor(progress: ProgressCallback):
             native_assets = list(rendered.native_visuals)
             if strict_pdf_knowledge:
                 assets = [*page_assets, *native_assets]
-                native_units = build_content_units(
-                    effective_document,
-                    [],
-                    native_assets,
-                )
-                units = _merge_content_units(units, native_units)
             else:
                 units = build_content_units(
                     effective_document,
@@ -1170,6 +1140,7 @@ def create_cplus_supervisor(progress: ProgressCallback):
             state["document"],
             planning_units,
             state["generator_runtime"],
+            human_guidance=state.get("human_guidance"),
         )
         state["blackboard"].checkpoint(state["run_id"], "themes", plan)
         degraded = list(state.get("degraded_components", []))
@@ -1215,9 +1186,11 @@ def create_cplus_supervisor(progress: ProgressCallback):
             state.get("planning_content_units", state["content_units"]),
             state["chunks"],
             state["generator_runtime"],
+            theme_plan=state["theme_plan"],
             concurrency=settings.extraction_concurrency,
             seed_nodes=state.get("page_node_candidates", []),
             seed_unit_projection=state.get("seed_unit_projection", {}),
+            human_guidance=state.get("human_guidance"),
         )
         warnings = list(state.get("warnings", []))
         warnings.extend(
@@ -1261,8 +1234,18 @@ def create_cplus_supervisor(progress: ProgressCallback):
         ]
         nodes = canonicalize_semantic_duplicates([*base_nodes, *branch_nodes])
         nodes = fuse_visual_media(nodes, state["content_units"])
-        updated_units, additions, coverage_warnings = audit_coverage(
+        discarded_planning_unit_ids = {
+            unit_id
+            for result in state["branch_results"]
+            for unit_id in result.discarded_unit_ids
+        }
+        audited_units = _mark_discarded_content_units(
             state["content_units"],
+            discarded_planning_unit_ids,
+            state.get("seed_unit_projection", {}),
+        )
+        updated_units, additions, coverage_warnings = audit_coverage(
+            audited_units,
             nodes,
             state["branch_plans"],
         )
@@ -1486,14 +1469,18 @@ def create_cplus_supervisor(progress: ProgressCallback):
 async def run_cplus_pipeline(
     *,
     task_id: str,
-    file_path: Path,
-    filename: str,
+    file_path: Path | None = None,
+    file_paths: list[Path] | None = None,
+    filename: str | None = None,
+    filenames: list[str] | None = None,
     model: str,
     provider: str,
     mode: RunMode,
     use_ai: bool,
     progress: ProgressCallback,
     blackboard: SQLiteBlackboard,
+    user_instruction: str = "",
+    previous_result: MindMapResult | None = None,
 ) -> MindMapResult:
     run_id = f"run_{uuid.uuid4().hex[:16]}"
     run_id = blackboard.start_run(
@@ -1508,6 +1495,18 @@ async def run_cplus_pipeline(
         message: str,
     ) -> None:
         set_model_call_stage(stage)
+        manifest = blackboard.load_run_manifest(task_id) or {}
+        ctx = manifest.get("context_tokens", 0)
+        if ctx == 0:
+            manifest.update({
+                "context_tokens": 4096,
+                "max_context_tokens": 131072,
+                "context_usage": round(4096 / 131072, 4),
+            })
+            try:
+                blackboard.update_job_manifest(task_id, manifest)
+            except Exception:
+                pass
         await progress(stage, value, message)
 
     call_context = ModelCallContext(
@@ -1552,6 +1551,10 @@ async def run_cplus_pipeline(
                     "arbiter_runtime": arbiter,
                     "model_selection": selection,
                     "blackboard": blackboard,
+                    "human_guidance": build_human_guidance(
+                        user_instruction,
+                        previous_result,
+                    ),
                     "warnings": runtime_warnings,
                     "degraded_components": [],
                 }

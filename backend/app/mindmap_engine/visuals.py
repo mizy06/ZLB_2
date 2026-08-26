@@ -120,14 +120,14 @@ def _asset_fingerprint(path: Path) -> str:
 
 def _validate_normalized_bbox(bbox: list[float]) -> None:
     if len(bbox) != 4:
-        raise ValueError("bbox 必须包含 [x, y, width, height]。")
+        raise ValueError("bbox ???? [x, y, width, height]?")
     x, y, width, height = bbox
     if not all(math.isfinite(item) for item in bbox):
-        raise ValueError("bbox 不能包含非有限数值。")
+        raise ValueError("bbox ??????????")
     if x < 0 or y < 0 or width <= 0 or height <= 0:
-        raise ValueError("bbox 坐标必须非负且宽高必须为正。")
+        raise ValueError("bbox ??????????????")
     if x > 1 or y > 1 or x + width > 1 + 1e-9 or y + height > 1 + 1e-9:
-        raise ValueError("bbox 必须完整位于归一化页面范围内。")
+        raise ValueError("bbox ???????????????")
 
 
 def _asset_url(
@@ -186,7 +186,7 @@ def _render_pdf(
         return []
     pdftoppm = _find_command("pdftoppm")
     if not pdftoppm:
-        raise RuntimeError("未找到 pdftoppm，无法渲染 PDF 页面。")
+        raise RuntimeError("??? pdftoppm????? PDF ???")
 
     generated: list[tuple[int, Path]] = []
     if page_numbers is None:
@@ -229,7 +229,7 @@ def _render_pdf(
             source = prefix.with_suffix(".png")
             if not source.exists():
                 raise RuntimeError(
-                    f"pdftoppm 没有生成第 {page_number} 页图片。"
+                    f"pdftoppm ????? {page_number} ????"
                 )
             generated.append((page_number, source))
 
@@ -257,7 +257,7 @@ def _render_pdf(
             )
         )
     if not pages:
-        raise RuntimeError("pdftoppm 没有生成页面图片。")
+        raise RuntimeError("pdftoppm ?????????")
     return pages
 
 
@@ -272,7 +272,7 @@ def _render_pptx(
 ) -> list[RenderedPage]:
     soffice = _find_command("soffice", "libreoffice")
     if not soffice:
-        raise RuntimeError("未找到 LibreOffice，无法渲染 PPTX 幻灯片。")
+        raise RuntimeError("??? LibreOffice????? PPTX ????")
 
     _run_command(
         [
@@ -289,7 +289,7 @@ def _render_pptx(
     if not pdf_path.exists():
         pdf_candidates = list(render_dir.glob("*.pdf"))
         if not pdf_candidates:
-            raise RuntimeError("LibreOffice 没有生成 PPTX 对应 PDF。")
+            raise RuntimeError("LibreOffice ???? PPTX ?? PDF?")
         pdf_path = pdf_candidates[0]
     try:
         return _render_pdf(
@@ -339,7 +339,7 @@ def _crop_image(
         right = min(int((x + box_width) * width + pad_x), width)
         bottom = min(int((y + box_height) * height + pad_y), height)
         if right - left < 4 or bottom - top < 4:
-            raise ValueError("裁剪区域过小。")
+            raise ValueError("???????")
         cropped = image.crop((left, top, right, bottom)).convert("RGB")
         cropped.save(target, format="PNG")
         return cropped.size
@@ -367,7 +367,7 @@ def _chart_text(shape) -> str:
         if getattr(series, "name", None)
     ]
     if series_names:
-        parts.append("系列：" + "、".join(series_names))
+        parts.append("???" + "?".join(series_names))
     return "\n".join(parts)
 
 
@@ -434,16 +434,16 @@ def _extract_pptx_visuals(
                     except (OSError, ValueError) as exc:
                         warnings.append(
                             f"{VISUAL_DEGRADED_NATIVE_EXTRACTION} "
-                            f"幻灯片 {slide_number} 的 {visual_kind} "
-                            f"裁剪失败：{exc}"
+                            f"??? {slide_number} ? {visual_kind} "
+                            f"?????{exc}"
                         )
                         continue
                 else:
                     status = "needs_render"
                     warnings.append(
                         f"{VISUAL_DEGRADED_NATIVE_EXTRACTION} "
-                        f"幻灯片 {slide_number} 的 {visual_kind} "
-                        "缺少渲染页，已保留坐标元数据。"
+                        f"??? {slide_number} ? {visual_kind} "
+                        "???????????????"
                     )
 
             target_path = render_dir / filename if filename else None
@@ -469,15 +469,15 @@ def _extract_pptx_visuals(
             if canonical:
                 if canonical.source_slide == slide_number:
                     warnings.append(
-                        f"幻灯片 {slide_number} 的 {visual_kind} 与同页已有视觉资产"
-                        "感知重复，已跳过重复副本。"
+                        f"??? {slide_number} ? {visual_kind} ?????????"
+                        "?????????????"
                     )
                     if target_path:
                         target_path.unlink(missing_ok=True)
                     continue
                 warnings.append(
-                    f"幻灯片 {slide_number} 的 {visual_kind} 与已有视觉资产感知重复，"
-                    f"已复用 {canonical.asset_id} 并保留出现位置。"
+                    f"??? {slide_number} ? {visual_kind} ????????????"
+                    f"??? {canonical.asset_id} ????????"
                 )
                 if target_path:
                     target_path.unlink(missing_ok=True)
@@ -528,7 +528,7 @@ def render_document(
 ) -> RenderResponse:
     suffix = source_path.suffix.lower()
     if suffix not in RENDER_TYPES:
-        raise ValueError("视觉渲染仅支持 PDF、PPTX、PNG、JPG、JPEG 或 WEBP。")
+        raise ValueError("??????? PDF?PPTX?PNG?JPG?JPEG ? WEBP?")
 
     render_id = uuid.uuid4().hex[:16]
     render_dir = data_root / "assets" / render_id
@@ -541,11 +541,11 @@ def render_document(
             return None
         selected = _select_page_numbers(total_pages, max(int(max_pages), 0))
         if len(selected) < total_pages:
-            labels = "、".join(str(page) for page in selected) or "无"
+            labels = "?".join(str(page) for page in selected) or "?"
             warnings.append(
                 f"{VISUAL_DEGRADED_RENDER_BUDGET} "
-                f"文档共 {total_pages} 页，全页栅格预算为 {max_pages} 页；"
-                f"仅栅格化第 {labels} 页，跳过 {total_pages - len(selected)} 页。"
+                f"??? {total_pages} ????????? {max_pages} ??"
+                f"????? {labels} ???? {total_pages - len(selected)} ??"
             )
         return selected
 
@@ -568,7 +568,7 @@ def render_document(
         except Exception as exc:
             warnings.append(
                 f"{VISUAL_DEGRADED_RENDER_FAILURE} "
-                f"PDF 页面渲染失败：{exc}"
+                f"PDF ???????{exc}"
             )
     elif suffix == ".pptx":
         try:
@@ -594,7 +594,7 @@ def render_document(
         except Exception as exc:
             warnings.append(
                 f"{VISUAL_DEGRADED_RENDER_FAILURE} "
-                f"PPTX 整页渲染不可用：{exc}"
+                f"PPTX ????????{exc}"
             )
     else:
         filename = f"page_0001{suffix}"
@@ -658,7 +658,7 @@ def _crop_context(
     render_dir = data_root / "assets" / request.render_id
     manifest_path = render_dir / "manifest.json"
     if not manifest_path.exists():
-        raise FileNotFoundError("视觉渲染任务不存在。")
+        raise FileNotFoundError("??????????")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     pages = {
         int(page["page"]): render_dir / page["filename"]
@@ -682,7 +682,7 @@ def _crop_visual_unit(
 ) -> VisualUnit:
     source = pages.get(region.page)
     if not source or not source.exists():
-        raise FileNotFoundError(f"第 {region.page} 页的渲染图片不存在。")
+        raise FileNotFoundError(f"? {region.page} ??????????")
     filename = f"crop_{index:04d}.png"
     target = render_dir / filename
     try:
@@ -770,18 +770,77 @@ def crop_regions_best_effort(
         except (FileNotFoundError, OSError, ValueError) as exc:
             results.append(None)
             warnings.append(
-                f"第 {region.page} 页区域 {region.bbox} 裁剪失败：{exc}"
+                f"? {region.page} ??? {region.bbox} ?????{exc}"
             )
     return results, warnings
 
 
 def resolve_asset_path(data_root: Path, render_id: str, filename: str) -> Path:
     if not render_id.isalnum():
-        raise FileNotFoundError("非法视觉任务 ID。")
+        raise FileNotFoundError("?????? ID?")
     if Path(filename).name != filename:
-        raise FileNotFoundError("非法资产文件名。")
+        raise FileNotFoundError("????????")
     render_dir = (data_root / "assets" / render_id).resolve()
     target = (render_dir / filename).resolve()
     if target.parent != render_dir or not target.is_file():
-        raise FileNotFoundError("视觉资产不存在。")
+        raise FileNotFoundError("????????")
     return target
+
+def render_documents(
+    source_paths: list[Path],
+    original_filenames: list[str],
+    data_root: Path,
+    public_base_url: str = "",
+    asset_token: str = "",
+    max_pages: int | None = None,
+    pdf_dpi: int = 144,
+) -> RenderResponse:
+    if not source_paths:
+        raise ValueError("???????????")
+    if len(source_paths) == 1:
+        return render_document(
+            source_paths[0],
+            original_filenames[0],
+            data_root=data_root,
+            public_base_url=public_base_url,
+            asset_token=asset_token,
+            max_pages=max_pages,
+            pdf_dpi=pdf_dpi,
+        )
+
+    all_pages: list[RenderedPage] = []
+    all_assets: list[VisualAsset] = []
+    all_warnings: list[str] = []
+
+    global_page_number = 1
+    for doc_idx, (path, fname) in enumerate(zip(source_paths, original_filenames, strict=False)):
+        res = render_document(
+            path,
+            fname,
+            data_root=data_root,
+            public_base_url=public_base_url,
+            asset_token=asset_token,
+            max_pages=max_pages,
+            pdf_dpi=pdf_dpi,
+        )
+        all_warnings.extend(res.warnings)
+        all_assets.extend(res.native_visuals)
+
+        for page in res.pages:
+            relabeled_page = RenderedPage(
+                asset_id=page.asset_id,
+                render_id=page.render_id,
+                filename=page.filename,
+                url=page.url,
+                page=global_page_number,
+                width=getattr(page, "width", 0),
+                height=getattr(page, "height", 0),
+            )
+            all_pages.append(relabeled_page)
+            global_page_number += 1
+
+    return RenderResponse(
+        pages=all_pages,
+        native_visuals=all_assets,
+        warnings=all_warnings,
+    )

@@ -25,6 +25,7 @@ from .agents import (
     _normalized_evidence_text,
     _structured_json_call_kwargs,
 )
+from .architecture_schemas import TerminalGoldGate
 from .model_provider import ModelProviderError, model_call_scope
 from .pdf_math_geometry import _candidate_issues
 from .pdf_page_knowledge import (
@@ -37,7 +38,7 @@ from .pdf_page_knowledge import (
 
 
 PAGE_LAYOUT_SCHEMA_VERSION = "page-layout-v3"
-PAGE_LAYOUT_NODE_SCHEMA_VERSION = "page-layout-nodes-v3"
+PAGE_LAYOUT_NODE_SCHEMA_VERSION = "page-layout-nodes-v4"
 PAGE_LAYOUT_ROLE = "pdf_page_layout_extractor"
 PAGE_LAYOUT_NODE_ROLE = "pdf_layout_node_extractor"
 PAGE_LAYOUT_TIMEOUT_SECONDS = 120.0
@@ -45,6 +46,17 @@ PAGE_LAYOUT_RETRY_TIMEOUT_SECONDS = 180.0
 PAGE_LAYOUT_MAX_OUTPUT_TOKENS = 9000
 PAGE_LAYOUT_NODE_MAX_OUTPUT_TOKENS = 2500
 PAGE_LAYOUT_NODE_REASONING_TOKEN_RESERVE = 1536
+
+_TERMINAL_NO_FURTHER_GATE = TerminalGoldGate(
+    name_teaches_novice=True,
+    no_further_bullet_decomposition=True,
+    minimum_knowledge_atom=False,
+)
+_TERMINAL_ATOM_GATE = TerminalGoldGate(
+    name_teaches_novice=True,
+    no_further_bullet_decomposition=False,
+    minimum_knowledge_atom=True,
+)
 
 LayoutProfile = Literal["dots", "chandra"]
 LayoutCategory = Literal[
@@ -427,7 +439,12 @@ LAYOUT_NODE_SYSTEM_PROMPT = """你是受约束的原子知识节点选择器。�
       "role": "definition|principle|formula|example|step|warning|other",
       "block_id": "必须引用输入中的一个完整块",
       "formula_index": null,
-      "confidence": 0.0
+      "confidence": 0.0,
+      "terminal_gold_gate": {
+        "name_teaches_novice": true,
+        "no_further_bullet_decomposition": true,
+        "minimum_knowledge_atom": false
+      }
     }
   ]
 }
@@ -436,11 +453,12 @@ LAYOUT_NODE_SYSTEM_PROMPT = """你是受约束的原子知识节点选择器。�
 1. evidence_text 和 bbox 由代码从 block_id 继承，你不得输出这两个字段。
 2. formula_text 和 formula_latex 由代码从已验收布局继承并自动补齐，你不得输出这两个字段。
 3. definition 也由代码设为完整块原文，你不得输出 definition。
-4. name 必须逐字复制所引用块中的一个连续原文片段，长度为 2..48 个字符，保持单行、名词性、自足；不得使用章节编号、句子开头、连接词、句末标点、未闭合括号或截断短语，不得加入页面上没有的学科、对象或结论。
+4. name 必须逐字复制所引用块中的一个连续原文片段，长度为 2..48 个字符，保持单行、自足；不得使用章节编号、句子开头、连接词、句末标点、未闭合括号或截断短语，不得加入页面上没有的学科、对象或结论。只有当短词或短术语本身就能完整教会一个从未学过该知识的学生时，name 才能以短词结束；否则必须选择块中包含必要对象、条件、关系或结论的完整解释性短语。若块内没有这样的连续短语，不要输出该节点。
 5. 每个清晰公式块都要选择一个短名称，并填写从 0 开始的对应 formula_index；非公式块必须填写 null。名称优先使用块中可见的公式名称、定义项或等式左侧，不得把超长整条公式当作 name。formula_text 和 formula_latex 仍由代码从已验收 formulas 继承。
-6. 每个节点只表达一个原子事实。不要抽取纯页码、页眉页脚、装饰、坐标轴碎片或空泛图示。
-7. 页面有知识但无法在单个连续块中得到直接支持时 complete=false，不得拼接不同块伪造证据。
-8. 每页最多 12 个节点，不要输出 JSON 之外的文字。"""
+6. 每个节点只表达一个原子事实。不要抽取纯页码、页眉页脚、装饰、坐标轴碎片、反应式中失去键线和箭头后形成的 O/OH/R/Cl 等孤立字母串，或空泛图示。
+7. 每个节点必须填写 terminal_gold_gate。name_teaches_novice 必须为 true；no_further_bullet_decomposition 表示该知识已不适合继续分条列点，minimum_knowledge_atom 表示该知识已是最小知识原子，后两项是严格或关系。只有名称教学充分且两个终止条件至少一个为 true 时才可选择该节点。
+8. 页面有知识但无法在单个连续块中得到直接支持时 complete=false，不得拼接不同块伪造证据。
+9. 每页最多 12 个节点，不要输出 JSON 之外的文字。"""
 
 
 class LayoutFormula(BaseModel):
@@ -576,6 +594,7 @@ class LayoutNodeDraft(BaseModel):
     block_id: str
     formula_index: int | None = Field(default=None, ge=0)
     confidence: float = Field(ge=0, le=1)
+    terminal_gold_gate: TerminalGoldGate | None = None
 
     @field_validator(
         "temp_id",
@@ -2073,6 +2092,7 @@ def _supplement_layout_formulas(
                 formula_latex=formula.latex,
                 bbox=block.bbox,
                 confidence=block.confidence,
+                terminal_gold_gate=_TERMINAL_ATOM_GATE,
             )
             materialized = _publishable_materialized_node(supplemental)
             if materialized is None:
@@ -2189,6 +2209,7 @@ def materialize_layout_selection(
             formula_latex=formula_latex,
             bbox=block.bbox,
             confidence=block.confidence,
+            terminal_gold_gate=draft.terminal_gold_gate,
         )
         materialized = _publishable_materialized_node(candidate)
         if materialized is None:
@@ -2253,6 +2274,7 @@ def materialize_layout_selection(
             evidence_text=block.text,
             bbox=block.bbox,
             confidence=block.confidence,
+            terminal_gold_gate=_TERMINAL_NO_FURTHER_GATE,
         )
         materialized = _publishable_materialized_node(supplemental)
         if materialized is None:
@@ -2452,6 +2474,7 @@ def _fallback_layout_selection(
                         role="principle",
                         block_id=block.block_id,
                         confidence=block.confidence,
+                        terminal_gold_gate=_TERMINAL_NO_FURTHER_GATE,
                     )
                 )
             continue
@@ -2478,6 +2501,7 @@ def _fallback_layout_selection(
                         block_id=block.block_id,
                         formula_index=formula_index,
                         confidence=block.confidence,
+                        terminal_gold_gate=_TERMINAL_ATOM_GATE,
                     )
                 )
         elif _is_fallback_nonformula_block(block):
@@ -2492,6 +2516,7 @@ def _fallback_layout_selection(
                     role="other",
                     block_id=block.block_id,
                     confidence=block.confidence,
+                    terminal_gold_gate=_TERMINAL_NO_FURTHER_GATE,
                 )
             )
     return LayoutNodeSelection(
@@ -2602,10 +2627,13 @@ async def extract_layout_nodes(
             repair = (
                 "\n上一次输出未通过质量门："
                 + "、".join(last_issues[:10])
-                + "。只修正节点选择、块引用和 name；"
+                + "。只修正节点选择、块引用、name 和 terminal_gold_gate；"
                 "不得自行输出或改写 evidence、formula、bbox。"
-                "name 必须是块内连续原文中的 2..48 字符单行名词性"
-                "标签，不得含章节编号、句子开头、连接词或句末标点。"
+                "name 必须是块内连续原文中的 2..48 字符单行自足表达，"
+                "不得含章节编号、句子开头、连接词或句末标点；短词本身"
+                "不能教会零基础学生时不得选择。terminal_gold_gate 中"
+                "name_teaches_novice 必须为 true，两个终止条件至少一个"
+                "为 true。"
             )
         try:
             with model_call_scope(

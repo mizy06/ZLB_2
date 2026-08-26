@@ -17,6 +17,81 @@ from .schemas import Chunk, ParsedDocument
 
 
 RunMode = Literal["standard", "precision"]
+EditorialReviewerRole = Literal[
+    "content_omission",
+    "pruning",
+    "multilevel_structure",
+]
+
+
+class MindMapLoopRound(BaseModel):
+    editor_model: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]*$",
+    )
+    content_omission_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]*$",
+    )
+    pruning_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]*$",
+    )
+    multilevel_structure_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]*$",
+    )
+
+    def reviewer_models(self) -> list[tuple[EditorialReviewerRole, str]]:
+        selected: list[tuple[EditorialReviewerRole, str]] = []
+        if self.content_omission_model:
+            selected.append(("content_omission", self.content_omission_model))
+        if self.pruning_model:
+            selected.append(("pruning", self.pruning_model))
+        if self.multilevel_structure_model:
+            selected.append(
+                ("multilevel_structure", self.multilevel_structure_model)
+            )
+        return selected
+
+    def all_models(self) -> list[str]:
+        return [
+            self.editor_model,
+            *(model for _, model in self.reviewer_models()),
+        ]
+
+
+class MindMapLoopConfig(BaseModel):
+    rounds: list[MindMapLoopRound] = Field(min_length=1, max_length=6)
+
+    def all_models(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                model
+                for round_config in self.rounds
+                for model in round_config.all_models()
+            )
+        )
+
+
+def default_mindmap_loop(model: str) -> MindMapLoopConfig:
+    return MindMapLoopConfig(
+        rounds=[
+            MindMapLoopRound(
+                editor_model=model,
+                content_omission_model=model,
+                pruning_model=model,
+                multilevel_structure_model=model,
+            )
+        ]
+    )
 ContentUnitStatus = Literal[
     "uncovered",
     "covered",
@@ -32,6 +107,27 @@ CandidateStatus = Literal[
     "needs_review",
 ]
 DecisionActor = Literal["code", "model", "human"]
+
+
+class TerminalGoldGate(BaseModel):
+    name_teaches_novice: bool
+    no_further_bullet_decomposition: bool
+    minimum_knowledge_atom: bool
+
+    @model_validator(mode="after")
+    def validate_terminal_identity(self) -> "TerminalGoldGate":
+        if not self.name_teaches_novice:
+            raise ValueError(
+                "terminal node name must teach a novice without context"
+            )
+        if not (
+            self.no_further_bullet_decomposition
+            or self.minimum_knowledge_atom
+        ):
+            raise ValueError(
+                "terminal node requires an OR decomposition stop condition"
+            )
+        return self
 
 
 class ContentUnit(BaseModel):
@@ -210,8 +306,32 @@ class JobView(BaseModel):
     progress: int
     message: str = ""
     mode: RunMode = "standard"
+    loop_config: MindMapLoopConfig | None = None
     result: MindMapResult | None = None
     error: str | None = None
+
+
+class JobInteractionView(BaseModel):
+    id: str
+    kind: Literal["initial", "revision"]
+    instruction: str = Field(default="", max_length=8000)
+    created_at: str
+    base_graph_version: int = Field(default=0, ge=0)
+    result_graph_version: int | None = Field(default=None, ge=1)
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    error: str | None = None
+
+
+class JobRefinementRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=8000)
+    expected_graph_version: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def strip_instruction(self):
+        self.instruction = self.instruction.strip()
+        if not self.instruction:
+            raise ValueError("instruction cannot be blank")
+        return self
 
 
 class HistoryItem(BaseModel):

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +37,12 @@ OOXML_MARKERS = {
     ".pptx": "ppt/presentation.xml",
     ".docx": "word/document.xml",
 }
+LEGACY_OFFICE_TARGETS = {
+    ".ppt": ".pptx",
+    ".doc": ".docx",
+}
+LEGACY_OFFICE_SUFFIXES = frozenset(LEGACY_OFFICE_TARGETS)
+OLE_COMPOUND_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 IMAGE_FORMATS = {
     ".png": "PNG",
     ".jpg": "JPEG",
@@ -43,9 +52,12 @@ IMAGE_FORMATS = {
 SUPPORTED_UPLOAD_SUFFIXES = {
     ".pdf",
     ".pptx",
+    ".ppt",
     ".docx",
+    ".doc",
     ".txt",
     ".md",
+    ".markdown",
     *IMAGE_FORMATS,
 }
 
@@ -83,15 +95,28 @@ def _validate_declared_type(
     expected, _ = mimetypes.guess_type(f"file{suffix}")
     aliases = {
         ".md": {"text/plain", "text/markdown"},
+        ".markdown": {"text/plain", "text/markdown"},
         ".txt": {"text/plain"},
         ".pdf": {"application/pdf"},
         ".pptx": {
             "application/vnd.openxmlformats-officedocument."
             "presentationml.presentation"
         },
+        ".ppt": {
+            "application/vnd.ms-powerpoint",
+            "application/mspowerpoint",
+            "application/powerpoint",
+            "application/x-mspowerpoint",
+        },
         ".docx": {
             "application/vnd.openxmlformats-officedocument."
             "wordprocessingml.document"
+        },
+        ".doc": {
+            "application/msword",
+            "application/doc",
+            "application/vnd.ms-word",
+            "application/x-msword",
         },
         ".png": {"image/png"},
         ".jpg": {"image/jpeg", "image/jpg"},
@@ -206,6 +231,11 @@ def validate_upload_path(
                 raise UploadValidationError(
                     "PPTX 文件格式损坏或无法读取。"
                 ) from exc
+    elif suffix in LEGACY_OFFICE_SUFFIXES:
+        is_ole = header.startswith(OLE_COMPOUND_MAGIC)
+        is_rtf_doc = suffix == ".doc" and header.lstrip().startswith(b"{\\rtf")
+        if not is_ole and not is_rtf_doc:
+            raise UploadValidationError("旧版 Office 文件签名与扩展名不一致。")
     elif suffix in IMAGE_FORMATS:
         _inspect_image(path, suffix, settings.max_image_pixels)
     else:
@@ -231,3 +261,55 @@ def validate_upload_path(
         page_count=page_count,
         detected_type=suffix[1:],
     )
+
+
+def convert_legacy_office(
+    path: Path,
+    *,
+    timeout_seconds: float = 120,
+) -> Path:
+    suffix = path.suffix.lower()
+    target_suffix = LEGACY_OFFICE_TARGETS.get(suffix)
+    if target_suffix is None:
+        return path
+
+    soffice = shutil.which("libreoffice") or shutil.which("soffice")
+    if not soffice:
+        raise UploadValidationError("服务缺少旧版 Office 文件转换组件。")
+
+    target = path.with_suffix(target_suffix)
+    target.unlink(missing_ok=True)
+    profile_dir = Path(tempfile.mkdtemp(prefix="zlb-office-", dir="/tmp"))
+    try:
+        try:
+            completed = subprocess.run(
+                [
+                    soffice,
+                    f"-env:UserInstallation={profile_dir.as_uri()}",
+                    "--headless",
+                    "--nologo",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                    "--nolockcheck",
+                    "--convert-to",
+                    target_suffix.lstrip("."),
+                    "--outdir",
+                    str(path.parent),
+                    str(path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise UploadValidationError("旧版 Office 文件转换超时。") from exc
+        except OSError as exc:
+            raise UploadValidationError("旧版 Office 文件转换组件启动失败。") from exc
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+    if completed.returncode != 0 or not target.is_file() or target.stat().st_size <= 0:
+        target.unlink(missing_ok=True)
+        raise UploadValidationError("旧版 Office 文件转换失败或文件已损坏。")
+    return target

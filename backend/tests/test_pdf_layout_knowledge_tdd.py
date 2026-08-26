@@ -32,6 +32,13 @@ from backend.tools.pdf_layout_ab import (
 )
 
 
+TERMINAL_GOLD_GATE = {
+    "name_teaches_novice": True,
+    "no_further_bullet_decomposition": True,
+    "minimum_knowledge_atom": False,
+}
+
+
 class _FakeLayoutNodeClient:
     def __init__(self, payload: dict | list[dict]):
         self.payloads = (
@@ -43,7 +50,15 @@ class _FakeLayoutNodeClient:
 
     async def complete_json(self, **kwargs):
         self.calls.append(kwargs)
-        return self.payloads.pop(0)
+        payload = self.payloads.pop(0)
+        if isinstance(payload, dict):
+            for node in payload.get("nodes", []):
+                if isinstance(node, dict):
+                    node.setdefault(
+                        "terminal_gold_gate",
+                        TERMINAL_GOLD_GATE,
+                    )
+        return payload
 
 
 class _FakePageLayoutClient:
@@ -2295,7 +2310,7 @@ class PdfLayoutNodeTDDTests(unittest.IsolatedAsyncioTestCase):
         retry_prompt = client.calls[1]["user_prompt"]
         self.assertIn("label_sentence_fragment", retry_prompt)
         self.assertIn("2..48", retry_prompt)
-        self.assertIn("名词性", retry_prompt)
+        self.assertIn("零基础学生", retry_prompt)
 
     def test_invalid_supplemental_fragment_is_not_materialized(self):
         layout = PageLayoutExtraction.model_validate(
@@ -2346,6 +2361,78 @@ class PdfLayoutNodeTDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [node.name for node in extraction.nodes],
             ["里德伯方程"],
+        )
+
+    def test_materialization_drops_latest_task_reaction_letter_fragments(self):
+        noisy_fragments = [
+            "OH O Na₂Cr₂O₇ H₂SO₄, H₂O R R R R",
+            "O H₂SO₄, H₂O HgSO₄ R R CH₃",
+            "O O Cl R AlCl₃ R",
+        ]
+        layout = PageLayoutExtraction.model_validate(
+            {
+                "profile": "dots",
+                "page": 7,
+                "complete": True,
+                "confidence": 0.95,
+                "blocks": [
+                    {
+                        "block_id": "p0007:valid",
+                        "category": "paragraph",
+                        "text": "二级醇氧化生成酮",
+                        "bbox": [0.1, 0.1, 0.7, 0.08],
+                        "confidence": 0.95,
+                    },
+                    *[
+                        {
+                            "block_id": f"p0007:noisy-{index}",
+                            "category": "paragraph",
+                            "text": fragment,
+                            "bbox": [0.1, 0.2 + index * 0.1, 0.7, 0.08],
+                            "confidence": 0.95,
+                        }
+                        for index, fragment in enumerate(noisy_fragments)
+                    ],
+                ],
+            }
+        )
+        selection = LayoutNodeSelection.model_validate(
+            {
+                "page": 7,
+                "complete": True,
+                "confidence": 0.95,
+                "has_knowledge": True,
+                "nodes": [
+                    {
+                        "temp_id": "valid",
+                        "name": "二级醇氧化生成酮",
+                        "type": "principle",
+                        "role": "principle",
+                        "block_id": "p0007:valid",
+                        "confidence": 0.95,
+                        "terminal_gold_gate": TERMINAL_GOLD_GATE,
+                    },
+                    *[
+                        {
+                            "temp_id": f"noisy-{index}",
+                            "name": fragment,
+                            "type": "concept",
+                            "role": "other",
+                            "block_id": f"p0007:noisy-{index}",
+                            "confidence": 0.95,
+                            "terminal_gold_gate": TERMINAL_GOLD_GATE,
+                        }
+                        for index, fragment in enumerate(noisy_fragments)
+                    ],
+                ],
+            }
+        )
+
+        extraction = materialize_layout_selection(layout, selection)
+
+        self.assertEqual(
+            [node.name for node in extraction.nodes],
+            ["二级醇氧化生成酮"],
         )
 
     async def test_fallback_extracts_atomic_result_from_sentence_formula(self):
@@ -3259,6 +3346,7 @@ class PdfLayoutNodeTDDTests(unittest.IsolatedAsyncioTestCase):
                     "role": "other",
                     "block_id": "p0001:b000",
                     "confidence": 0.95,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                 }
             ],
         )
@@ -3320,6 +3408,7 @@ class PdfLayoutNodeTDDTests(unittest.IsolatedAsyncioTestCase):
                     "evidence_text": "脉冲瞬时功率可达 > 10 ¹⁴ W",
                     "bbox": [0.2, 0.2, 0.5, 0.08],
                     "confidence": 0.96,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                 }
             ],
         )

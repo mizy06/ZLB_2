@@ -189,6 +189,11 @@ _BARE_QUANTITY_LABEL = re.compile(
     re.IGNORECASE,
 )
 _PLACEHOLDER_GLYPH = re.compile(r"[\u25a1\ufffd]")
+_CHEMICAL_STRUCTURE_RELATION = re.compile(
+    r"(?:=|≈|≤|≥|→|⇒|⇌|⟶|⟷|--?>)"
+)
+_CHEMICAL_STRUCTURE_WORD = re.compile(r"[A-Za-z]+")
+_CHEMICAL_ELEMENT_SEQUENCE = re.compile(r"(?:[A-Z][a-z]?)+")
 
 
 @dataclass(frozen=True)
@@ -240,6 +245,29 @@ def _is_formula_only_label(value: str) -> bool:
         value,
     )
     return re.search(r"[\u3400-\u9fff]", without_cjk_subscripts) is None
+
+
+def _is_spaced_chemical_structure_fragment(value: str) -> bool:
+    if (
+        re.search(r"[\u3400-\u9fff]", value)
+        or _CHEMICAL_STRUCTURE_RELATION.search(value)
+    ):
+        return False
+    words = _CHEMICAL_STRUCTURE_WORD.findall(value)
+    if len(words) < 4:
+        return False
+    if any(
+        _CHEMICAL_ELEMENT_SEQUENCE.fullmatch(word) is None
+        and word.casefold() not in {"r", "x"}
+        for word in words
+    ):
+        return False
+    isolated_placeholders = sum(
+        word.casefold()
+        in {"r", "x", "o", "oh", "h", "n", "c", "cl", "br", "i"}
+        for word in words
+    )
+    return isolated_placeholders >= 2
 
 
 def label_quality_issues(
@@ -318,6 +346,8 @@ def label_quality_issues(
         issues.append("unbalanced_brackets")
     if _BARE_QUANTITY_LABEL.fullmatch(label):
         issues.append("bare_quantity")
+    if _is_spaced_chemical_structure_fragment(label):
+        issues.append("spaced_chemical_structure_fragment")
     if not allow_formula_label and _is_formula_only_label(label):
         issues.append("formula_label_requires_formula_role")
     return list(dict.fromkeys(issues))

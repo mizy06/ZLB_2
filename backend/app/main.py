@@ -6,10 +6,11 @@ import json
 import os
 import shutil
 import uuid
+from collections.abc import AsyncIterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import BinaryIO
+from typing import Annotated, BinaryIO
 from urllib.parse import quote
 
 from fastapi import (
@@ -17,28 +18,28 @@ from fastapi import (
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
-    Response as FastAPIResponse,
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
 from .architecture_schemas import (
     HistoryItem,
+    JobInteractionView,
+    JobRefinementRequest,
     JobView,
+    MindMapLoopConfig,
+    MindMapLoopRound,
     ReviewResolutionRequest,
     ReviewResolutionResponse,
     RunMode,
+    default_mindmap_loop,
 )
 from .auth import (
-    AuthConfigurationError,
-    AuthenticationError,
     Principal,
-    authenticate_token,
-    create_session_value,
     require_api_principal,
 )
 from .blackboard import SQLiteBlackboard
@@ -49,7 +50,20 @@ from .config import (
     validate_production_qwen_configuration,
 )
 from .document_parser import SUPPORTED_TYPES
+from .editorial_ppt_pipeline import (
+    ARCHITECTURE_NAME as EDITORIAL_PPT_ARCHITECTURE_NAME,
+    editorial_ppt_enabled,
+    run_editorial_ppt_pipeline,
+)
 from .export_service import render_mindmap_png
+from .human_loop import (
+    finish_active_interaction,
+    initialize_interaction_manifest,
+    interaction_views,
+    normalize_human_instruction,
+    queue_refinement_manifest,
+)
+from .job_events import JobEventHub
 from .job_runtime import JobRuntime, monotonic_progress
 from .mindmap_engine.router import router as mindmap_engine_router
 from .model_provider import OpenAICompatibleClient
@@ -73,12 +87,22 @@ from .runtime_manifest import (
     runtime_versions as _runtime_versions,
     sanitize_endpoint as _sanitized_endpoint,
 )
-from .upload_validation import UploadValidationError, validate_upload_path
+from .single_shot_ppt_pipeline import (
+    run_single_shot_ppt_pipeline,
+    single_shot_ppt_enabled,
+)
+from .upload_validation import (
+    LEGACY_OFFICE_SUFFIXES,
+    UploadValidationError,
+    convert_legacy_office,
+    validate_upload_path,
+)
 
 
 UPLOAD_DIR = PROJECT_ROOT / "backend" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
+JOB_UPLOAD_SUFFIXES = SUPPORTED_TYPES | set(LEGACY_OFFICE_SUFFIXES)
 
 app = FastAPI(
     title="ZLB Mind Map Agent",
@@ -107,11 +131,9 @@ jobs: dict[str, JobView] = {}
 jobs_lock = Lock()
 blackboard = SQLiteBlackboard(settings.blackboard_path)
 job_runtime = JobRuntime(settings.max_concurrent_jobs)
+job_events = JobEventHub()
 export_semaphore = asyncio.Semaphore(settings.export_concurrency)
-
-
-class SessionRequest(BaseModel):
-    token: str
+job_control_lock = asyncio.Lock()
 
 
 def _owner_scope(principal: Principal) -> str | None:
@@ -157,11 +179,7 @@ def _run_manifest(
         settings.pdf_transcription_mode.casefold()
         == "vision_nodes_strict"
     )
-    uses_layout_nodes = (
-        uses_page_knowledge
-        and settings.pdf_page_extraction_mode
-        in {"layout_nodes", "direct_layout_fallback"}
-    )
+    uses_layout_nodes = False
     pdf_page_schema_version = (
         PAGE_KNOWLEDGE_SCHEMA_VERSION
         if uses_page_knowledge
@@ -211,7 +229,7 @@ def _run_manifest(
         "qwen_production_profile": settings.qwen_production_profile,
         "pdf_page_transcription": {
             "mode": settings.pdf_transcription_mode,
-            "extraction_profile": settings.pdf_page_extraction_mode,
+            "extraction_profile": "direct",
             "schema_version": pdf_page_schema_version,
             "prompt_version": pdf_page_prompt_version,
             "prompt_sha256": pdf_page_prompt_sha256,
@@ -230,6 +248,8 @@ def _run_manifest(
                 if uses_page_knowledge
                 else "PageExtraction"
             ),
+            "source_mode": "direct_visual_only",
+            "text_intermediate_built": False,
             "render_dpi": settings.pdf_transcription_dpi,
             "concurrency": settings.pdf_transcription_concurrency,
             "max_page_attempts": settings.pdf_transcription_max_attempts,
@@ -239,11 +259,63 @@ def _run_manifest(
     }
 
 
-def _require_qwen_model(provider: str, model: str) -> None:
+def _require_coding_model(provider: str, model: str) -> None:
     if provider != "qwen":
         raise HTTPException(status_code=400, detail="不支持的模型服务商。")
+    try:
+        MindMapLoopRound(editor_model=model)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"模型 ID 格式无效：{model!r}",
+        ) from exc
+
+
+def _require_qwen_model(provider: str, model: str) -> None:
+    _require_coding_model(provider, model)
     if not model.strip().casefold().startswith("qwen"):
         raise HTTPException(status_code=400, detail="仅支持 Qwen 系列模型。")
+
+
+def _loop_config_from_record(record: dict) -> MindMapLoopConfig:
+    payload = record.get("manifest", {}).get("loop_config")
+    if payload:
+        return MindMapLoopConfig.model_validate(payload)
+    return default_mindmap_loop(record.get("model") or settings.qwen_model)
+
+
+def _parse_loop_submission(
+    loop_config: str,
+    model: str,
+) -> tuple[MindMapLoopConfig, str]:
+    if not loop_config.strip():
+        return default_mindmap_loop(model), ""
+    payload = json.loads(loop_config)
+    if not isinstance(payload, dict):
+        raise ValueError("loop_config 必须是 JSON 对象。")
+    human_instruction = normalize_human_instruction(
+        payload.pop("human_instruction", "")
+    )
+    return MindMapLoopConfig.model_validate(payload), human_instruction
+
+
+def _finish_job_interaction(
+    task_id: str,
+    *,
+    status: str,
+    graph_version: int | None = None,
+    error: str | None = None,
+) -> None:
+    record = blackboard.load_job(task_id)
+    if not record:
+        return
+    manifest = finish_active_interaction(
+        record.get("manifest", {}),
+        status=status,
+        graph_version=graph_version,
+        error=error,
+    )
+    blackboard.update_job_manifest(task_id, manifest)
 
 
 def _set_job(task_id: str, **updates) -> None:
@@ -260,12 +332,18 @@ def _set_job(task_id: str, **updates) -> None:
             progress=persisted["progress"],
             message=persisted["message"],
             mode=persisted["mode"],
+            loop_config=_loop_config_from_record(persisted),
             error=persisted["error"],
         )
     requested_progress = updates.get("progress", current.progress)
-    updates["progress"] = monotonic_progress(
-        current.progress,
-        requested_progress,
+    reset_progress = (
+        updates.get("status") == "queued"
+        and updates.get("stage") in {"queued", "recovered"}
+    )
+    updates["progress"] = (
+        max(0, min(int(requested_progress), 100))
+        if reset_progress
+        else monotonic_progress(current.progress, requested_progress)
     )
     updated = current.model_copy(update=updates)
     with jobs_lock:
@@ -297,10 +375,21 @@ async def _execute_job(
     provider: str,
     mode: RunMode,
     use_ai: bool,
+    loop_config: MindMapLoopConfig | None = None,
+    user_instruction: str = "",
+    previous_result=None,
 ) -> None:
+    resolved_loop = loop_config or default_mindmap_loop(model)
     _set_job(
         task_id,
         status="running",
+        stage="starting",
+        progress=4,
+        message="任务已启动",
+    )
+    await job_events.publish(
+        task_id,
+        "status",
         stage="starting",
         progress=4,
         message="任务已启动",
@@ -314,18 +403,77 @@ async def _execute_job(
             progress=progress,
             message=message,
         )
+        await job_events.publish(
+            task_id,
+            "status",
+            stage=stage,
+            progress=progress,
+            message=message,
+        )
+
+    async def publish_model_output(event: dict) -> None:
+        payload = dict(event)
+        kind = payload.pop("kind")
+        await job_events.publish(task_id, kind, **payload)
 
     try:
-        result = await run_cplus_pipeline(
-            task_id=task_id,
-            file_path=path,
-            filename=filename,
-            model=model,
-            provider=provider,
-            mode=mode,
-            use_ai=use_ai,
-            progress=update,
-            blackboard=blackboard,
+        job_record = blackboard.load_job(task_id)
+        manifest = (job_record.get("manifest") if job_record else {}) or {}
+        multi_paths = [Path(p) for p in manifest.get("source_paths", [])] or [path]
+        multi_filenames = manifest.get("filenames") or [filename]
+        pipeline_family = _pipeline_family(multi_paths)
+        if pipeline_family == "editorial":
+            result = await run_editorial_ppt_pipeline(
+                task_id=task_id,
+                file_path=multi_paths[0],
+                file_paths=multi_paths,
+                filename=filename,
+                filenames=multi_filenames,
+                model=model,
+                provider=provider,
+                mode=mode,
+                use_ai=use_ai,
+                progress=update,
+                blackboard=blackboard,
+                loop_config=resolved_loop,
+                model_output=publish_model_output,
+                user_instruction=user_instruction,
+                previous_result=previous_result,
+            )
+        elif pipeline_family == "single-shot":
+            result = await run_single_shot_ppt_pipeline(
+                task_id=task_id,
+                file_path=path,
+                filename=filename,
+                model=model,
+                provider=provider,
+                mode=mode,
+                use_ai=use_ai,
+                progress=update,
+                blackboard=blackboard,
+                user_instruction=user_instruction,
+                previous_result=previous_result,
+            )
+        else:
+            result = await run_cplus_pipeline(
+                task_id=task_id,
+                file_path=multi_paths[0],
+                file_paths=multi_paths,
+                filename=filename,
+                filenames=multi_filenames,
+                model=model,
+                provider=provider,
+                mode=mode,
+                use_ai=use_ai,
+                progress=update,
+                blackboard=blackboard,
+                user_instruction=user_instruction,
+                previous_result=previous_result,
+            )
+        _finish_job_interaction(
+            task_id,
+            status="completed",
+            graph_version=result.graph_version,
         )
         _set_job(
             task_id,
@@ -335,9 +483,18 @@ async def _execute_job(
             message="思维导图已生成",
             result=result,
         )
+        await job_events.publish(
+            task_id,
+            "job_complete",
+            stage="complete",
+            progress=100,
+            message="思维导图已生成",
+        )
     except asyncio.CancelledError:
         cancellation_reason = job_runtime.cancel_reason(task_id)
         interrupted_by_shutdown = cancellation_reason == "shutdown"
+        if not interrupted_by_shutdown:
+            _finish_job_interaction(task_id, status="cancelled")
         _set_job(
             task_id,
             status="queued" if interrupted_by_shutdown else "cancelled",
@@ -360,8 +517,20 @@ async def _execute_job(
                     else "cancelled"
                 ),
             )
+        if not interrupted_by_shutdown:
+            await job_events.publish(
+                task_id,
+                "job_cancelled",
+                stage="cancelled",
+                message="任务已取消。",
+            )
         raise
     except Exception as exc:
+        _finish_job_interaction(
+            task_id,
+            status="failed",
+            error=str(exc),
+        )
         _set_job(
             task_id,
             status="failed",
@@ -376,11 +545,34 @@ async def _execute_job(
                 status="failed",
                 stage="failed",
             )
+        await job_events.publish(
+            task_id,
+            "job_failed",
+            stage="failed",
+            message="任务执行失败",
+        )
+
+
+def _pipeline_family(path_or_paths: Path | list[Path]) -> str:
+    paths = path_or_paths if isinstance(path_or_paths, list) else [path_or_paths]
+    if paths and all(p.suffix.lower() == ".pptx" for p in paths):
+        if editorial_ppt_enabled():
+            return "editorial"
+        if single_shot_ppt_enabled():
+            return "single-shot"
+    return "cplus"
 
 
 def _schedule_job(record: dict) -> None:
     task_id = record["task_id"]
     path = Path(record["source_path"])
+    manifest = record.get("manifest", {})
+    base_graph_version = int(manifest.get("base_graph_version") or 0)
+    previous_result = (
+        blackboard.load_latest_result(task_id)
+        if base_graph_version > 0
+        else None
+    )
 
     async def worker() -> None:
         await _execute_job(
@@ -391,6 +583,9 @@ def _schedule_job(record: dict) -> None:
             record["provider"],
             record["mode"],
             record["use_ai"],
+            _loop_config_from_record(record),
+            str(manifest.get("active_instruction") or ""),
+            previous_result,
         )
 
     job_runtime.submit(task_id, worker)
@@ -401,6 +596,10 @@ def _job_view_from_record(
     *,
     result=None,
 ) -> JobView:
+    manifest = record.get("manifest") or {}
+    ctx_tokens = manifest.get("context_tokens", record.get("context_tokens", 0))
+    max_ctx = manifest.get("max_context_tokens", record.get("max_context_tokens", 131072))
+    ctx_usage = manifest.get("context_usage", (ctx_tokens / max_ctx if max_ctx > 0 else 0.0))
     return JobView(
         id=record["task_id"],
         status=record["status"],
@@ -408,8 +607,12 @@ def _job_view_from_record(
         progress=record["progress"],
         message=record["message"],
         mode=record["mode"],
+        loop_config=_loop_config_from_record(record),
         result=result,
         error=record["error"],
+        context_tokens=ctx_tokens,
+        max_context_tokens=max_ctx,
+        context_usage=ctx_usage,
     )
 
 
@@ -512,44 +715,11 @@ async def shutdown_runtime() -> None:
     await OpenAICompatibleClient.close_shared_clients()
 
 
-@app.post("/api/session")
-async def create_session(
-    request: SessionRequest,
-    response: FastAPIResponse,
-):
-    try:
-        principal = authenticate_token(settings, request.token)
-    except AuthConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except AuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    if settings.api_access_token:
-        response.set_cookie(
-            key=settings.session_cookie_name,
-            value=create_session_value(settings),
-            max_age=12 * 60 * 60,
-            httponly=True,
-            secure=settings.session_cookie_secure_enabled,
-            samesite="strict",
-            path="/",
-        )
-    return {"ok": True, "principal": principal.id}
-
-
-@app.delete("/api/session")
-async def delete_session(response: FastAPIResponse):
-    response.delete_cookie(
-        settings.session_cookie_name,
-        path="/",
-        secure=settings.session_cookie_secure_enabled,
-        httponly=True,
-        samesite="strict",
-    )
-    return {"ok": True}
-
-
 @app.get("/api/health")
 async def health():
+    editorial = editorial_ppt_enabled()
+    single_shot = single_shot_ppt_enabled()
+    ppt_vision_only = editorial or single_shot
     return {
         "status": "ok",
         "workspace": {
@@ -557,8 +727,8 @@ async def health():
             "key_configured": settings.key_configured,
         },
         "environment": settings.environment,
-        "auth_required": settings.production or bool(settings.api_access_token),
-        "auth_configured": bool(settings.api_access_token),
+        "auth_required": False,
+        "auth_configured": False,
         "default_model": settings.qwen_model,
         "providers": {
             "qwen": {
@@ -567,13 +737,60 @@ async def health():
             },
         },
         "architecture": {
-            "name": "C+",
+            "name": (
+                EDITORIAL_PPT_ARCHITECTURE_NAME
+                if editorial
+                else "single-shot-ppt-vision"
+                if single_shot
+                else "C+"
+            ),
             "blackboard": "sqlite",
-            "topology_solver": "ortools-cp-sat",
-            "graph_validator": "networkx",
-            "modes": ["standard", "precision"],
+            "topology_solver": (
+                "disabled"
+                if ppt_vision_only
+                else "ortools-cp-sat"
+            ),
+            "graph_validator": (
+                "pydantic-local-tree+multi-role-review"
+                if editorial
+                else "pydantic-local-tree"
+                if single_shot
+                else "networkx"
+            ),
+            "loop": {
+                "max_rounds": 6,
+                "roles": [
+                    {
+                        "id": "global_editor",
+                        "label": "主编",
+                        "required": True,
+                        "uses_images": True,
+                    },
+                    {
+                        "id": "content_omission",
+                        "label": "内容遗漏",
+                        "required": False,
+                        "uses_images": True,
+                    },
+                    {
+                        "id": "pruning",
+                        "label": "剪枝",
+                        "required": False,
+                        "uses_images": False,
+                    },
+                    {
+                        "id": "multilevel_structure",
+                        "label": "多级结构",
+                        "required": False,
+                        "uses_images": False,
+                    },
+                ],
+                "example": default_mindmap_loop(
+                    settings.qwen_vision_model
+                ).model_dump(mode="json"),
+            },
         },
-        "supported_extensions": sorted(SUPPORTED_TYPES),
+        "supported_extensions": sorted(JOB_UPLOAD_SUFFIXES),
     }
 
 
@@ -586,21 +803,16 @@ async def models(
         raise HTTPException(status_code=400, detail="不支持的模型服务商。")
     client = QwenClient(settings)
     default_model = settings.qwen_model
-    prefix = "qwen"
     try:
         available = await client.list_models()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    preferred = [
-        model
-        for model in available
-        if (
-            model == default_model
-            or model.casefold().startswith(prefix)
-        )
-    ]
+    preferred = list(dict.fromkeys(available))
     if default_model not in preferred:
+        preferred.insert(0, default_model)
+    else:
+        preferred.remove(default_model)
         preferred.insert(0, default_model)
     return {"models": preferred, "count": len(available)}
 
@@ -611,7 +823,7 @@ async def model_check(
     provider: str = Form(default="qwen"),
     _principal: Principal = Depends(require_api_principal),
 ):
-    _require_qwen_model(provider, model)
+    _require_coding_model(provider, model)
     client = QwenClient(settings)
     ok, message = await client.check_model(model)
     return {
@@ -624,44 +836,104 @@ async def model_check(
 
 @app.post("/api/jobs", response_model=JobView)
 async def create_job(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
     model: str = Form(default=settings.qwen_model),
     provider: str = Form(default="qwen"),
-    mode: RunMode = Form(default="standard"),
+    loop_config: str = Form(default=""),
     use_ai: bool = Form(default=True),
     principal: Principal = Depends(require_api_principal),
 ):
-    _require_qwen_model(provider, model)
+    _require_coding_model(provider, model)
+    try:
+        configured_loop, human_instruction = _parse_loop_submission(
+            loop_config,
+            model,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Mindmap loop 配置无效：{exc}",
+        ) from exc
+    for selected_model in configured_loop.all_models():
+        _require_coding_model(provider, selected_model)
+    primary_model = configured_loop.rounds[0].editor_model
+    mode: RunMode = "standard"
 
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in SUPPORTED_TYPES:
+    raw_uploads = [f for f in (files or []) if f and getattr(f, "filename", None)]
+    if file is not None and getattr(file, "filename", None) and file not in raw_uploads:
+        raw_uploads.insert(0, file)
+
+    if not raw_uploads:
         raise HTTPException(
             status_code=400,
-            detail="请上传 PDF、PPTX、DOCX、TXT 或 MD 文件。",
+            detail="请上传至少一份 PDF、PPT、PPTX、DOC、DOCX、TXT 或 MD 文件。",
         )
 
     task_id = uuid.uuid4().hex[:12]
-    path = (UPLOAD_DIR / f"{task_id}{suffix}").resolve()
-    try:
-        source_size, source_sha256 = await asyncio.to_thread(
-            _copy_upload_limited,
-            file.file,
-            path,
-            settings.max_upload_bytes,
-        )
-        inspection = await asyncio.to_thread(
-            validate_upload_path,
-            path,
-            filename=file.filename or path.name,
-            content_type=file.content_type or "",
-            settings=settings,
-        )
-    except UploadValidationError as exc:
-        path.unlink(missing_ok=True)
-        status_code = 413 if "大小超过" in str(exc) else 422
-        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    finally:
-        await file.close()
+    saved_paths: list[Path] = []
+    saved_filenames: list[str] = []
+    saved_sizes: list[int] = []
+    saved_digests: list[str] = []
+    total_pages: int = 0
+
+    for idx, upload_file in enumerate(raw_uploads):
+        suffix = Path(upload_file.filename or "").suffix.lower()
+        if suffix not in JOB_UPLOAD_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"文件 {upload_file.filename} 格式不受支持，请上传 PDF、PPT、PPTX、DOC、DOCX、TXT 或 MD 文件。",
+            )
+        path = (UPLOAD_DIR / f"{task_id}_{idx}{suffix}").resolve()
+        original_path = path
+        converted_path: Path | None = None
+        try:
+            source_size, source_sha256 = await asyncio.to_thread(
+                _copy_upload_limited,
+                upload_file.file,
+                path,
+                settings.max_upload_bytes,
+            )
+            inspection = await asyncio.to_thread(
+                validate_upload_path,
+                path,
+                filename=upload_file.filename or path.name,
+                content_type=upload_file.content_type or "",
+                settings=settings,
+            )
+            if suffix in LEGACY_OFFICE_SUFFIXES:
+                converted_path = await asyncio.to_thread(
+                    convert_legacy_office,
+                    original_path,
+                )
+                inspection = await asyncio.to_thread(
+                    validate_upload_path,
+                    converted_path,
+                    filename=converted_path.name,
+                    content_type="",
+                    settings=settings,
+                )
+                original_path.unlink(missing_ok=True)
+                path = converted_path
+            saved_paths.append(path)
+            saved_filenames.append(upload_file.filename or path.name)
+            saved_sizes.append(source_size)
+            saved_digests.append(source_sha256)
+            if inspection.page_count:
+                total_pages += inspection.page_count
+        except UploadValidationError as exc:
+            original_path.unlink(missing_ok=True)
+            if converted_path is not None:
+                converted_path.unlink(missing_ok=True)
+            status_code = 413 if "大小超过" in str(exc) else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        finally:
+            await upload_file.close()
+
+    primary_path = saved_paths[0]
+    display_filename = " & ".join(saved_filenames[:2]) + (f" 等{len(saved_filenames)}份文档" if len(saved_filenames) > 2 else "")
+    total_size = sum(saved_sizes)
+    combined_sha256 = hashlib.sha256("::".join(saved_digests).encode()).hexdigest()
 
     job = JobView(
         id=task_id,
@@ -670,14 +942,34 @@ async def create_job(
         progress=0,
         message="文件已接收，等待处理",
         mode=mode,
+        loop_config=configured_loop,
+        context_tokens=0,
+        max_context_tokens=131072,
+        context_usage=0.0,
     )
     manifest = _run_manifest(
-        source_sha256=source_sha256,
-        source_size=source_size,
-        filename=file.filename or path.name,
+        source_sha256=combined_sha256,
+        source_size=total_size,
+        filename=display_filename,
         provider=provider,
-        model=model,
-        page_count=inspection.page_count,
+        model=primary_model,
+        page_count=total_pages or None,
+    )
+    manifest = initialize_interaction_manifest(
+        manifest,
+        human_instruction,
+    )
+    manifest.update(
+        {
+            "loop_config": configured_loop.model_dump(mode="json"),
+            "selected_models": configured_loop.all_models(),
+            "source_paths": [str(p) for p in saved_paths],
+            "filenames": saved_filenames,
+            "multi_document": len(saved_paths) > 1,
+            "context_tokens": 0,
+            "max_context_tokens": 131072,
+            "context_usage": 0.0,
+        }
     )
     blackboard.upsert_job(
         task_id=task_id,
@@ -686,9 +978,9 @@ async def create_job(
         progress=job.progress,
         message=job.message,
         mode=mode,
-        source_path=str(path),
-        filename=file.filename or path.name,
-        model=model,
+        source_path=str(primary_path),
+        filename=display_filename,
+        model=primary_model,
         provider=provider,
         use_ai=use_ai,
         owner_id=principal.id,
@@ -696,9 +988,20 @@ async def create_job(
     )
     with jobs_lock:
         jobs[task_id] = job
+    await job_events.publish(
+        task_id,
+        "status",
+        stage="queued",
+        progress=0,
+        message="文件已接收，等待处理",
+        context_tokens=0,
+        max_context_tokens=131072,
+        context_usage=0.0,
+    )
     record = blackboard.load_job(task_id, owner_id=principal.id)
     _schedule_job(record)
     return job
+
 
 
 @app.get("/api/history", response_model=list[HistoryItem])
@@ -742,6 +1045,144 @@ async def get_job(
     return job
 
 
+@app.get(
+    "/api/jobs/{task_id}/interactions",
+    response_model=list[JobInteractionView],
+    include_in_schema=False,
+)
+async def get_job_interactions(
+    task_id: str,
+    principal: Principal = Depends(require_api_principal),
+):
+    owner_id = _owner_scope(principal)
+    record = blackboard.load_job(task_id, owner_id=owner_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="任务不存在。")
+    result = blackboard.load_latest_result(task_id, owner_id=owner_id)
+    return interaction_views(
+        record.get("manifest", {}),
+        job_status=record["status"],
+        result=result,
+        error=record["error"],
+    )
+
+
+@app.post(
+    "/api/jobs/{task_id}/refine",
+    response_model=JobView,
+    include_in_schema=False,
+)
+async def refine_job(
+    task_id: str,
+    request: JobRefinementRequest,
+    principal: Principal = Depends(require_api_principal),
+):
+    owner_id = _owner_scope(principal)
+    async with job_control_lock:
+        record = blackboard.load_job(task_id, owner_id=owner_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        if (
+            record["status"] in {"queued", "running"}
+            or job_runtime.has_task(task_id)
+        ):
+            raise HTTPException(status_code=409, detail="任务正在处理中。")
+        result = blackboard.load_latest_result(task_id, owner_id=owner_id)
+        if not result:
+            raise HTTPException(
+                status_code=409,
+                detail="只有已经出图的任务可以继续修改。",
+            )
+        if request.expected_graph_version != result.graph_version:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"图版本冲突：期望 v{request.expected_graph_version}，"
+                    f"当前为 v{result.graph_version}。"
+                ),
+            )
+        source_path = Path(record["source_path"])
+        if not source_path.is_file():
+            raise HTTPException(
+                status_code=410,
+                detail="原始文件已过期或缺失，无法继续修改。",
+            )
+
+        manifest = queue_refinement_manifest(
+            record.get("manifest", {}),
+            instruction=request.instruction,
+            current_graph_version=result.graph_version,
+        )
+        blackboard.upsert_job(
+            task_id=task_id,
+            status="queued",
+            stage="queued",
+            progress=0,
+            message="修改要求已接收，等待处理",
+            mode=record["mode"],
+            source_path=record["source_path"],
+            filename=record["filename"],
+            model=record["model"],
+            provider=record["provider"],
+            use_ai=record["use_ai"],
+            owner_id=record["owner_id"],
+            error=None,
+            manifest=manifest,
+        )
+        await job_events.drop(task_id)
+        queued = blackboard.load_job(task_id, owner_id=owner_id)
+        with jobs_lock:
+            jobs[task_id] = _job_view_from_record(queued, result=result)
+        await job_events.publish(
+            task_id,
+            "status",
+            stage="queued",
+            progress=0,
+            message="修改要求已接收，等待处理",
+        )
+        _schedule_job(queued)
+        return _job_view_from_record(queued, result=result)
+
+
+@app.get(
+    "/api/jobs/{task_id}/events",
+    response_class=EventSourceResponse,
+)
+async def stream_job_events(
+    task_id: str,
+    last_event_id: Annotated[int | None, Header()] = None,
+    principal: Principal = Depends(require_api_principal),
+) -> AsyncIterable[ServerSentEvent]:
+    record = blackboard.load_job(
+        task_id,
+        owner_id=_owner_scope(principal),
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="任务不存在。")
+    terminal_kind = {
+        "completed": "job_complete",
+        "failed": "job_failed",
+        "cancelled": "job_cancelled",
+    }.get(record["status"])
+    if terminal_kind and not job_events.has_events(task_id):
+        await job_events.publish(
+            task_id,
+            terminal_kind,
+            stage=record["stage"],
+            progress=record["progress"],
+            message=record["message"],
+        )
+    async for event in job_events.stream(
+        task_id,
+        after_id=last_event_id or 0,
+    ):
+        yield ServerSentEvent(
+            data=event,
+            id=str(event.id),
+            retry=1_000,
+        )
+
+
 @app.post("/api/jobs/{task_id}/cancel", response_model=JobView)
 async def cancel_job(
     task_id: str,
@@ -773,6 +1214,12 @@ async def cancel_job(
             stage="cancelled",
             message="任务已取消。",
             error=None,
+        )
+        await job_events.publish(
+            task_id,
+            "job_cancelled",
+            stage="cancelled",
+            message="任务已取消。",
         )
     refreshed = blackboard.load_job(
         task_id,
@@ -918,6 +1365,7 @@ async def delete_job(
     run_id = blackboard.delete_task(task_id, owner_id=owner_id)
     with jobs_lock:
         jobs.pop(task_id, None)
+    await job_events.drop(task_id)
     if record and record["source_path"]:
         upload = Path(record["source_path"]).resolve()
         if upload.parent == UPLOAD_DIR.resolve():

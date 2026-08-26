@@ -179,16 +179,18 @@ class ComposeSecretPreflightTDDTests(unittest.TestCase):
         self.assertIn("/run/secrets/qwen.enc.env.age", compose)
         self.assertNotIn("mode: 0444", compose)
 
-    def test_production_compose_passes_session_cookie_security_override(self):
+    def test_production_compose_uses_public_workbench_owner(self):
         compose = (
             Path(__file__).resolve().parents[2] / "compose.prod.yml"
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "MINDMAP_SESSION_COOKIE_SECURE: "
-            "${MINDMAP_SESSION_COOKIE_SECURE:-true}",
+            "MINDMAP_WORKBENCH_OWNER_ID: "
+            "${MINDMAP_WORKBENCH_OWNER_ID:-public-workbench}",
             compose,
         )
+        self.assertNotIn("MINDMAP_API_TOKEN", compose)
+        self.assertNotIn("MINDMAP_SESSION_COOKIE", compose)
 
     def test_production_compose_allows_three_page_level_attempts(self):
         compose = (
@@ -201,15 +203,17 @@ class ComposeSecretPreflightTDDTests(unittest.TestCase):
             compose,
         )
 
-    def test_production_compose_defaults_to_direct_layout_fallback(self):
+    def test_production_compose_forces_direct_visual_extraction(self):
         compose = (
             Path(__file__).resolve().parents[2] / "compose.prod.yml"
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "MINDMAP_PDF_PAGE_EXTRACTION_MODE: "
-            "${MINDMAP_PDF_PAGE_EXTRACTION_MODE:"
-            "-direct_layout_fallback}",
+            "MINDMAP_PDF_PAGE_EXTRACTION_MODE: direct",
+            compose,
+        )
+        self.assertIn(
+            "MINDMAP_PDF_TRANSCRIPTION_MODE: vision_nodes_strict",
             compose,
         )
 
@@ -339,6 +343,7 @@ class ProductionDeploymentContractTDDTests(unittest.TestCase):
             "age=1.2.1-1+b5",
             "fonts-noto-cjk=1:20240730+repack1-1",
             "libreoffice-impress=4:25.2.3-2+deb13u6",
+            "libreoffice-writer=4:25.2.3-2+deb13u6",
             "poppler-utils=25.03.0-5+deb13u4",
         ):
             with self.subTest(package=package):

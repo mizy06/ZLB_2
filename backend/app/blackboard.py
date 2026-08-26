@@ -264,7 +264,7 @@ class SQLiteBlackboard:
                     stage = excluded.stage,
                     progress = CASE
                         WHEN excluded.status = 'queued'
-                            AND excluded.stage = 'recovered'
+                            AND excluded.stage IN ('queued', 'recovered')
                             THEN excluded.progress
                         ELSE MAX(jobs.progress, excluded.progress)
                     END,
@@ -313,6 +313,23 @@ class SQLiteBlackboard:
                     now,
                 ),
             )
+
+    def update_job_manifest(
+        self,
+        task_id: str,
+        manifest: dict[str, Any],
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET manifest_json = ?, updated_at = ?
+                WHERE task_id = ?
+                """,
+                (_json_value(manifest), utc_now(), task_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(task_id)
 
     @staticmethod
     def _job_row(row: sqlite3.Row) -> dict[str, Any]:
