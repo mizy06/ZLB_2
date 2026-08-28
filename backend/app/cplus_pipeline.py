@@ -1482,6 +1482,7 @@ async def run_cplus_pipeline(
     blackboard: SQLiteBlackboard,
     user_instruction: str = "",
     previous_result: MindMapResult | None = None,
+    completed_graph_asset: dict | None = None,
 ) -> MindMapResult:
     run_id = f"run_{uuid.uuid4().hex[:16]}"
     run_id = blackboard.start_run(
@@ -1556,6 +1557,7 @@ async def run_cplus_pipeline(
                     "human_guidance": build_human_guidance(
                         user_instruction,
                         previous_result,
+                        completed_graph_asset,
                     ),
                     "warnings": runtime_warnings,
                     "degraded_components": [],

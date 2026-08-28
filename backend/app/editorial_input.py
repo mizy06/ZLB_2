@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Literal
 
 from .document_parser import TEXT_TYPES, parse_document
+from .mindmap_engine.visuals import IMAGE_TYPES
 from .schemas import ParsedDocument, SourceBlock
 
 
-VISUAL_TYPES = frozenset({".pdf", ".pptx", ".docx"})
+VISUAL_TYPES = frozenset({".pdf", ".pptx", ".docx", *IMAGE_TYPES})
 INPUT_KINDS = Literal["visual", "text"]
 INPUT_MODES = Literal["visual", "text", "mixed"]
 

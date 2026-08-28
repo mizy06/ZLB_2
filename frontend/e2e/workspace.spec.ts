@@ -220,6 +220,9 @@ test('TopoMind shell renders branded navigation, collapsible actions, and full-r
   await expect
     .poll(() => previewImage.evaluate((image) => image.naturalWidth))
     .toBeGreaterThan(0);
+  await expect(page.locator('.file-preview .fp-download')).toBeVisible();
+  await expect(page.locator('.file-preview .fp-download')).toHaveAttribute('download', /.+/);
+  await expect(page.locator('.file-preview [aria-label="复制路径"]')).toHaveCount(0);
 
   const visibleText = await page.locator('body').innerText();
   expect(visibleText).not.toMatch(

@@ -54,6 +54,32 @@ COPY --chown=10001:10001 Dockerfile compose.prod.yml /app/
 COPY --chown=10001:10001 backend /app/backend
 COPY --chown=10001:10001 --from=frontend-build /frontend/dist /app/frontend/dist
 
+# The production image has one generation route: the editorial vision loop.
+# Do not ship the retired C+ runtime, its solver stack, or its support tools.
+RUN rm -rf \
+        /app/backend/tests \
+        /app/backend/tools \
+    && rm -f \
+        /app/backend/app/agent_prompts.py \
+        /app/backend/app/agents.py \
+        /app/backend/app/chunking.py \
+        /app/backend/app/claim_fidelity.py \
+        /app/backend/app/cplus_pipeline.py \
+        /app/backend/app/graph_builder.py \
+        /app/backend/app/heuristics.py \
+        /app/backend/app/pdf_layout_knowledge.py \
+        /app/backend/app/pdf_page_knowledge.py \
+        /app/backend/app/pdf_page_transcription.py \
+        /app/backend/app/pipeline.py \
+        /app/backend/app/review_service.py \
+        /app/backend/app/semantic_dedupe.py \
+        /app/backend/app/visual_analysis.py \
+        /app/backend/app/mindmap_engine/normalize.py \
+        /app/backend/app/mindmap_engine/router.py \
+        /app/backend/app/mindmap_engine/service.py \
+        /app/backend/app/mindmap_engine/topology.py \
+        /app/backend/app/mindmap_engine/validate.py
+
 RUN mkdir -p /app/.data/mindmap_engine /app/backend/uploads \
     && chown -R 10001:10001 /app/.data /app/backend/uploads
 
@@ -67,14 +93,6 @@ USER 10001:10001
 CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
-FROM app-base AS single-shot-ppt
-
-ENV MINDMAP_PIPELINE_MODE=single_shot_ppt_vision
-
-
-FROM app-base AS editorial-ppt
+FROM app-base AS production
 
 ENV MINDMAP_PIPELINE_MODE=editorial_ppt_vision
-
-
-FROM app-base AS production

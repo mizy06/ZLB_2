@@ -287,6 +287,7 @@ const imageFit = ref<'fit' | 'actual'>('fit');
 const imageBodyRef = ref<HTMLElement | null>(null);
 const imageDragging = ref(false);
 let imagePointerId: number | null = null;
+let imagePointerTarget: HTMLElement | null = null;
 let imageLastX = 0;
 let imageLastY = 0;
 
@@ -308,11 +309,12 @@ function onImagePointerDown(event: PointerEvent): void {
   if (!body) return;
   imageDragging.value = true;
   imagePointerId = event.pointerId;
+  imagePointerTarget = event.currentTarget as HTMLElement;
   imageLastX = event.clientX;
   imageLastY = event.clientY;
   event.preventDefault();
   try {
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    imagePointerTarget.setPointerCapture(event.pointerId);
   } catch {
     // Pointer capture is unavailable in a few embedded browser contexts.
   }
@@ -332,11 +334,13 @@ function onImagePointerMove(event: PointerEvent): void {
 function endImageDrag(event?: PointerEvent): void {
   if (imagePointerId !== null && event && event.pointerId !== imagePointerId) return;
   const pointerId = imagePointerId;
+  const pointerTarget = imagePointerTarget;
   imageDragging.value = false;
   imagePointerId = null;
+  imagePointerTarget = null;
   if (pointerId === null) return;
   try {
-    imageBodyRef.value?.releasePointerCapture(pointerId);
+    pointerTarget?.releasePointerCapture(pointerId);
   } catch {
     // The pointer may already have been released by the browser.
   }

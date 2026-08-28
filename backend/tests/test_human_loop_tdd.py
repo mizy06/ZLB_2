@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from backend.app import main
 from backend.app.architecture_schemas import (
@@ -30,6 +30,7 @@ from backend.app.human_loop import (
 )
 from backend.app.job_events import JobEventHub
 from backend.app.job_runtime import JobRuntime
+from backend.app.refinement_routing import RefinementRoutingDecision
 from backend.app.schemas import ParsedDocument
 
 
@@ -237,7 +238,7 @@ class HumanLoopRouteTests(unittest.IsolatedAsyncioTestCase):
                 filename=source.name,
                 model="qwen3.8-max-preview",
                 provider="qwen",
-                use_ai=False,
+                use_ai=True,
                 owner_id="owner-a",
                 manifest=manifest,
             )
@@ -248,7 +249,7 @@ class HumanLoopRouteTests(unittest.IsolatedAsyncioTestCase):
                 model="qwen3.8-max-preview",
                 provider="qwen",
                 mode="standard",
-                use_ai=False,
+                use_ai=True,
                 progress=noop_progress,
                 blackboard=board,
                 user_instruction="面向初学者组织",
@@ -269,7 +270,7 @@ class HumanLoopRouteTests(unittest.IsolatedAsyncioTestCase):
                 filename=source.name,
                 model="qwen3.8-max-preview",
                 provider="qwen",
-                use_ai=False,
+                use_ai=True,
                 owner_id="owner-a",
                 manifest=completed_manifest,
             )
@@ -294,6 +295,16 @@ class HumanLoopRouteTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "job_control_lock", asyncio.Lock()),
                 patch.object(main, "jobs", in_memory_jobs),
                 patch.object(main, "_schedule_job") as schedule,
+                patch.object(
+                    main,
+                    "classify_refinement",
+                    new=AsyncMock(
+                        return_value=RefinementRoutingDecision(
+                            route="guidance_only",
+                            rationale="测试明确要求按当前图修改。",
+                        )
+                    ),
+                ) as classify,
             ):
                 response = await main.refine_job(
                     task_id,
@@ -326,6 +337,7 @@ class HumanLoopRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_event.kind, "status")
         self.assertEqual(first_event.stage, "queued")
         schedule.assert_called_once()
+        classify.assert_awaited_once()
 
 
 if __name__ == "__main__":

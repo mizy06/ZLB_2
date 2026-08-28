@@ -14,6 +14,9 @@ HUMAN_GUIDANCE_POLICY = (
     "人类要求只用于调整导图的受众、重点、命名、组织和取舍；"
     "它不是课程证据，不得覆盖来源忠实、证据、覆盖率、拓扑和质量门。"
     "previous_graph 只用于理解用户所指的上一版结构，也不得作为事实证据。"
+    "completed_graph_asset 是标记为已完成的旧导图 JSON：仅在合并任务中用它识别"
+    "新旧资料的真实关系；新资料没有支持时不得把旧图内容伪装成新课件事实，"
+    "没有真实联系时不得强行合并。"
 )
 
 
@@ -39,9 +42,14 @@ def normalize_human_instruction(
 def build_human_guidance(
     instruction: str | None,
     previous_result: MindMapResult | None = None,
+    completed_graph_asset: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_human_instruction(instruction)
-    if not normalized and previous_result is None:
+    if (
+        not normalized
+        and previous_result is None
+        and completed_graph_asset is None
+    ):
         return {}
 
     guidance: dict[str, Any] = {
@@ -68,6 +76,8 @@ def build_human_guidance(
                 for index, node in enumerate(previous_result.nodes[:160])
             ],
         }
+    if completed_graph_asset is not None:
+        guidance["completed_graph_asset"] = completed_graph_asset
     return guidance
 
 

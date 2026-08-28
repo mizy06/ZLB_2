@@ -567,6 +567,7 @@ async def run_single_shot_ppt_pipeline(
     render: RenderFunction = render_document,
     user_instruction: str = "",
     previous_result: MindMapResult | None = None,
+    completed_graph_asset: dict | None = None,
 ) -> MindMapResult:
     del model
     if file_path.suffix.lower() != ".pptx":
@@ -579,6 +580,7 @@ async def run_single_shot_ppt_pipeline(
     human_guidance = build_human_guidance(
         user_instruction,
         previous_result,
+        completed_graph_asset,
     )
     run_manifest = {
         **(blackboard.load_run_manifest(task_id) or {}),

@@ -1,7 +1,7 @@
 services:
   app:
     build:
-      target: editorial-ppt
+      target: production
     container_name: ${MINDMAP_EXPERIMENT_CONTAINER_NAME:-zlb-mindmap-editorial}
     environment:
       MINDMAP_PIPELINE_MODE: editorial_ppt_vision

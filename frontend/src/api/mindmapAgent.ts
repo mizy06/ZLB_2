@@ -1194,9 +1194,6 @@ export class MindmapAgentApi implements KimiWebApi {
       .trim();
     const existingTaskId = this.taskIdForSession(sessionId);
     if (existingTaskId) {
-      if (uploadId) {
-        throw new Error('当前会话已绑定原始文件；请新建会话后再处理另一份文件。');
-      }
       if (!promptText) {
         throw new Error('请输入你希望如何修改当前思维导图。');
       }
@@ -1205,16 +1202,51 @@ export class MindmapAgentApi implements KimiWebApi {
       if (!graphVersion) {
         throw new Error('当前任务还没有可供修改的图版本。');
       }
-      await parseResponse<BackendJob>(
-        await request(`/api/jobs/${encodeURIComponent(existingTaskId)}/refine`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            instruction: promptText,
-            expected_graph_version: graphVersion,
+      if (uploadId) {
+        const uploadIds = input.content
+          .map((part) => {
+            if (part.type === 'file') return part.fileId;
+            if ((part.type === 'image' || part.type === 'video')
+              && part.source.kind === 'file') {
+              return part.source.fileId;
+            }
+            return undefined;
+          })
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        const uploads = uploadIds
+          .map((id) => this.uploads.get(id))
+          .filter((u): u is StoredUpload => u !== undefined);
+        if (uploads.length === 0 && upload) uploads.push(upload);
+        if (uploads.length === 0) {
+          throw new Error('找不到要提交的二次输入文件。');
+        }
+        const form = new FormData();
+        form.append('instruction', promptText);
+        form.append('expected_graph_version', String(graphVersion));
+        for (const item of uploads) {
+          form.append(
+            'files',
+            new File([item.blob], item.name, { type: item.mediaType }),
+          );
+        }
+        await parseResponse<BackendJob>(
+          await request(
+            `/api/jobs/${encodeURIComponent(existingTaskId)}/refine-with-files`,
+            { method: 'POST', body: form },
+          ),
+        );
+      } else {
+        await parseResponse<BackendJob>(
+          await request(`/api/jobs/${encodeURIComponent(existingTaskId)}/refine`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              instruction: promptText,
+              expected_graph_version: graphVersion,
+            }),
           }),
-        }),
-      );
+        );
+      }
       const promptId = uid('prompt');
       this.promptBySession.set(sessionId, promptId);
       this.markActive(sessionId);

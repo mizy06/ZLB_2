@@ -9,7 +9,6 @@ import httpx
 from fastapi import HTTPException
 
 from backend.app import main
-from backend.app.agent_prompts import THEME_SYNTHESIZER_PROMPT_SHA256
 from backend.app.config import (
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_QWEN_MODEL,
@@ -21,14 +20,6 @@ from backend.app.config import (
 from backend.app.model_provider import (
     HARD_RETRY_DELAY_CAP_SECONDS,
     OpenAICompatibleClient,
-)
-from backend.app.pdf_page_knowledge import (
-    PAGE_KNOWLEDGE_SCHEMA_VERSION,
-    PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-)
-from backend.app.pdf_page_transcription import (
-    PAGE_TRANSCRIPTION_SCHEMA_VERSION,
-    PDF_PAGE_TRANSCRIPTION_PROMPT_SHA256,
 )
 
 
@@ -380,7 +371,7 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             loaded.prompt_version,
-            "cplus-prompts-v13-direct-visual-only",
+            "editorial-ppt-vision-v1",
         )
         self.assertEqual(
             loaded.theme_prompt_version,
@@ -388,11 +379,11 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             loaded.pdf_page_knowledge_prompt_version,
-            "cplus-prompts-v13-direct-visual-only",
+            "editorial-ppt-vision-v1",
         )
         self.assertEqual(
             loaded.pdf_page_transcription_prompt_version,
-            "cplus-prompts-v8-page-knowledge",
+            "editorial-ppt-vision-v1",
         )
 
     def test_run_manifest_records_sanitized_models_and_runtime_versions(self):
@@ -447,56 +438,14 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             manifest["prompt_versions"],
             {
-                "pipeline": configured.prompt_version,
-                "theme": {
-                    "version": configured.theme_prompt_version,
-                    "sha256": THEME_SYNTHESIZER_PROMPT_SHA256,
-                },
-                "pdf_page_knowledge": {
-                    "version": (
-                        configured.pdf_page_knowledge_prompt_version
-                    ),
-                    "sha256": PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-                },
-                "pdf_page_transcription": {
-                    "version": (
-                        configured.pdf_page_transcription_prompt_version
-                    ),
-                    "sha256": PDF_PAGE_TRANSCRIPTION_PROMPT_SHA256,
-                },
+                "editorial_pipeline": configured.prompt_version,
             },
         )
-        transcription = manifest["pdf_page_transcription"]
-        self.assertEqual(transcription["mode"], "vision_nodes_strict")
         self.assertEqual(
-            transcription["prompt_version"],
-            configured.pdf_page_knowledge_prompt_version,
+            manifest["architecture"],
+            main.EDITORIAL_PPT_ARCHITECTURE_NAME,
         )
-        self.assertEqual(
-            transcription["prompt_sha256"],
-            PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-        )
-        self.assertEqual(
-            transcription["extraction_profile"],
-            "direct",
-        )
-        self.assertIsNone(transcription["layout_schema_version"])
-        self.assertIsNone(transcription["layout_node_schema_version"])
-        self.assertEqual(
-            transcription["schema_version"],
-            PAGE_KNOWLEDGE_SCHEMA_VERSION,
-        )
-        self.assertEqual(
-            transcription["output_contract"],
-            "PageKnowledgeExtraction",
-        )
-        self.assertEqual(
-            transcription["source_mode"],
-            "direct_visual_only",
-        )
-        self.assertFalse(transcription["text_intermediate_built"])
-        self.assertEqual(transcription["render_dpi"], 192)
-        self.assertEqual(transcription["min_confidence"], 0.85)
+        self.assertNotIn("pdf_page_transcription", manifest)
 
     def test_poppler_version_is_unavailable_without_pdftoppm(self):
         with patch.object(main.shutil, "which", return_value=None):

@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from backend.app.blackboard import SQLiteBlackboard
 from backend.app.config import settings
 from backend.app.mindmap_engine.schemas import RenderResponse, RenderedPage
-from backend.app.main import _pipeline_family, health
+from backend.app.main import health
 from backend.app.model_provider import OpenAICompatibleClient
 from backend.app.single_shot_ppt_pipeline import (
     PIPELINE_MODE,
@@ -197,7 +197,7 @@ class SingleShotSchemaTests(unittest.TestCase):
         ):
             self.assertTrue(single_shot_ppt_enabled())
 
-    def test_health_describes_the_experiment_contract(self):
+    def test_health_describes_the_production_editorial_contract(self):
         with patch.dict(
             os.environ,
             {"MINDMAP_PIPELINE_MODE": PIPELINE_MODE},
@@ -205,11 +205,15 @@ class SingleShotSchemaTests(unittest.TestCase):
             payload = asyncio.run(health())
         self.assertEqual(
             payload["architecture"]["name"],
-            "single-shot-ppt-vision",
+            "editorial-ppt-vision-loop",
         )
         self.assertEqual(
             payload["architecture"]["topology_solver"],
             "disabled",
+        )
+        self.assertEqual(
+            payload["architecture"]["graph_validator"],
+            "pydantic-local-tree+multi-role-review",
         )
         self.assertEqual(
             payload["supported_extensions"],
@@ -224,19 +228,6 @@ class SingleShotSchemaTests(unittest.TestCase):
                 ".txt",
             ],
         )
-
-    def test_single_shot_mode_only_claims_normalized_pptx(self):
-        with patch.dict(
-            os.environ,
-            {"MINDMAP_PIPELINE_MODE": PIPELINE_MODE},
-        ):
-            self.assertEqual(
-                _pipeline_family(Path("course.pptx")),
-                "single-shot",
-            )
-            self.assertEqual(_pipeline_family(Path("course.pdf")), "cplus")
-            self.assertEqual(_pipeline_family(Path("course.docx")), "cplus")
-            self.assertEqual(_pipeline_family(Path("course.md")), "cplus")
 
     def test_editorial_image_encoding_defaults_to_1280_long_edge(self):
         with tempfile.TemporaryDirectory() as tmp:

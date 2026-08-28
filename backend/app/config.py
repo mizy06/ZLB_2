@@ -318,15 +318,15 @@ class Settings:
     provider_retry_delay_cap_seconds: float = 30.0
     provider_circuit_cooldown_seconds: float = 120.0
     parser_version: str = "parser-v9-direct-visual-only"
-    prompt_version: str = "cplus-prompts-v13-direct-visual-only"
+    prompt_version: str = "editorial-ppt-vision-v1"
     theme_prompt_version: str = (
         "theme-synthesizer-v4-semantic-partition"
     )
     pdf_page_knowledge_prompt_version: str = (
-        "cplus-prompts-v13-direct-visual-only"
+        "editorial-ppt-vision-v1"
     )
     pdf_page_transcription_prompt_version: str = (
-        "cplus-prompts-v8-page-knowledge"
+        "editorial-ppt-vision-v1"
     )
     schema_version: str = "mindmap-schema-v2"
     layout_version: str = "right-first-tree-v2"
@@ -618,7 +618,7 @@ def load_settings() -> Settings:
         ),
         prompt_version=os.getenv(
             "MINDMAP_PROMPT_VERSION",
-            "cplus-prompts-v13-direct-visual-only",
+            "editorial-ppt-vision-v1",
         ),
         theme_prompt_version=os.getenv(
             "MINDMAP_THEME_PROMPT_VERSION",
@@ -626,11 +626,11 @@ def load_settings() -> Settings:
         ),
         pdf_page_knowledge_prompt_version=os.getenv(
             "MINDMAP_PDF_PAGE_KNOWLEDGE_PROMPT_VERSION",
-            "cplus-prompts-v13-direct-visual-only",
+            "editorial-ppt-vision-v1",
         ),
         pdf_page_transcription_prompt_version=os.getenv(
             "MINDMAP_PDF_PAGE_TRANSCRIPTION_PROMPT_VERSION",
-            "cplus-prompts-v8-page-knowledge",
+            "editorial-ppt-vision-v1",
         ),
         schema_version=os.getenv(
             "MINDMAP_SCHEMA_VERSION",

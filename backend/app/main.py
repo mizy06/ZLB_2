@@ -35,8 +35,6 @@ from .architecture_schemas import (
     JobView,
     MindMapLoopConfig,
     MindMapLoopRound,
-    ReviewResolutionRequest,
-    ReviewResolutionResponse,
     RunMode,
     default_mindmap_loop,
 )
@@ -52,7 +50,6 @@ from .auth import (
     set_session_cookie,
 )
 from .blackboard import SQLiteBlackboard
-from .cplus_pipeline import run_cplus_pipeline
 from .config import (
     PROJECT_ROOT,
     model_context_window_tokens,
@@ -62,7 +59,6 @@ from .config import (
 from .document_parser import SUPPORTED_TYPES
 from .editorial_ppt_pipeline import (
     ARCHITECTURE_NAME as EDITORIAL_PPT_ARCHITECTURE_NAME,
-    editorial_ppt_enabled,
     run_editorial_ppt_pipeline,
 )
 from .export_service import render_mindmap_png
@@ -75,33 +71,21 @@ from .human_loop import (
 )
 from .job_events import JobEventHub
 from .job_runtime import JobRuntime, monotonic_progress
-from .mindmap_engine.router import router as mindmap_engine_router
 from .model_provider import OpenAICompatibleClient
-from .agent_prompts import THEME_SYNTHESIZER_PROMPT_SHA256
-from .pdf_page_knowledge import (
-    PAGE_KNOWLEDGE_SCHEMA_VERSION,
-    PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-)
-from .pdf_layout_knowledge import (
-    PAGE_LAYOUT_NODE_SCHEMA_VERSION,
-    PAGE_LAYOUT_SCHEMA_VERSION,
-)
-from .pdf_page_transcription import (
-    PAGE_TRANSCRIPTION_SCHEMA_VERSION,
-    PDF_PAGE_TRANSCRIPTION_PROMPT_SHA256,
-)
 from .qwen_provider import QwenClient
-from .review_service import resolve_review_item
+from .refinement_routing import (
+    RefinementRoutingDecision,
+    classify_refinement,
+    completed_graph_asset,
+    materialize_guidance_images,
+)
 from .runtime_manifest import (
     poppler_version as _poppler_version,
     runtime_versions as _runtime_versions,
     sanitize_endpoint as _sanitized_endpoint,
 )
-from .single_shot_ppt_pipeline import (
-    run_single_shot_ppt_pipeline,
-    single_shot_ppt_enabled,
-)
 from .upload_validation import (
+    IMAGE_FORMATS,
     LEGACY_OFFICE_SUFFIXES,
     UploadValidationError,
     convert_legacy_office,
@@ -112,7 +96,11 @@ from .upload_validation import (
 UPLOAD_DIR = PROJECT_ROOT / "backend" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
-JOB_UPLOAD_SUFFIXES = SUPPORTED_TYPES | set(LEGACY_OFFICE_SUFFIXES)
+JOB_UPLOAD_SUFFIXES = (
+    SUPPORTED_TYPES
+    | set(LEGACY_OFFICE_SUFFIXES)
+)
+REFINEMENT_UPLOAD_SUFFIXES = JOB_UPLOAD_SUFFIXES | set(IMAGE_FORMATS)
 
 app = FastAPI(
     title="ZLB Mind Map Agent",
@@ -129,7 +117,6 @@ if not settings.production:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-app.include_router(mindmap_engine_router)
 if (FRONTEND_DIST_DIR / "assets").is_dir():
     app.mount(
         "/assets",
@@ -185,6 +172,89 @@ def _copy_upload_limited(
     return total, digest.hexdigest()
 
 
+async def _save_job_uploads(
+    *,
+    task_id: str,
+    uploads: list[UploadFile],
+    allowed_suffixes: set[str] | frozenset[str] = JOB_UPLOAD_SUFFIXES,
+) -> tuple[list[Path], list[str], list[int], list[str], int]:
+    saved_paths: list[Path] = []
+    saved_filenames: list[str] = []
+    saved_sizes: list[int] = []
+    saved_digests: list[str] = []
+    total_pages = 0
+
+    for index, upload_file in enumerate(uploads):
+        suffix = Path(upload_file.filename or "").suffix.lower()
+        if suffix not in allowed_suffixes:
+            if allowed_suffixes == REFINEMENT_UPLOAD_SUFFIXES:
+                supported_formats = (
+                    "PDF、PPT、PPTX、DOC、DOCX、TXT、MD、PNG、JPG、JPEG 或 WEBP"
+                )
+            else:
+                supported_formats = "PDF、PPT、PPTX、DOC、DOCX、TXT 或 MD"
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"文件 {upload_file.filename} 格式不受支持，请上传 "
+                    f"{supported_formats} 文件。"
+                ),
+            )
+        path = (UPLOAD_DIR / f"{task_id}_{index}{suffix}").resolve()
+        original_path = path
+        converted_path: Path | None = None
+        try:
+            source_size, source_sha256 = await asyncio.to_thread(
+                _copy_upload_limited,
+                upload_file.file,
+                path,
+                settings.max_upload_bytes,
+            )
+            inspection = await asyncio.to_thread(
+                validate_upload_path,
+                path,
+                filename=upload_file.filename or path.name,
+                content_type=upload_file.content_type or "",
+                settings=settings,
+            )
+            if suffix in LEGACY_OFFICE_SUFFIXES:
+                converted_path = await asyncio.to_thread(
+                    convert_legacy_office,
+                    original_path,
+                )
+                inspection = await asyncio.to_thread(
+                    validate_upload_path,
+                    converted_path,
+                    filename=converted_path.name,
+                    content_type="",
+                    settings=settings,
+                )
+                original_path.unlink(missing_ok=True)
+                path = converted_path
+            saved_paths.append(path)
+            saved_filenames.append(upload_file.filename or path.name)
+            saved_sizes.append(source_size)
+            saved_digests.append(source_sha256)
+            if inspection.page_count:
+                total_pages += inspection.page_count
+        except UploadValidationError as exc:
+            original_path.unlink(missing_ok=True)
+            if converted_path is not None:
+                converted_path.unlink(missing_ok=True)
+            status_code = 413 if "大小超过" in str(exc) else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        finally:
+            await upload_file.close()
+
+    return (
+        saved_paths,
+        saved_filenames,
+        saved_sizes,
+        saved_digests,
+        total_pages,
+    )
+
+
 def _run_manifest(
     *,
     source_sha256: str,
@@ -194,26 +264,6 @@ def _run_manifest(
     model: str,
     page_count: int | None,
 ) -> dict:
-    uses_page_knowledge = (
-        settings.pdf_transcription_mode.casefold()
-        == "vision_nodes_strict"
-    )
-    uses_layout_nodes = False
-    pdf_page_schema_version = (
-        PAGE_KNOWLEDGE_SCHEMA_VERSION
-        if uses_page_knowledge
-        else PAGE_TRANSCRIPTION_SCHEMA_VERSION
-    )
-    pdf_page_prompt_version = (
-        settings.pdf_page_knowledge_prompt_version
-        if uses_page_knowledge
-        else settings.pdf_page_transcription_prompt_version
-    )
-    pdf_page_prompt_sha256 = (
-        PDF_PAGE_KNOWLEDGE_PROMPT_SHA256
-        if uses_page_knowledge
-        else PDF_PAGE_TRANSCRIPTION_PROMPT_SHA256
-    )
     return {
         "source_sha256": source_sha256,
         "source_size_bytes": source_size,
@@ -224,20 +274,9 @@ def _run_manifest(
         "parser_version": settings.parser_version,
         "prompt_version": settings.prompt_version,
         "prompt_versions": {
-            "pipeline": settings.prompt_version,
-            "theme": {
-                "version": settings.theme_prompt_version,
-                "sha256": THEME_SYNTHESIZER_PROMPT_SHA256,
-            },
-            "pdf_page_knowledge": {
-                "version": settings.pdf_page_knowledge_prompt_version,
-                "sha256": PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-            },
-            "pdf_page_transcription": {
-                "version": settings.pdf_page_transcription_prompt_version,
-                "sha256": PDF_PAGE_TRANSCRIPTION_PROMPT_SHA256,
-            },
+            "editorial_pipeline": settings.prompt_version,
         },
+        "architecture": EDITORIAL_PPT_ARCHITECTURE_NAME,
         "schema_version": settings.schema_version,
         "layout_version": settings.layout_version,
         "provider": provider,
@@ -246,34 +285,6 @@ def _run_manifest(
         "vision_model": settings.qwen_vision_model,
         "provider_endpoint": _sanitized_endpoint(settings.qwen_base_url),
         "qwen_production_profile": settings.qwen_production_profile,
-        "pdf_page_transcription": {
-            "mode": settings.pdf_transcription_mode,
-            "extraction_profile": "direct",
-            "schema_version": pdf_page_schema_version,
-            "prompt_version": pdf_page_prompt_version,
-            "prompt_sha256": pdf_page_prompt_sha256,
-            "layout_schema_version": (
-                PAGE_LAYOUT_SCHEMA_VERSION
-                if uses_layout_nodes
-                else None
-            ),
-            "layout_node_schema_version": (
-                PAGE_LAYOUT_NODE_SCHEMA_VERSION
-                if uses_layout_nodes
-                else None
-            ),
-            "output_contract": (
-                "PageKnowledgeExtraction"
-                if uses_page_knowledge
-                else "PageExtraction"
-            ),
-            "source_mode": "direct_visual_only",
-            "text_intermediate_built": False,
-            "render_dpi": settings.pdf_transcription_dpi,
-            "concurrency": settings.pdf_transcription_concurrency,
-            "max_page_attempts": settings.pdf_transcription_max_attempts,
-            "min_confidence": settings.pdf_transcription_min_confidence,
-        },
         "runtime_versions": dict(_runtime_versions()),
     }
 
@@ -397,6 +408,8 @@ async def _execute_job(
     loop_config: MindMapLoopConfig | None = None,
     user_instruction: str = "",
     previous_result=None,
+    completed_graph_asset_payload: dict | None = None,
+    guidance_image_paths: list[Path] | None = None,
 ) -> None:
     resolved_loop = loop_config or default_mindmap_loop(model)
     _set_job(
@@ -454,55 +467,25 @@ async def _execute_job(
         manifest = (job_record.get("manifest") if job_record else {}) or {}
         multi_paths = [Path(p) for p in manifest.get("source_paths", [])] or [path]
         multi_filenames = manifest.get("filenames") or [filename]
-        pipeline_family = _pipeline_family(multi_paths)
-        if pipeline_family == "editorial":
-            result = await run_editorial_ppt_pipeline(
-                task_id=task_id,
-                file_path=multi_paths[0],
-                file_paths=multi_paths,
-                filename=filename,
-                filenames=multi_filenames,
-                model=model,
-                provider=provider,
-                mode=mode,
-                use_ai=use_ai,
-                progress=update,
-                blackboard=blackboard,
-                loop_config=resolved_loop,
-                model_output=publish_model_output,
-                user_instruction=user_instruction,
-                previous_result=previous_result,
-            )
-        elif pipeline_family == "single-shot":
-            result = await run_single_shot_ppt_pipeline(
-                task_id=task_id,
-                file_path=path,
-                filename=filename,
-                model=model,
-                provider=provider,
-                mode=mode,
-                use_ai=use_ai,
-                progress=update,
-                blackboard=blackboard,
-                user_instruction=user_instruction,
-                previous_result=previous_result,
-            )
-        else:
-            result = await run_cplus_pipeline(
-                task_id=task_id,
-                file_path=multi_paths[0],
-                file_paths=multi_paths,
-                filename=filename,
-                filenames=multi_filenames,
-                model=model,
-                provider=provider,
-                mode=mode,
-                use_ai=use_ai,
-                progress=update,
-                blackboard=blackboard,
-                user_instruction=user_instruction,
-                previous_result=previous_result,
-            )
+        result = await run_editorial_ppt_pipeline(
+            task_id=task_id,
+            file_path=multi_paths[0],
+            file_paths=multi_paths,
+            filename=filename,
+            filenames=multi_filenames,
+            model=model,
+            provider=provider,
+            mode=mode,
+            use_ai=use_ai,
+            progress=update,
+            blackboard=blackboard,
+            loop_config=resolved_loop,
+            model_output=publish_model_output,
+            user_instruction=user_instruction,
+            previous_result=previous_result,
+            completed_graph_asset=completed_graph_asset_payload,
+            guidance_image_paths=guidance_image_paths,
+        )
         _finish_job_interaction(
             task_id,
             status="completed",
@@ -586,32 +569,28 @@ async def _execute_job(
         )
 
 
-def _pipeline_family(path_or_paths: Path | list[Path]) -> str:
-    paths = path_or_paths if isinstance(path_or_paths, list) else [path_or_paths]
-    if (
-        paths
-        and editorial_ppt_enabled()
-        and all(path.suffix.lower() in SUPPORTED_TYPES for path in paths)
-    ):
-        return "editorial"
-    if paths and all(p.suffix.lower() == ".pptx" for p in paths):
-        if editorial_ppt_enabled():
-            return "editorial"
-        if single_shot_ppt_enabled():
-            return "single-shot"
-    return "cplus"
-
-
 def _schedule_job(record: dict) -> None:
     task_id = record["task_id"]
     path = Path(record["source_path"])
     manifest = record.get("manifest", {})
     base_graph_version = int(manifest.get("base_graph_version") or 0)
+    refinement_route = str(manifest.get("refinement_route") or "")
     previous_result = (
         blackboard.load_latest_result(task_id)
         if base_graph_version > 0
+        and refinement_route in {"", "guidance_only"}
         else None
     )
+    completed_graph_asset_payload = (
+        manifest.get("completed_graph_asset")
+        if refinement_route == "merge_graph"
+        else None
+    )
+    guidance_image_paths = [
+        Path(path)
+        for path in manifest.get("guidance_image_paths", [])
+        if isinstance(path, str) and Path(path).is_file()
+    ]
 
     async def worker() -> None:
         await _execute_job(
@@ -625,6 +604,12 @@ def _schedule_job(record: dict) -> None:
             _loop_config_from_record(record),
             str(manifest.get("active_instruction") or ""),
             previous_result,
+            (
+                completed_graph_asset_payload
+                if isinstance(completed_graph_asset_payload, dict)
+                else None
+            ),
+            guidance_image_paths,
         )
 
     job_runtime.submit(task_id, worker)
@@ -830,9 +815,6 @@ async def current_account(
 
 @app.get("/api/health")
 async def health():
-    editorial = editorial_ppt_enabled()
-    single_shot = single_shot_ppt_enabled()
-    ppt_vision_only = editorial or single_shot
     return {
         "status": "ok",
         "workspace": {
@@ -852,24 +834,10 @@ async def health():
         "architecture": {
             "name": (
                 EDITORIAL_PPT_ARCHITECTURE_NAME
-                if editorial
-                else "single-shot-ppt-vision"
-                if single_shot
-                else "C+"
             ),
             "blackboard": "sqlite",
-            "topology_solver": (
-                "disabled"
-                if ppt_vision_only
-                else "ortools-cp-sat"
-            ),
-            "graph_validator": (
-                "pydantic-local-tree+multi-role-review"
-                if editorial
-                else "pydantic-local-tree"
-                if single_shot
-                else "networkx"
-            ),
+            "topology_solver": "disabled",
+            "graph_validator": "pydantic-local-tree+multi-role-review",
             "loop": {
                 "max_rounds": 6,
                 "roles": [
@@ -980,68 +948,22 @@ async def create_job(
     if not raw_uploads:
         raise HTTPException(
             status_code=400,
-            detail="请上传至少一份 PDF、PPT、PPTX、DOC、DOCX、TXT 或 MD 文件。",
+            detail=(
+                "请上传至少一份 PDF、PPT、PPTX、DOC、DOCX、TXT 或 MD 文件。"
+            ),
         )
 
     task_id = uuid.uuid4().hex[:12]
-    saved_paths: list[Path] = []
-    saved_filenames: list[str] = []
-    saved_sizes: list[int] = []
-    saved_digests: list[str] = []
-    total_pages: int = 0
-
-    for idx, upload_file in enumerate(raw_uploads):
-        suffix = Path(upload_file.filename or "").suffix.lower()
-        if suffix not in JOB_UPLOAD_SUFFIXES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"文件 {upload_file.filename} 格式不受支持，请上传 PDF、PPT、PPTX、DOC、DOCX、TXT 或 MD 文件。",
-            )
-        path = (UPLOAD_DIR / f"{task_id}_{idx}{suffix}").resolve()
-        original_path = path
-        converted_path: Path | None = None
-        try:
-            source_size, source_sha256 = await asyncio.to_thread(
-                _copy_upload_limited,
-                upload_file.file,
-                path,
-                settings.max_upload_bytes,
-            )
-            inspection = await asyncio.to_thread(
-                validate_upload_path,
-                path,
-                filename=upload_file.filename or path.name,
-                content_type=upload_file.content_type or "",
-                settings=settings,
-            )
-            if suffix in LEGACY_OFFICE_SUFFIXES:
-                converted_path = await asyncio.to_thread(
-                    convert_legacy_office,
-                    original_path,
-                )
-                inspection = await asyncio.to_thread(
-                    validate_upload_path,
-                    converted_path,
-                    filename=converted_path.name,
-                    content_type="",
-                    settings=settings,
-                )
-                original_path.unlink(missing_ok=True)
-                path = converted_path
-            saved_paths.append(path)
-            saved_filenames.append(upload_file.filename or path.name)
-            saved_sizes.append(source_size)
-            saved_digests.append(source_sha256)
-            if inspection.page_count:
-                total_pages += inspection.page_count
-        except UploadValidationError as exc:
-            original_path.unlink(missing_ok=True)
-            if converted_path is not None:
-                converted_path.unlink(missing_ok=True)
-            status_code = 413 if "大小超过" in str(exc) else 422
-            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-        finally:
-            await upload_file.close()
+    (
+        saved_paths,
+        saved_filenames,
+        saved_sizes,
+        saved_digests,
+        total_pages,
+    ) = await _save_job_uploads(
+        task_id=task_id,
+        uploads=raw_uploads,
+    )
 
     primary_path = saved_paths[0]
     display_filename = " & ".join(saved_filenames[:2]) + (f" 等{len(saved_filenames)}份文档" if len(saved_filenames) > 2 else "")
@@ -1181,6 +1103,151 @@ async def get_job_interactions(
     )
 
 
+async def _queue_classified_refinement(
+    *,
+    task_id: str,
+    record: dict,
+    result,
+    instruction: str,
+    attachment_paths: list[Path] | None = None,
+    attachment_filenames: list[str] | None = None,
+    attachment_sizes: list[int] | None = None,
+    attachment_digests: list[str] | None = None,
+    attachment_page_count: int = 0,
+) -> JobView:
+    paths = list(attachment_paths or [])
+    filenames = list(attachment_filenames or [path.name for path in paths])
+    if len(paths) != len(filenames):
+        raise HTTPException(status_code=422, detail="二次输入文件信息无效。")
+
+    if not record["use_ai"]:
+        raise HTTPException(
+            status_code=503,
+            detail="二次输入路由必须由模型判断；当前任务未启用 AI。",
+        )
+    try:
+        decision = await classify_refinement(
+            current_result=result,
+            instruction=instruction,
+            attachment_paths=paths,
+            attachment_filenames=filenames,
+            model=(
+                settings.qwen_vision_model.strip()
+                or record["model"]
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"二次输入路由模型调用失败：{exc}",
+        ) from exc
+
+    route = decision.route
+    source_path = Path(record["source_path"])
+    source_paths = [
+        Path(path)
+        for path in record.get("manifest", {}).get("source_paths", [])
+        if isinstance(path, str)
+    ] or [source_path]
+    source_filenames = list(
+        record.get("manifest", {}).get("filenames") or [record["filename"]]
+    )
+    record_source_path = record["source_path"]
+    record_filename = record["filename"]
+
+    if route in {"new_graph", "merge_graph"}:
+        if paths:
+            source_paths = paths
+            source_filenames = filenames
+            record_source_path = str(paths[0])
+            record_filename = " & ".join(filenames[:2]) + (
+                f" 等{len(filenames)}份文档" if len(filenames) > 2 else ""
+            )
+        if not source_paths or not all(path.is_file() for path in source_paths):
+            raise HTTPException(
+                status_code=410,
+                detail="新一轮完整生成缺少可用的课件文件。",
+            )
+
+    manifest = queue_refinement_manifest(
+        record.get("manifest", {}),
+        instruction=instruction,
+        current_graph_version=result.graph_version,
+    )
+    manifest.update(
+        {
+            "refinement_route": route,
+            "refinement_rationale": decision.rationale,
+            "guidance_image_paths": [],
+        }
+    )
+    manifest.pop("completed_graph_asset", None)
+
+    if route == "guidance_only":
+        guidance_image_paths = await asyncio.to_thread(
+            materialize_guidance_images,
+            task_id=task_id,
+            graph_version=result.graph_version,
+            current_result=result,
+            attachment_paths=paths,
+            attachment_filenames=filenames,
+        )
+        manifest["guidance_image_paths"] = [
+            str(path) for path in guidance_image_paths
+        ]
+    else:
+        manifest.update(
+            {
+                "source_paths": [str(path) for path in source_paths],
+                "filenames": source_filenames,
+                "multi_document": len(source_paths) > 1,
+            }
+        )
+        if paths:
+            manifest.update(
+                {
+                    "source_sha256": hashlib.sha256(
+                        "::".join(attachment_digests or []).encode()
+                    ).hexdigest(),
+                    "source_size_bytes": sum(attachment_sizes or []),
+                    "source_filename": record_filename,
+                    "source_page_count": attachment_page_count or None,
+                }
+            )
+        if route == "merge_graph":
+            manifest["completed_graph_asset"] = completed_graph_asset(result)
+
+    blackboard.upsert_job(
+        task_id=task_id,
+        status="queued",
+        stage="queued",
+        progress=0,
+        message="二次输入已分类，等待处理",
+        mode=record["mode"],
+        source_path=record_source_path,
+        filename=record_filename,
+        model=record["model"],
+        provider=record["provider"],
+        use_ai=record["use_ai"],
+        owner_id=record["owner_id"],
+        error=None,
+        manifest=manifest,
+    )
+    await job_events.drop(task_id)
+    queued = blackboard.load_job(task_id, owner_id=record["owner_id"])
+    with jobs_lock:
+        jobs[task_id] = _job_view_from_record(queued, result=result)
+    await job_events.publish(
+        task_id,
+        "status",
+        stage="queued",
+        progress=0,
+        message="二次输入已分类，等待处理",
+    )
+    _schedule_job(queued)
+    return _job_view_from_record(queued, result=result)
+
+
 @app.post(
     "/api/jobs/{task_id}/refine",
     response_model=JobView,
@@ -1215,47 +1282,87 @@ async def refine_job(
                     f"当前为 v{result.graph_version}。"
                 ),
             )
-        source_path = Path(record["source_path"])
-        if not source_path.is_file():
-            raise HTTPException(
-                status_code=410,
-                detail="原始文件已过期或缺失，无法继续修改。",
-            )
-
-        manifest = queue_refinement_manifest(
-            record.get("manifest", {}),
-            instruction=request.instruction,
-            current_graph_version=result.graph_version,
-        )
-        blackboard.upsert_job(
+        return await _queue_classified_refinement(
             task_id=task_id,
-            status="queued",
-            stage="queued",
-            progress=0,
-            message="修改要求已接收，等待处理",
-            mode=record["mode"],
-            source_path=record["source_path"],
-            filename=record["filename"],
-            model=record["model"],
-            provider=record["provider"],
-            use_ai=record["use_ai"],
-            owner_id=record["owner_id"],
-            error=None,
-            manifest=manifest,
+            record=record,
+            result=result,
+            instruction=request.instruction,
         )
-        await job_events.drop(task_id)
-        queued = blackboard.load_job(task_id, owner_id=owner_id)
-        with jobs_lock:
-            jobs[task_id] = _job_view_from_record(queued, result=result)
-        await job_events.publish(
-            task_id,
-            "status",
-            stage="queued",
-            progress=0,
-            message="修改要求已接收，等待处理",
+
+
+@app.post(
+    "/api/jobs/{task_id}/refine-with-files",
+    response_model=JobView,
+    include_in_schema=False,
+)
+async def refine_job_with_files(
+    task_id: str,
+    instruction: str = Form(...),
+    expected_graph_version: int = Form(...),
+    files: list[UploadFile] | None = File(default=None),
+    principal: Principal = Depends(require_api_principal),
+):
+    try:
+        request = JobRefinementRequest(
+            instruction=instruction,
+            expected_graph_version=expected_graph_version,
         )
-        _schedule_job(queued)
-        return _job_view_from_record(queued, result=result)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    raw_uploads = [
+        upload
+        for upload in (files or [])
+        if upload and getattr(upload, "filename", None)
+    ]
+    if not raw_uploads:
+        raise HTTPException(status_code=400, detail="请附加至少一份二次输入文件。")
+
+    owner_id = _owner_scope(principal)
+    async with job_control_lock:
+        record = blackboard.load_job(task_id, owner_id=owner_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        if (
+            record["status"] in {"queued", "running"}
+            or job_runtime.has_task(task_id)
+        ):
+            raise HTTPException(status_code=409, detail="任务正在处理中。")
+        result = blackboard.load_latest_result(task_id, owner_id=owner_id)
+        if not result:
+            raise HTTPException(
+                status_code=409,
+                detail="只有已经出图的任务可以继续修改。",
+            )
+        if request.expected_graph_version != result.graph_version:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"图版本冲突：期望 v{request.expected_graph_version}，"
+                    f"当前为 v{result.graph_version}。"
+                ),
+            )
+        (
+            attachment_paths,
+            attachment_filenames,
+            attachment_sizes,
+            attachment_digests,
+            attachment_page_count,
+        ) = await _save_job_uploads(
+            task_id=f"{task_id}_refinement_{uuid.uuid4().hex[:8]}",
+            uploads=raw_uploads,
+            allowed_suffixes=REFINEMENT_UPLOAD_SUFFIXES,
+        )
+        return await _queue_classified_refinement(
+            task_id=task_id,
+            record=record,
+            result=result,
+            instruction=request.instruction,
+            attachment_paths=attachment_paths,
+            attachment_filenames=attachment_filenames,
+            attachment_sizes=attachment_sizes,
+            attachment_digests=attachment_digests,
+            attachment_page_count=attachment_page_count,
+        )
 
 
 @app.get(
@@ -1430,41 +1537,6 @@ async def get_version(
     return result
 
 
-@app.post(
-    "/api/jobs/{task_id}/reviews/{review_id}/resolve",
-    response_model=ReviewResolutionResponse,
-)
-async def resolve_review(
-    task_id: str,
-    review_id: str,
-    request: ReviewResolutionRequest,
-    principal: Principal = Depends(require_api_principal),
-):
-    try:
-        result = resolve_review_item(
-            blackboard=blackboard,
-            task_id=task_id,
-            review_id=review_id,
-            request=request,
-            owner_id=_owner_scope(principal),
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="任务或复核项不存在。") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    with jobs_lock:
-        current = jobs.get(task_id)
-        if current:
-            jobs[task_id] = current.model_copy(update={"result": result})
-    return ReviewResolutionResponse(
-        task_id=task_id,
-        review_id=review_id,
-        graph_version=result.graph_version,
-        result=result,
-    )
-
-
 @app.delete("/api/jobs/{task_id}")
 async def delete_job(
     task_id: str,
@@ -1506,7 +1578,7 @@ async def root(
         "name": "ZLB Mind Map Agent",
         "docs": None if settings.production else "/docs",
         "workspace": settings.workspace_name,
-        "architecture": "C+",
+        "architecture": EDITORIAL_PPT_ARCHITECTURE_NAME,
     }
 
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
+import mimetypes
 import os
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -44,6 +46,7 @@ from .editorial_ppt_prompts import (
     CONTENT_OMISSION_REVIEWER_PROMPT,
     EDITORIAL_PROMPT_SHA256,
     EDITORIAL_IMAGE_CONTEXT_PROMPT,
+    HUMAN_REFINEMENT_IMAGE_CONTEXT_PROMPT,
     GLOBAL_EDITOR_DRAFT_PROMPT,
     GLOBAL_EDITOR_PATCH_PROMPT,
     GLOBAL_EDITOR_PATCH_REPAIR_PROMPT,
@@ -158,6 +161,24 @@ _STRUCTURE_ACTIONS = {
     "rewrite_definition",
     "manual_review",
 }
+
+
+def _encode_guidance_images(
+    paths: Sequence[Path],
+) -> list[tuple[str, str]]:
+    encoded: list[tuple[str, str]] = []
+    for index, path in enumerate(paths, start=1):
+        if not path.is_file():
+            continue
+        mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
+        encoded.append(
+            (
+                f"refinement_image_{index:02d}",
+                f"data:{mime_type};base64,"
+                + base64.b64encode(path.read_bytes()).decode("ascii"),
+            )
+        )
+    return encoded
 
 
 class EditorialBrief(BaseModel):
@@ -1832,6 +1853,8 @@ async def run_editorial_ppt_pipeline(
     render: RenderFunction = render_document,
     user_instruction: str = "",
     previous_result: MindMapResult | None = None,
+    completed_graph_asset: dict[str, Any] | None = None,
+    guidance_image_paths: list[Path] | None = None,
 ) -> MindMapResult:
     all_paths = file_paths or ([file_path] if file_path is not None else [])
     if not all_paths:
@@ -1850,9 +1873,15 @@ async def run_editorial_ppt_pipeline(
     if not use_ai:
         raise ValueError("editorial 流水线必须启用 AI。")
 
+    guidance_context_result = (
+        None
+        if previous_result is not None and guidance_image_paths is not None
+        else previous_result
+    )
     human_guidance = build_human_guidance(
         user_instruction,
-        previous_result,
+        guidance_context_result,
+        completed_graph_asset,
     )
     configured_loop = (
         MindMapLoopConfig.model_validate(loop_config)
@@ -1988,6 +2017,13 @@ async def run_editorial_ppt_pipeline(
         "refinement_mode": (
             "human_direct_patch"
             if human_direct_refinement
+            else "initial_generation"
+        ),
+        "refinement_route": (
+            "guidance_only"
+            if human_direct_refinement
+            else "merge_graph"
+            if completed_graph_asset is not None
             else "initial_generation"
         ),
         "input_mode": input_mode,
@@ -2297,6 +2333,14 @@ async def run_editorial_ppt_pipeline(
         if rendered.pages and not human_direct_refinement
         else []
     )
+    guidance_images = (
+        await asyncio.to_thread(
+            _encode_guidance_images,
+            list(guidance_image_paths or []),
+        )
+        if human_direct_refinement
+        else []
+    )
     slide_count = len(rendered.pages) or len(prepared_image_files) or max(
         len(document.blocks),
         1,
@@ -2413,8 +2457,8 @@ async def run_editorial_ppt_pipeline(
     model_calls: list[str] = []
     warnings: list[str] = (
         [
-            "本轮定向修改复用了上一版导图、渲染资产和模型上下文；"
-            "未重新渲染原始文档。"
+            "本轮定向修改仅向主编提供了当前导图渲染图、用户文字和用户附带的指导图片；"
+            "未重新渲染或传递原始课件。"
         ]
         if human_direct_refinement
         else list(input_bundle.warnings)
@@ -2451,11 +2495,8 @@ async def run_editorial_ppt_pipeline(
         max_input_tokens * _CONTEXT_COMPACTION_TARGET
     )
     initial_estimate = (
-        max(
-            0,
-            int(previous_result.run_manifest.get("context_tokens") or 0),
-        )
-        if previous_result is not None
+        len(guidance_images) * 1200
+        if human_direct_refinement
         else (
             len(prepared_image_files) * 1200
             + max(2000, len(input_bundle.text_context) // 4)
@@ -2471,42 +2512,40 @@ async def run_editorial_ppt_pipeline(
         )
     )
     response_images: list[tuple[str, str]] = []
-    resumed_response_id = (
-        _prior_response_session(
+    resumed_response_id = None
+    # Keep the old direct-call contract for callers that do not provide the
+    # new rendered guidance context. Production guidance requests always pass
+    # guidance_image_paths (at least the current graph PNG), so they never
+    # resume the original course-material Responses session.
+    legacy_direct_refinement_session = (
+        human_direct_refinement and guidance_image_paths is None
+    )
+    if legacy_direct_refinement_session:
+        resumed_response_id = await asyncio.to_thread(
+            _prior_response_session,
             blackboard=blackboard,
             previous_result=previous_result,
-            model=effective_loop.rounds[0].editor_model,
+            model=vision_model,
         )
-        if previous_result is not None
-        else None
-    )
+        if resumed_response_id:
+            response_images = await asyncio.to_thread(
+                _prior_response_images,
+                blackboard=blackboard,
+                previous_result=previous_result,
+            )
     responses_active = bool(
         responses_requested
         and not source_precompression_required
         and (
             prepared_image_files
-            if not human_direct_refinement
-            else resumed_response_id
+            or legacy_direct_refinement_session
         )
         and getattr(runtime_client, "supports_responses", False)
         and getattr(runtime_client, "supports_temporary_uploads", False)
         and hasattr(runtime_client, "complete_response_json")
         and hasattr(runtime_client, "upload_temporary_files")
     )
-    if human_direct_refinement:
-        response_images = _prior_response_images(
-            blackboard=blackboard,
-            previous_result=previous_result,
-        )
-        if not resumed_response_id:
-            responses_active = bool(
-                responses_requested
-                and response_images
-                and getattr(runtime_client, "supports_responses", False)
-                and getattr(runtime_client, "supports_temporary_uploads", False)
-                and hasattr(runtime_client, "complete_response_json")
-            )
-    elif responses_active:
+    if responses_active:
         await progress("upload", 29, "正在上传一次性稳定幻灯片 URL")
         try:
             response_images = list(
@@ -2560,8 +2599,8 @@ async def run_editorial_ppt_pipeline(
         images = list(response_images)
         image_transport = "dashscope_temporary_oss"
     elif human_direct_refinement:
-        images = []
-        image_transport = "reused_model_context"
+        images = guidance_images
+        image_transport = "human_refinement_rendered_images"
     else:
         images = await get_encoded_images() if prepared_image_files else []
         image_transport = (
@@ -2572,17 +2611,22 @@ async def run_editorial_ppt_pipeline(
         if human_direct_refinement
         else input_bundle.text_context
     )
-    source_context_suffix = _source_context_suffix(
-        input_mode=input_mode,
-        text_context=model_text_context,
-    ) + (
-        "\n稳定文档清单："
-        + json.dumps(
-            document_manifest,
-            ensure_ascii=False,
-            separators=(",", ":"),
+    source_context_suffix = (
+        ""
+        if human_direct_refinement
+        else _source_context_suffix(
+            input_mode=input_mode,
+            text_context=model_text_context,
         )
-        + "\n"
+        + (
+            "\n稳定文档清单："
+            + json.dumps(
+                document_manifest,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
     )
     run_manifest.update(
         {
@@ -2609,10 +2653,9 @@ async def run_editorial_ppt_pipeline(
                 resumed_response_id
             ),
             "refinement_response_asset_fallback": bool(
-                human_direct_refinement
-                and not resumed_response_id
-                and response_images
+                human_direct_refinement and guidance_images
             ),
+            "guidance_image_count": len(guidance_images),
         }
     )
 
@@ -3412,7 +3455,9 @@ async def run_editorial_ppt_pipeline(
                 round_number=1,
                 system_prompt=(
                     EDITORIAL_IMAGE_CONTEXT_PROMPT
-                    if images or current_response_id is not None
+                    if legacy_direct_refinement_session
+                    else HUMAN_REFINEMENT_IMAGE_CONTEXT_PROMPT
+                    if images
                     else EDITORIAL_TEXT_CONTEXT_PROMPT
                 ),
                 user_prompt=_editorial_task_prompt(
