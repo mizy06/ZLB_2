@@ -286,11 +286,11 @@ function onDeleteWorkspace(ws: WorkspaceView): void {
             {{
               g.loadingMore
                 ? t('sidebar.loadingMore')
-                : t('sidebar.showMore', { count: Math.max(0, g.workspace.sessionCount - g.sessions.length) })
+                : t('sidebar.showMore')
             }}
           </button>
           <button
-            v-if="g.sessions.length > g.initialCount"
+            v-else-if="g.sessions.length > g.initialCount"
             type="button"
             class="mshow-more"
             @click.stop="toggleExpand(g.workspace.id)"

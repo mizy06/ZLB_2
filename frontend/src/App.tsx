@@ -96,6 +96,8 @@ const PRODUCT_DESCRIPTION = "Mindmap workspace";
 const stageLabels: Record<string, string> = {
   queued: "等待",
   starting: "启动",
+  context_preparing: "上下文准备",
+  agent_started: "Agent 启动",
   model_check: "模型角色",
   render: "幻灯片渲染",
   render_cache: "渲染缓存",
@@ -317,7 +319,10 @@ function App() {
       setStreamState((current) => mergeJobEvents(current, batch));
       const statusEvent = [...batch]
         .reverse()
-        .find((event) => event.kind === "status");
+        .find((event) =>
+          event.kind === "status"
+          || event.kind === "agent_started"
+          || event.kind === "context_preparing");
       if (statusEvent) {
         setJob((current) =>
           current?.id === taskId

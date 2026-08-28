@@ -1,6 +1,5 @@
 <!-- apps/kimi-web/src/components/ui/Spinner.vue -->
-<!-- Design-system §03 Spinner: the DEFAULT loader (SVG ring). Use everywhere
-     except the chat "waiting for Agent response" state, which uses MoonSpinner. -->
+<!-- Design-system §03 Spinner: the shared loading indicator (SVG ring). -->
 <script setup lang="ts">
 withDefaults(defineProps<{
   size?: 'sm' | 'md' | 'lg';

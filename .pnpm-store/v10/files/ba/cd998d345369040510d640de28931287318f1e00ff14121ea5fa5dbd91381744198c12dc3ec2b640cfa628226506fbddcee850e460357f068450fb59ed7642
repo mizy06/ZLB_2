@@ -1,0 +1,2 @@
+import { a as useMonaco, i as preloadStreamDiffs, n as detectLanguage, r as preloadMonacoWorkers, t as StreamDiffsRuntimeOptions } from "./markstream-j1Vn8FgF.mjs";
+export { StreamDiffsRuntimeOptions, detectLanguage, preloadMonacoWorkers, preloadStreamDiffs, useMonaco };

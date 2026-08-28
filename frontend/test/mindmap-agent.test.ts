@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MindmapAgentApi } from '../src/api/mindmapAgent';
+import { contextUsageFromSource, MindmapAgentApi } from '../src/api/mindmapAgent';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -194,6 +194,169 @@ describe('MindmapAgentApi human loop', () => {
       model: 'qwen3.8-max',
       swarmMode: false,
     });
+  });
+
+  it('normalizes live and manifest context usage for the composer ring', () => {
+    expect(contextUsageFromSource({
+      context_usage: 0.25,
+      max_context_tokens: 131072,
+    })).toEqual({
+      contextTokens: 250000,
+      contextLimit: 1000000,
+    });
+    expect(contextUsageFromSource({
+      manifest: {
+        context_tokens: 45000,
+        max_context_tokens: 131072,
+        context_usage: 45000 / 131072,
+      },
+    })).toEqual({
+      contextTokens: 45000,
+      contextLimit: 1000000,
+    });
+  });
+
+  it('reads persisted context usage from a job manifest in session status', async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/jobs/task_1') {
+        return json({
+          ...completedJob,
+          context_tokens: 45000,
+          max_context_tokens: 1000000,
+          context_usage: 45000 / 1000000,
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    const api = new MindmapAgentApi();
+    await expect(api.getSessionStatus('task_1')).resolves.toMatchObject({
+      contextTokens: 45000,
+      maxContextTokens: 1000000,
+      contextUsage: 45000 / 1000000,
+    });
+  });
+
+  it('does not restore backend progress percentages into active tool calls', async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/jobs/task_1') {
+        return json({
+          ...completedJob,
+          status: 'running',
+          stage: 'editorial_draft',
+          progress: 47,
+          message: '主编正在生成初稿',
+          result: null,
+        });
+      }
+      if (url === '/api/jobs/task_1/interactions') {
+        return json([{
+          id: 'interaction_1',
+          kind: 'initial',
+          instruction: '生成导图',
+          created_at: '2026-08-10T01:00:00+00:00',
+          base_graph_version: 0,
+          result_graph_version: null,
+          status: 'running',
+          error: null,
+        }]);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    const snapshot = await new MindmapAgentApi().getSessionSnapshot('task_1');
+    const toolUse = snapshot.messages.at(-1)?.content.find(
+      (part) => part.type === 'toolUse',
+    );
+
+    expect(toolUse).toMatchObject({
+      type: 'toolUse',
+      input: '主编正在生成初稿',
+    });
+    expect(JSON.stringify(toolUse)).not.toContain('47%');
+    expect(snapshot.inFlightTurn?.runningTools[0]?.lastProgress).toEqual({
+      kind: 'editorial_draft',
+      text: '主编正在生成初稿',
+    });
+  });
+
+  it('projects compaction as transcript activity instead of a tool call', async () => {
+    class TestEventSource {
+      static instances: TestEventSource[] = [];
+      onopen: (() => void) | null = null;
+      onmessage: ((message: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      constructor(readonly url: string) {
+        TestEventSource.instances.push(this);
+      }
+
+      close(): void {}
+
+      emit(event: Record<string, unknown>): void {
+        this.onmessage?.({ data: JSON.stringify(event) });
+      }
+    }
+
+    vi.stubGlobal('EventSource', TestEventSource);
+    const events: unknown[] = [];
+    const api = new MindmapAgentApi();
+    const connection = api.connectEvents({
+      onEvent: (event) => events.push(event),
+      onResync: () => {},
+      onError: () => {},
+      onConnectionChange: () => {},
+    });
+
+    connection.subscribe('task_1');
+    const source = TestEventSource.instances[0];
+    expect(source?.url).toBe('/api/jobs/task_1/events');
+
+    source?.emit({
+      id: 1,
+      task_id: 'task_1',
+      kind: 'compaction_started',
+      trigger: 'preflight_visual',
+      created_at: '2026-08-10T01:00:00+00:00',
+      stage: '',
+      message: '',
+      call_id: '',
+      role: '',
+      model: '',
+      delta: '',
+    });
+    source?.emit({
+      id: 2,
+      task_id: 'task_1',
+      kind: 'compaction',
+      tokensBefore: 120000,
+      tokensAfter: 39000,
+      summary: '保留了可追溯的视觉证据。',
+      created_at: '2026-08-10T01:00:01+00:00',
+      stage: '',
+      message: '',
+      call_id: '',
+      role: '',
+      model: '',
+      delta: '',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(events).toContainEqual({
+      type: 'compactionStarted',
+      sessionId: 'task_1',
+      trigger: 'auto',
+    });
+    expect(events).toContainEqual({
+      type: 'compactionCompleted',
+      sessionId: 'task_1',
+      tokensBefore: 120000,
+      tokensAfter: 39000,
+      summary: '保留了可追溯的视觉证据。',
+    });
+    expect(JSON.stringify(events)).not.toContain('"toolUse"');
   });
 
   it('stages uploads when randomUUID is unavailable on an insecure HTTP origin', async () => {

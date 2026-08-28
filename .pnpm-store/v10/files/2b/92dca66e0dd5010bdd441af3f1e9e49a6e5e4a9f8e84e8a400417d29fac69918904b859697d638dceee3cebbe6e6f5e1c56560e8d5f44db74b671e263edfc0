@@ -1,0 +1,22 @@
+type MermaidCDNWorkerMode = 'classic' | 'module';
+interface MermaidCDNWorkerOptions {
+    
+    mermaidUrl: string;
+    
+    mode?: MermaidCDNWorkerMode;
+    
+    debug?: boolean;
+    
+    workerOptions?: WorkerOptions;
+    
+    initializeOptions?: Record<string, any>;
+}
+interface MermaidCDNWorkerHandle {
+    worker: Worker | null;
+    dispose: () => void;
+    source: string;
+}
+declare function buildMermaidCDNWorkerSource(options: MermaidCDNWorkerOptions): string;
+declare function createMermaidWorkerFromCDN(options: MermaidCDNWorkerOptions): MermaidCDNWorkerHandle;
+
+export { MermaidCDNWorkerHandle, MermaidCDNWorkerMode, MermaidCDNWorkerOptions, buildMermaidCDNWorkerSource, createMermaidWorkerFromCDN };

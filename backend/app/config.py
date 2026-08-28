@@ -15,6 +15,10 @@ DEFAULT_QWEN_BASE_URL = (
 )
 DEFAULT_QWEN_MODEL = "qwen3.7-max"
 DEFAULT_QWEN_VISION_MODEL = "qwen3.7-plus"
+DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 131_072
+QWEN38_MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
+QWEN38_MAX_INPUT_TOKENS = 991_808
+QWEN38_MAX_INPUT_TOKENS_WITH_THINKING = 983_616
 DEFAULT_QWEN_IDENTITY_FILE = (
     PROJECT_ROOT / "runtime" / "secrets" / "qwen-age-identity.txt"
 )
@@ -68,9 +72,32 @@ QWEN_VISION_MODEL_PATTERNS = (
     re.compile(r"^qwen3-vl-"),
     re.compile(r"^qwen3\.6-35b(?:-|$)"),
 )
+QWEN38_MAX_MODEL_PATTERN = re.compile(r"^qwen3\.8-max(?:-|$)")
 ENV_LINE = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$"
 )
+
+
+def model_context_window_tokens(model: str) -> int:
+    """Return the published context window for models used by this app."""
+    if QWEN38_MAX_MODEL_PATTERN.match(model.strip().casefold()):
+        return QWEN38_MAX_CONTEXT_WINDOW_TOKENS
+    return DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
+
+
+def model_max_input_tokens(
+    model: str,
+    *,
+    thinking_enabled: bool,
+) -> int:
+    """Return the safe request-input limit for the selected model mode."""
+    if QWEN38_MAX_MODEL_PATTERN.match(model.strip().casefold()):
+        return (
+            QWEN38_MAX_INPUT_TOKENS_WITH_THINKING
+            if thinking_enabled
+            else QWEN38_MAX_INPUT_TOKENS
+        )
+    return model_context_window_tokens(model)
 
 
 def _parse_env_text(content: str) -> dict[str, str]:

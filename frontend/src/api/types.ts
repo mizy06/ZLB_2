@@ -52,6 +52,12 @@ export interface AppSessionUsage {
   turnCount: number;
 }
 
+export interface AppAccount {
+  id: string;
+  username: string;
+  createdAt: string;
+}
+
 export interface AppSession {
   id: string;
   title: string;
@@ -794,6 +800,9 @@ export interface KimiWebApi {
     defaultModel: string | null;
     managedProvider: { status: string } | null;
   }>;
+  registerAccount?(input: { username: string; password: string }): Promise<AppAccount>;
+  loginAccount?(input: { username: string; password: string }): Promise<AppAccount>;
+  getAccount?(): Promise<AppAccount>;
   startOAuthLogin(): Promise<OAuthLoginStartResult>;
   pollOAuthLogin(): Promise<{
     flowId: string;

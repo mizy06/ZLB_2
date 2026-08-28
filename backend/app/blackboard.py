@@ -331,6 +331,30 @@ class SQLiteBlackboard:
             if cursor.rowcount != 1:
                 raise KeyError(task_id)
 
+    def reassign_owner(self, old_owner_id: str, new_owner_id: str) -> int:
+        """Move legacy workbench records to the first registered account."""
+
+        if not new_owner_id or old_owner_id == new_owner_id:
+            return 0
+        with self._lock, self._connect() as connection:
+            jobs = connection.execute(
+                """
+                UPDATE jobs
+                SET owner_id = ?
+                WHERE owner_id = ?
+                """,
+                (new_owner_id, old_owner_id),
+            ).rowcount
+            runs = connection.execute(
+                """
+                UPDATE runs
+                SET owner_id = ?
+                WHERE owner_id = ?
+                """,
+                (new_owner_id, old_owner_id),
+            ).rowcount
+        return int(jobs or 0) + int(runs or 0)
+
     @staticmethod
     def _job_row(row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -1052,7 +1076,8 @@ class SQLiteBlackboard:
                 JOIN runs ON runs.run_id = graph_versions.run_id
                 WHERE runs.task_id = ?
                 {owner_clause}
-                ORDER BY graph_versions.version DESC
+                ORDER BY graph_versions.created_at DESC,
+                    graph_versions.version DESC
                 LIMIT 1
                 """,
                 values,

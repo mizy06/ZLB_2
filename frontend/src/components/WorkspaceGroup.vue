@@ -79,9 +79,6 @@ const visibleSessions = computed(() => {
 const canToggleExpand = computed(
   () => props.group.sessions.length > props.group.initialCount,
 );
-function showMoreCount(): number {
-  return Math.max(0, props.group.workspace.sessionCount - props.group.sessions.length);
-}
 function showAllCount(): number {
   return props.group.sessions.length - props.group.initialCount;
 }
@@ -193,11 +190,11 @@ function onHeaderDragStart(event: DragEvent): void {
       >
         <span class="show-more-lead" aria-hidden="true"></span>
         <span class="show-more-label">{{
-          group.loadingMore ? t('sidebar.loadingMore') : t('sidebar.showMore', { count: showMoreCount() })
+          group.loadingMore ? t('sidebar.loadingMore') : t('sidebar.showMore')
         }}</span>
       </button>
       <button
-        v-if="canToggleExpand"
+        v-else-if="canToggleExpand"
         class="show-more"
         @click.stop="emit('toggleExpand', group.workspace.id)"
       >

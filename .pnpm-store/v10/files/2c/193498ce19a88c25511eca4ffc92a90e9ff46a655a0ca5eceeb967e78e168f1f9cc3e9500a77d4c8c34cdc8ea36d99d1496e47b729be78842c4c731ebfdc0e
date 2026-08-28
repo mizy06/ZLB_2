@@ -1,0 +1,391 @@
+import * as monacoApi from "monaco-editor/esm/vs/editor/editor.api";
+import { Highlighter, SpecialTheme, ThemeInput } from "shiki";
+import * as monaco from "monaco-editor";
+
+//#region src/type.d.ts
+type ShikiHighlighter = Highlighter | any;
+type MonacoEditorInstance = monaco.editor.IStandaloneCodeEditor;
+type MonacoDiffEditorInstance = monaco.editor.IStandaloneDiffEditor;
+type MonacoTheme = 'andromeeda' | 'aurora-x' | 'ayu-dark' | 'catppuccin-frappe' | 'catppuccin-latte' | 'catppuccin-macchiato' | 'catppuccin-mocha' | 'dark-plus' | 'dracula' | 'dracula-soft' | 'everforest-dark' | 'everforest-light' | 'github-dark' | 'github-dark-default' | 'github-dark-dimmed' | 'github-dark-high-contrast' | 'github-light' | 'github-light-default' | 'github-light-high-contrast' | 'gruvbox-dark-hard' | 'gruvbox-dark-medium' | 'gruvbox-dark-soft' | 'gruvbox-light-hard' | 'gruvbox-light-medium' | 'gruvbox-light-soft' | 'houston' | 'kanagawa-dragon' | 'kanagawa-lotus' | 'kanagawa-wave' | 'laserwave' | 'light-plus' | 'material-theme' | 'material-theme-darker' | 'material-theme-lighter' | 'material-theme-ocean' | 'material-theme-palenight' | 'min-dark' | 'min-light' | 'monokai' | 'night-owl' | 'nord' | 'one-dark-pro' | 'one-light' | 'plastic' | 'poimandres' | 'red' | 'rose-pine' | 'rose-pine-dawn' | 'rose-pine-moon' | 'slack-dark' | 'slack-ochin' | 'snazzy-light' | 'solarized-dark' | 'solarized-light' | 'synthwave-84' | 'tokyo-night' | 'vesper' | 'vitesse-black' | 'vitesse-dark' | 'vitesse-light' | ThemeInput | string | SpecialTheme;
+type MonacoLanguage = 'abap' | 'actionscript-3' | 'ada' | 'angular-html' | 'angular-ts' | 'apache' | 'apex' | 'apl' | 'applescript' | 'ara' | 'asciidoc' | 'asm' | 'astro' | 'awk' | 'ballerina' | 'bat' | 'beancount' | 'berry' | 'bibtex' | 'bicep' | 'blade' | 'bsl' | 'c' | 'cadence' | 'cairo' | 'clarity' | 'clojure' | 'cmake' | 'cobol' | 'codeowners' | 'codeql' | 'coffee' | 'common-lisp' | 'coq' | 'cpp' | 'crystal' | 'csharp' | 'css' | 'csv' | 'cue' | 'cypher' | 'd' | 'dart' | 'dax' | 'desktop' | 'diff' | 'docker' | 'dotenv' | 'dream-maker' | 'edge' | 'elixir' | 'elm' | 'emacs-lisp' | 'erb' | 'erlang' | 'fennel' | 'fish' | 'fluent' | 'fortran-fixed-form' | 'fortran-free-form' | 'fsharp' | 'gdresource' | 'gdscript' | 'gdshader' | 'genie' | 'gherkin' | 'git-commit' | 'git-rebase' | 'gleam' | 'glimmer-js' | 'glimmer-ts' | 'glsl' | 'gnuplot' | 'go' | 'graphql' | 'groovy' | 'hack' | 'haml' | 'handlebars' | 'haskell' | 'haxe' | 'hcl' | 'hjson' | 'hlsl' | 'html' | 'html-derivative' | 'http' | 'hxml' | 'hy' | 'imba' | 'ini' | 'java' | 'javascript' | 'jinja' | 'jison' | 'json' | 'json5' | 'jsonc' | 'jsonl' | 'jsonnet' | 'jssm' | 'jsx' | 'julia' | 'kotlin' | 'kusto' | 'latex' | 'lean' | 'less' | 'liquid' | 'llvm' | 'log' | 'logo' | 'lua' | 'luau' | 'make' | 'markdown' | 'marko' | 'matlab' | 'mdc' | 'mdx' | 'mermaid' | 'mipsasm' | 'mojo' | 'move' | 'narrat' | 'nextflow' | 'nginx' | 'nim' | 'nix' | 'nushell' | 'objective-c' | 'objective-cpp' | 'ocaml' | 'pascal' | 'perl' | 'php' | 'plsql' | 'po' | 'polar' | 'postcss' | 'powerquery' | 'powershell' | 'prisma' | 'prolog' | 'proto' | 'pug' | 'puppet' | 'purescript' | 'python' | 'qml' | 'qmldir' | 'qss' | 'r' | 'racket' | 'raku' | 'razor' | 'reg' | 'regexp' | 'rel' | 'riscv' | 'rst' | 'ruby' | 'rust' | 'sas' | 'sass' | 'scala' | 'scheme' | 'scss' | 'sdbl' | 'shaderlab' | 'shellscript' | 'shellsession' | 'smalltalk' | 'solidity' | 'soy' | 'sparql' | 'splunk' | 'sql' | 'ssh-config' | 'stata' | 'stylus' | 'svelte' | 'swift' | 'system-verilog' | 'systemd' | 'talonscript' | 'tasl' | 'tcl' | 'templ' | 'terraform' | 'tex' | 'toml' | 'ts-tags' | 'tsv' | 'tsx' | 'turtle' | 'twig' | 'typescript' | 'typespec' | 'typst' | 'v' | 'vala' | 'vb' | 'verilog' | 'vhdl' | 'viml' | 'vue' | 'vue-html' | 'vyper' | 'wasm' | 'wenyan' | 'wgsl' | 'wikitext' | 'wit' | 'wolfram' | 'xml' | 'xsl' | 'yaml' | 'zenscript' | 'zig' | string;
+type DiffHideUnchangedRegions = boolean | NonNullable<monaco.editor.IDiffEditorConstructionOptions['hideUnchangedRegions']>;
+type DiffLineStyle = 'background' | 'bar';
+type DiffAppearance = 'auto' | 'light' | 'dark';
+type DiffUnchangedRegionStyle = 'line-info' | 'line-info-basic' | 'metadata' | 'simple';
+interface DiffModels {
+  original: monaco.editor.ITextModel | null;
+  modified: monaco.editor.ITextModel | null;
+}
+interface DiffModelPair {
+  original: monaco.editor.ITextModel;
+  modified: monaco.editor.ITextModel;
+}
+interface DiffModelTransitionOptions {
+  codeLanguage?: MonacoLanguage;
+  preserveViewState?: boolean;
+  preserveModelState?: boolean;
+}
+interface DiffCodeValue {
+  original: string;
+  modified: string;
+}
+type MonacoCodeValue = string | DiffCodeValue | null;
+interface MonacoOptions extends monaco.editor.IStandaloneEditorConstructionOptions, monaco.editor.IDiffEditorConstructionOptions {
+  MAX_HEIGHT?: number | string;
+  readOnly?: boolean;
+  themes?: MonacoTheme[];
+  languages?: MonacoLanguage[];
+  theme?: string;
+  isCleanOnBeforeCreate?: boolean;
+  /**
+   * 控制更新时的自动滚动行为：当为 true 时，如果当前接近底部则在新增内容后自动滚动到底部；
+   * 当为 false 时，将完全禁用自动滚动。
+   * 默认 true。
+   */
+  autoScrollOnUpdate?: boolean;
+  /**
+   * 编辑器创建时是否默认启用自动滚动。用户一旦滚离底部将自动暂停，回到底部附近再恢复。
+   * 默认 true（保持原有行为）。
+   */
+  autoScrollInitial?: boolean;
+  /**
+   * 触发“接近底部”的绝对像素阈值。如果设置，将与 autoScrollThresholdLines 共同取最大值。
+   * 默认 32。
+   */
+  autoScrollThresholdPx?: number;
+  /**
+   * 触发“接近底部”的相对行数阈值（以当前行高计算）。如果设置，将与 autoScrollThresholdPx 共同取最大值。
+   * 默认 2 行。
+   */
+  autoScrollThresholdLines?: number;
+  /**
+   * 是否启用 Diff 编辑器 modified 侧的自动滚动逻辑。
+   * 当为 false 时，updateDiff/appendModified 等不会触发自动滚动。
+   * 默认 true（与单编辑器体验保持一致）。
+   */
+  diffAutoScroll?: boolean;
+  /**
+   * Controls Monaco's diff unchanged-region folding behavior.
+   * - `true`: use stream-monaco defaults (enabled with compact context lines)
+   * - `false`: disable unchanged-region folding
+   * - object: forward to Monaco `hideUnchangedRegions`
+   *
+   * Default: `true`
+   */
+  diffHideUnchangedRegions?: DiffHideUnchangedRegions;
+  /**
+   * Controls how changed lines are visually emphasized in the diff editor.
+   * - `background`: richer filled blocks for added/removed lines
+   * - `bar`: subtler fill with stronger leading bars, closer to review UIs
+   *
+   * Default: `background`
+   */
+  diffLineStyle?: DiffLineStyle;
+  /**
+   * Controls the overall chrome appearance of the diff editor shell.
+   * - `auto`: infer light/dark appearance from the active Monaco theme
+   * - `light`: force light diff chrome
+   * - `dark`: force dark diff chrome
+   *
+   * Token colors still follow the active Monaco/Shiki theme.
+   *
+   * Default: `auto`
+   */
+  diffAppearance?: DiffAppearance;
+  /**
+   * Controls how collapsed unchanged regions are rendered in the diff editor.
+   * - `line-info`: line-info bars with line-number-width reveal buttons
+   * - `line-info-basic`: legacy line-info bars with full-width reveal rail
+   * - `metadata`: unified-diff-style hunk metadata such as `@@ -59,9 +59,11 @@`
+   * - `simple`: minimal gray placeholder bar without text
+   *
+   * Default: `line-info`
+   */
+  diffUnchangedRegionStyle?: DiffUnchangedRegionStyle;
+  /**
+   * Enable hover actions for each diff hunk split part (upper/lower):
+   * local `revert` and `stage`.
+   * Default: `false` (must be explicitly enabled).
+   */
+  diffHunkActionsOnHover?: boolean;
+  /**
+   * Hide delay (ms) for diff hunk hover action widgets after mouse leaves.
+   * Default: `160`.
+   */
+  diffHunkHoverHideDelayMs?: number;
+  /**
+   * Optional interception callback for hunk hover actions.
+   * Return `false` to prevent the built-in model edit behavior.
+   */
+  onDiffHunkAction?: (context: DiffHunkActionContext) => void | boolean | Promise<void | boolean>;
+  /**
+   * Debounce time (ms) to coalesce multiple reveal requests into a single
+   * reveal. Useful for streaming/append scenarios. Default: 75
+   */
+  revealDebounceMs?: number;
+  /**
+   * How to reveal target line when auto-scrolling.
+   * - 'bottom' : revealLine (closest to bottom)
+   * - 'centerIfOutside' : revealLineInCenterIfOutsideViewport (default)
+   * - 'center' : revealLineInCenter
+   */
+  revealStrategy?: 'bottom' | 'centerIfOutside' | 'center';
+  /**
+   * If set to a positive number (ms), append/streaming scenarios will delay a final
+   * "scroll to bottom" until this idle time has passed since the last append. Useful
+   * to batch many small appends and then perform one final jump to bottom. Default: undefined (disabled).
+   */
+  revealBatchOnIdleMs?: number;
+  /**
+   * Time window (ms) used to throttle `updateCode` calls in addition to RAF batching.
+   * - 0 means only RAF-based coalescing (no extra time throttling).
+   * - Default (library): 50
+   */
+  updateThrottleMs?: number;
+  /**
+   * Smooth host container height changes while streaming content.
+   * Default: false
+   */
+  smoothHeightTransition?: boolean;
+  /**
+   * Height transition duration in milliseconds when smoothHeightTransition is enabled.
+   * Default: 120
+   */
+  heightTransitionMs?: number;
+  /**
+   * Height transition easing when smoothHeightTransition is enabled.
+   * Default: cubic-bezier(0.4, 0, 0.2, 1)
+   */
+  heightTransitionEasing?: string;
+  /**
+   * Debounce time (ms) to coalesce host height updates.
+   * Default: 0, or 16 when smoothHeightTransition is enabled
+   */
+  heightUpdateDebounceMs?: number;
+  /**
+   * Height delta tolerance in pixels before applying a new host height.
+   * Default: 12, or 1 when smoothHeightTransition is enabled
+   */
+  heightChangeTolerancePx?: number;
+  /**
+   * Time window (ms) used to throttle diff streaming updates in addition to RAF batching.
+   * This affects `appendOriginal`/`appendModified` and the fast-path append branches of `updateDiff`.
+   *
+   * Why: Monaco's diff computation is async and cancels/restarts when models change.
+   * If you apply edits every frame (or per token), the diff may only finish once
+   * streaming stops, so the highlights appear "at the end".
+   *
+   * - 0 means only RAF-based coalescing (more responsive, but can starve diff computation).
+   * - Default (library): 50
+   */
+  diffUpdateThrottleMs?: number;
+  /**
+   * When attempting the "minimal edit" algorithm, if prev.length + next.length
+   * exceeds this number the library will fall back to full `setValue` to avoid
+   * expensive diff computation on very large documents.
+   */
+  minimalEditMaxChars?: number;
+  /**
+   * When the relative change ratio (|new-prev|/maxLen) exceeds this value the
+   * library will fall back to full `setValue` instead of attempting minimal edit.
+   */
+  minimalEditMaxChangeRatio?: number;
+  onBeforeCreate?: (monaco: typeof monacoApi) => monaco.IDisposable[];
+  /**
+   * Optional callback that is invoked after a theme change has been applied.
+   * This callback will be awaited when possible so callers can track completion
+   * of theme application. It receives the name of the applied theme.
+   */
+  onThemeChange?: (theme: MonacoTheme) => void | Promise<void>;
+}
+declare enum RevealStrategy {
+  Bottom = "bottom",
+  CenterIfOutside = "centerIfOutside",
+  Center = "center",
+}
+type DiffHunkActionKind = 'revert' | 'stage';
+type DiffHunkSide = 'upper' | 'lower';
+interface DiffHunkActionContext {
+  action: DiffHunkActionKind;
+  side: DiffHunkSide;
+  lineChange: monaco.editor.ILineChange;
+  originalModel: monaco.editor.ITextModel;
+  modifiedModel: monaco.editor.ITextModel;
+}
+interface UseMonacoReturn {
+  createEditor: (container: HTMLElement, code: string, language: string) => Promise<monaco.editor.IStandaloneCodeEditor>;
+  createDiffEditor: (container: HTMLElement, originalCode: string, modifiedCode: string, language: string) => Promise<monaco.editor.IStandaloneDiffEditor>;
+  cleanupEditor: () => void;
+  safeClean: () => void;
+  updateCode: (newCode: string, codeLanguage: string) => void;
+  appendCode: (appendText: string, codeLanguage?: string) => void;
+  updateDiff: (originalCode: string, modifiedCode: string, codeLanguage?: string) => void;
+  updateOriginal: (newCode: string, codeLanguage?: string) => void;
+  updateModified: (newCode: string, codeLanguage?: string) => void;
+  appendOriginal: (appendText: string, codeLanguage?: string) => void;
+  appendModified: (appendText: string, codeLanguage?: string) => void;
+  setDiffModels: (models: DiffModelPair, options?: DiffModelTransitionOptions) => Promise<void>;
+  setTheme: (theme: MonacoTheme, force?: boolean) => Promise<void>;
+  refreshDiffPresentation: () => void;
+  setLanguage: (language: MonacoLanguage) => void;
+  getCurrentTheme: () => string;
+  getEditor: () => typeof monaco.editor;
+  getEditorView: () => monaco.editor.IStandaloneCodeEditor | null;
+  getDiffEditorView: () => monaco.editor.IStandaloneDiffEditor | null;
+  getDiffModels: () => DiffModels;
+  getMonacoInstance: () => typeof monacoApi;
+  setUpdateThrottleMs: (ms: number) => void;
+  getUpdateThrottleMs: () => number;
+  getCode: () => MonacoCodeValue;
+}
+//#endregion
+//#region src/code.detect.d.ts
+/**
+ * @module detect
+ * (Language detector)
+ */
+/**
+ * Supported language identifiers
+ */
+type CodeLanguage = 'bash' | 'html' | 'http' | 'js' | 'ts' | 'py' | 'sql' | 'pl' | 'lua' | 'make' | 'uri' | 'css' | 'diff' | 'md' | 'docker' | 'xml' | 'c' | 'rs' | 'go' | 'java' | 'asm' | 'json' | 'yaml' | 'toml' | 'mermaid' | 'plain';
+/**
+ * Language detection feature with pattern and score
+ */
+type LanguageFeature = [RegExp, number];
+/**
+ * Language definition with identifier and detection features
+ */
+type LanguageDefinition = [CodeLanguage, ...LanguageFeature[]];
+/**
+ * Language detection definitions
+ */
+
+/**
+ * Try to find the language the given code belongs to
+ *
+ * @param {string} code The code to analyze
+ * @param {LanguageDefinition[]} [additionalLanguages] Additional language definitions to supplement the built-in ones
+ * @returns {CodeLanguage} The detected language of the code
+ */
+declare function detectLanguage(code: string, additionalLanguages?: LanguageDefinition[]): CodeLanguage;
+//#endregion
+//#region src/constant.d.ts
+declare const defaultRevealDebounceMs = 75;
+//#endregion
+//#region src/utils/registerMonacoThemes.d.ts
+/**
+ * Clear all cached shiki highlighters.
+ *
+ * Useful for long-running apps that dynamically create many theme combinations,
+ * or in tests to ensure a clean state. Call this when you know the highlighters
+ * are no longer needed (for example on app shutdown) to free memory.
+ */
+declare function clearHighlighterCache(): void;
+/**
+ * Return number of entries currently in the highlighter cache.
+ * Helpful for tests and debugging.
+ */
+
+declare function getOrCreateHighlighter(themes: (ThemeInput | string | SpecialTheme)[], languages: string[]): Promise<ShikiHighlighter>;
+/**
+ * Update the theme used by the shiki highlighter for a given themes+languages
+ * combination. Useful when Monaco themes are already registered (so switching
+ * Monaco only requires `monaco.editor.setTheme`) but you also want shiki's
+ * standalone renderer to use the new theme without recreating everything.
+ */
+declare function registerMonacoThemes(themes: (ThemeInput | string | SpecialTheme)[], languages: string[], preferredThemeName?: string): Promise<ShikiHighlighter | null>;
+//#endregion
+//#region src/index.base.d.ts
+/**
+ * useMonaco 组合式函数
+ *
+ * 提供 Monaco 编辑器的创建、销毁、内容/主题/语言更新等能力。
+ * 支持主题自动切换、语言高亮、代码更新等功能。
+ *
+ * @param {MonacoOptions} [monacoOptions] - 编辑器初始化配置，支持 Monaco 原生配置及扩展项
+ * @param {number | string} [monacoOptions.MAX_HEIGHT] - 编辑器最大高度，可以是数字（像素）或 CSS 字符串（如 '100%', 'calc(100vh - 100px)'）
+ * @param {boolean} [monacoOptions.readOnly] - 是否为只读模式
+ * @param {MonacoTheme[]} [monacoOptions.themes] - 主题数组，至少包含两个主题：[暗色主题, 亮色主题]
+ * @param {MonacoLanguage[]} [monacoOptions.languages] - 支持的编程语言数组
+ * @param {string} [monacoOptions.theme] - 初始主题名称
+ * @param {boolean} [monacoOptions.isCleanOnBeforeCreate] - 是否在创建前清理之前注册的资源, 默认为 true
+ * @param {(monaco: typeof import('monaco-editor/esm/vs/editor/editor.api')) => monaco.IDisposable[]} [monacoOptions.onBeforeCreate] - 编辑器创建前的钩子函数
+ *
+ * @returns {{
+ *   createEditor: (container: HTMLElement, code: string, language: string) => Promise<monaco.editor.IStandaloneCodeEditor>,
+ *   createDiffEditor: (
+ *     container: HTMLElement,
+ *     originalCode: string,
+ *     modifiedCode: string,
+ *     language: string,
+ *   ) => Promise<monaco.editor.IStandaloneDiffEditor>,
+ *   cleanupEditor: () => void,
+ *   updateCode: (newCode: string, codeLanguage: string) => void,
+ *   appendCode: (appendText: string, codeLanguage?: string) => void,
+ *   updateDiff: (
+ *     originalCode: string,
+ *     modifiedCode: string,
+ *     codeLanguage?: string,
+ *   ) => void,
+ *   updateOriginal: (newCode: string, codeLanguage?: string) => void,
+ *   updateModified: (newCode: string, codeLanguage?: string) => void,
+ *   appendOriginal: (appendText: string, codeLanguage?: string) => void,
+ *   appendModified: (appendText: string, codeLanguage?: string) => void,
+ *   setDiffModels: (models: DiffModelPair, options?: DiffModelTransitionOptions) => Promise<void>,
+ *   setTheme: (theme: MonacoTheme) => Promise<void>,
+ *   refreshDiffPresentation: () => void,
+ *   setLanguage: (language: MonacoLanguage) => void,
+ *   getCurrentTheme: () => string,
+ *   getEditor: () => typeof monaco.editor,
+ *   getEditorView: () => monaco.editor.IStandaloneCodeEditor | null,
+ *   getDiffEditorView: () => monaco.editor.IStandaloneDiffEditor | null,
+ *   getDiffModels: () => { original: monaco.editor.ITextModel | null, modified: monaco.editor.ITextModel | null },
+ *   getCode: () => string | { original: string, modified: string } | null,
+ * }} 返回对象包含以下方法和属性：
+ *
+ * @property {Function} createEditor - 创建并挂载 Monaco 编辑器到指定容器
+ * @property {Function} cleanupEditor - 销毁编辑器并清理容器
+ * @property {Function} updateCode - 更新编辑器内容和语言，必要时滚动到底部
+ * @property {Function} appendCode - 在编辑器末尾追加文本，必要时滚动到底部
+ * @property {Function} createDiffEditor - 创建并挂载 Diff 编辑器
+ * @property {Function} updateDiff - 更新 Diff 编辑器的 original/modified 内容（RAF 合并、增量更新）
+ * @property {Function} updateOriginal - 仅更新 Diff 的 original 内容（增量更新）
+ * @property {Function} updateModified - 仅更新 Diff 的 modified 内容（增量更新）
+ * @property {Function} appendOriginal - 在 Diff 的 original 末尾追加（显式流式场景）
+ * @property {Function} appendModified - 在 Diff 的 modified 末尾追加（显式流式场景）
+ * @property {Function} setDiffModels - 切换为一对新的 Diff models；当内容未变化时自动走保留视图状态的无抖动路径
+ * @property {Function} setTheme - 切换编辑器主题，返回 Promise，在主题应用完成时 resolve
+ * @property {Function} refreshDiffPresentation - 在不 remount 的情况下，重算 diff chrome / unchanged overlay 的表现层
+ * @property {Function} setLanguage - 切换编辑器语言
+ * @property {Function} getCurrentTheme - 获取当前主题名称
+ * @property {Function} getEditor - 获取 Monaco 的静态 editor 对象（用于静态方法调用）
+ * @property {Function} getEditorView - 获取当前编辑器实例
+ * @property {Function} getDiffEditorView - 获取当前 Diff 编辑器实例
+ * @property {Function} getDiffModels - 获取 Diff 的 original/modified 两个模型
+ * @property {Function} getCode - 获取当前编辑器或 Diff 编辑器中的代码内容
+ *
+ * @throws {Error} 当主题数组不是数组或长度小于2时抛出错误
+ *
+ * @example
+ * ```typescript
+ * import { useMonaco } from 'stream-monaco'
+ *
+ * const { createEditor, updateCode, setTheme } = useMonaco({
+ *   themes: ['vitesse-dark', 'vitesse-light'],
+ *   languages: ['javascript', 'typescript'],
+ *   readOnly: false
+ * })
+ *
+ * // 创建编辑器
+ * const editor = await createEditor(containerRef.value, 'console.log("hello")', 'javascript')
+ *
+ * // 更新代码
+ * updateCode('console.log("world")', 'javascript')
+ *
+ * // 切换主题
+ * setTheme('vitesse-light')
+ * ```
+ */
+declare function useMonaco(monacoOptions?: MonacoOptions): UseMonacoReturn;
+//#endregion
+export { DiffAppearance, DiffCodeValue, DiffHideUnchangedRegions, DiffHunkActionContext, DiffHunkActionKind, DiffHunkSide, DiffLineStyle, DiffModelPair, DiffModelTransitionOptions, DiffModels, DiffUnchangedRegionStyle, MonacoCodeValue, MonacoDiffEditorInstance, MonacoEditorInstance, MonacoLanguage, MonacoOptions, MonacoTheme, RevealStrategy, ShikiHighlighter, UseMonacoReturn, clearHighlighterCache, defaultRevealDebounceMs, detectLanguage, getOrCreateHighlighter, registerMonacoThemes, useMonaco };

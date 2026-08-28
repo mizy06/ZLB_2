@@ -20,12 +20,14 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Request,
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from .architecture_schemas import (
     HistoryItem,
     JobInteractionView,
@@ -39,13 +41,21 @@ from .architecture_schemas import (
     default_mindmap_loop,
 )
 from .auth import (
+    AccountAlreadyExistsError,
+    AccountInputError,
+    InvalidCredentialsError,
     Principal,
+    account_store,
+    clear_session_cookie,
     require_api_principal,
+    session_token_from_request,
+    set_session_cookie,
 )
 from .blackboard import SQLiteBlackboard
 from .cplus_pipeline import run_cplus_pipeline
 from .config import (
     PROJECT_ROOT,
+    model_context_window_tokens,
     settings,
     validate_production_qwen_configuration,
 )
@@ -137,9 +147,18 @@ job_control_lock = asyncio.Lock()
 
 
 def _owner_scope(principal: Principal) -> str | None:
-    # Existing pre-auth local graph versions have an empty owner. Production
-    # always supplies a concrete owner and therefore remains fail-closed.
-    return None if principal.id == "local-development" else principal.id
+    return principal.id
+
+
+class AccountCredentials(BaseModel):
+    username: str
+    password: str
+
+
+class AccountResponse(BaseModel):
+    id: str
+    username: str
+    created_at: str
 
 
 def _copy_upload_limited(
@@ -394,6 +413,20 @@ async def _execute_job(
         progress=4,
         message="任务已启动",
     )
+    await job_events.publish(
+        task_id,
+        "agent_started",
+        stage="starting",
+        progress=4,
+        message="Agent 已启动，正在准备输入",
+    )
+    await job_events.publish(
+        task_id,
+        "context_preparing",
+        stage="context_preparing",
+        progress=6,
+        message="正在分类文档、准备文本上下文和视觉页面",
+    )
 
     async def update(stage: str, progress: int, message: str) -> None:
         _set_job(
@@ -555,6 +588,12 @@ async def _execute_job(
 
 def _pipeline_family(path_or_paths: Path | list[Path]) -> str:
     paths = path_or_paths if isinstance(path_or_paths, list) else [path_or_paths]
+    if (
+        paths
+        and editorial_ppt_enabled()
+        and all(path.suffix.lower() in SUPPORTED_TYPES for path in paths)
+    ):
+        return "editorial"
     if paths and all(p.suffix.lower() == ".pptx" for p in paths):
         if editorial_ppt_enabled():
             return "editorial"
@@ -598,7 +637,21 @@ def _job_view_from_record(
 ) -> JobView:
     manifest = record.get("manifest") or {}
     ctx_tokens = manifest.get("context_tokens", record.get("context_tokens", 0))
-    max_ctx = manifest.get("max_context_tokens", record.get("max_context_tokens", 131072))
+    configured_ctx = model_context_window_tokens(
+        str(record.get("model") or "")
+    )
+    stored_ctx = manifest.get(
+        "max_context_tokens",
+        record.get("max_context_tokens", configured_ctx),
+    )
+    # Jobs created before the Qwen 3.8 capacity fix persisted its former
+    # 131K output cap as a context limit. Preserve their token count but
+    # expose the model's real context window to the client.
+    max_ctx = (
+        configured_ctx
+        if configured_ctx > 131_072 and stored_ctx == 131_072
+        else stored_ctx
+    )
     ctx_usage = manifest.get("context_usage", (ctx_tokens / max_ctx if max_ctx > 0 else 0.0))
     return JobView(
         id=record["task_id"],
@@ -715,6 +768,65 @@ async def shutdown_runtime() -> None:
     await OpenAICompatibleClient.close_shared_clients()
 
 
+@app.post("/api/auth/register", response_model=AccountResponse)
+async def register_account(
+    credentials: AccountCredentials,
+    request: Request,
+    response: Response,
+):
+    try:
+        account, token = account_store(settings).register(
+            credentials.username,
+            credentials.password,
+        )
+    except AccountAlreadyExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AccountInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Jobs created before account auth used the temporary public owner (or an
+    # empty owner in older local versions). Give those records to the first
+    # account without changing the existing graph/run schema.
+    blackboard.reassign_owner(settings.workbench_owner_id, account.id)
+    blackboard.reassign_owner("", account.id)
+    set_session_cookie(response, request, token)
+    return AccountResponse(**account.as_dict())
+
+
+@app.post("/api/auth/login", response_model=AccountResponse)
+async def login_account(
+    credentials: AccountCredentials,
+    request: Request,
+    response: Response,
+):
+    try:
+        account, token = account_store(settings).login(
+            credentials.username,
+            credentials.password,
+        )
+    except (AccountInputError, InvalidCredentialsError) as exc:
+        raise HTTPException(status_code=401, detail="用户名或密码错误。") from exc
+    set_session_cookie(response, request, token)
+    return AccountResponse(**account.as_dict())
+
+
+@app.post("/api/auth/logout")
+async def logout_account(request: Request, response: Response):
+    account_store(settings).logout(session_token_from_request(request))
+    clear_session_cookie(response)
+    return {"loggedOut": True}
+
+
+@app.get("/api/auth/me", response_model=AccountResponse)
+async def current_account(
+    principal: Principal = Depends(require_api_principal),
+):
+    account = account_store(settings).account_for_principal(principal)
+    if account is None:
+        raise HTTPException(status_code=401, detail="请先登录。")
+    return AccountResponse(**account.as_dict())
+
+
 @app.get("/api/health")
 async def health():
     editorial = editorial_ppt_enabled()
@@ -727,8 +839,8 @@ async def health():
             "key_configured": settings.key_configured,
         },
         "environment": settings.environment,
-        "auth_required": False,
-        "auth_configured": False,
+        "auth_required": True,
+        "auth_configured": True,
         "default_model": settings.qwen_model,
         "providers": {
             "qwen": {
@@ -934,6 +1046,7 @@ async def create_job(
     display_filename = " & ".join(saved_filenames[:2]) + (f" 等{len(saved_filenames)}份文档" if len(saved_filenames) > 2 else "")
     total_size = sum(saved_sizes)
     combined_sha256 = hashlib.sha256("::".join(saved_digests).encode()).hexdigest()
+    context_limit = model_context_window_tokens(primary_model)
 
     job = JobView(
         id=task_id,
@@ -944,7 +1057,7 @@ async def create_job(
         mode=mode,
         loop_config=configured_loop,
         context_tokens=0,
-        max_context_tokens=131072,
+        max_context_tokens=context_limit,
         context_usage=0.0,
     )
     manifest = _run_manifest(
@@ -967,7 +1080,7 @@ async def create_job(
             "filenames": saved_filenames,
             "multi_document": len(saved_paths) > 1,
             "context_tokens": 0,
-            "max_context_tokens": 131072,
+            "max_context_tokens": context_limit,
             "context_usage": 0.0,
         }
     )
@@ -995,7 +1108,7 @@ async def create_job(
         progress=0,
         message="文件已接收，等待处理",
         context_tokens=0,
-        max_context_tokens=131072,
+        max_context_tokens=context_limit,
         context_usage=0.0,
     )
     record = blackboard.load_job(task_id, owner_id=principal.id)

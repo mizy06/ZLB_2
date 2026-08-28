@@ -43,6 +43,7 @@ from .architecture_schemas import (
     ReviewItemView,
     RunMode,
 )
+from .config import model_context_window_tokens
 from .blackboard import SQLiteBlackboard, utc_now
 from .chunking import chunk_document
 from .config import settings
@@ -1498,10 +1499,11 @@ async def run_cplus_pipeline(
         manifest = blackboard.load_run_manifest(task_id) or {}
         ctx = manifest.get("context_tokens", 0)
         if ctx == 0:
+            context_limit = model_context_window_tokens(model)
             manifest.update({
                 "context_tokens": 4096,
-                "max_context_tokens": 131072,
-                "context_usage": round(4096 / 131072, 4),
+                "max_context_tokens": context_limit,
+                "context_usage": round(4096 / context_limit, 4),
             })
             try:
                 blackboard.update_job_manifest(task_id, manifest)

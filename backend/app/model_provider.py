@@ -500,7 +500,6 @@ class OpenAICompatibleClient:
                         "以上是按 vision_id 顺序排列的原始幻灯片，"
                         "后续动态审稿请求均以这组图片为准。"
                     ),
-                    "cache_control": {"type": "ephemeral"},
                 }
             )
             messages.extend(
@@ -537,6 +536,7 @@ class OpenAICompatibleClient:
         session_cache: bool = False,
         max_attempts: int | None = None,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
         timeout_seconds: float | None = None,
         accept_complete_json_on_length: bool = False,
         stream_callback: ModelStreamCallback | None = None,
@@ -615,6 +615,16 @@ class OpenAICompatibleClient:
             payload["previous_response_id"] = previous_response_id
         if reasoning_effort is not None:
             payload["reasoning"] = {"effort": reasoning_effort}
+        if max_output_tokens is not None:
+            parsed_max_output_tokens = int(max_output_tokens)
+            if (
+                parsed_max_output_tokens < 16
+                or parsed_max_output_tokens != max_output_tokens
+            ):
+                raise ValueError(
+                    "max_output_tokens must be an integer of at least 16"
+                )
+            payload["max_output_tokens"] = parsed_max_output_tokens
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -751,7 +761,11 @@ class OpenAICompatibleClient:
                 raise ValueError(
                     "thinking_budget must be a non-negative integer"
                 )
-            payload["thinking_budget"] = parsed_thinking_budget
+            if not (
+                self.provider_name.casefold() == "qwen"
+                and parsed_thinking_budget == 0
+            ):
+                payload["thinking_budget"] = parsed_thinking_budget
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         if enable_search:
@@ -1526,6 +1540,9 @@ class OpenAICompatibleClient:
         }
         if reasoning_effort in RESPONSE_REASONING_EFFORTS:
             request_policy["reasoning_effort"] = reasoning_effort
+        max_output_tokens = payload.get("max_output_tokens")
+        if self._is_finite_number(max_output_tokens):
+            request_policy["max_output_tokens"] = max_output_tokens
         return {"request_policy": request_policy}
 
     @classmethod

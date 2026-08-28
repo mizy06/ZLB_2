@@ -1,0 +1,4 @@
+import type { StockFastDiagnostics } from './strategy_diagnostics.js';
+import { Token } from '../common/token.js';
+export declare function parseStockFastAstJson(src: string): string | null;
+export declare function parseStockFast(src: string, diagnostics?: StockFastDiagnostics): Token[] | null;

@@ -1,0 +1,18 @@
+type Theme = 'light' | 'dark';
+declare function setMermaidWorkerClientDebug(enabled: boolean): void;
+declare function setMermaidWorkerMaxConcurrency(n: number): void;
+declare function getMermaidWorkerLoad(): {
+    inFlight: number;
+    max: number;
+};
+declare const MERMAID_WORKER_BUSY_CODE = "WORKER_BUSY";
+declare const MERMAID_DISABLED_CODE = "MERMAID_DISABLED";
+
+declare function setMermaidWorker(w: Worker): void;
+
+declare function clearMermaidWorker(): void;
+declare function canParseOffthread(code: string, theme: Theme, timeout?: number, signal?: AbortSignal): Promise<boolean>;
+declare function findPrefixOffthread(code: string, theme: Theme, timeout?: number, signal?: AbortSignal): Promise<string>;
+declare function terminateWorker(): void;
+
+export { MERMAID_DISABLED_CODE, MERMAID_WORKER_BUSY_CODE, canParseOffthread, clearMermaidWorker, findPrefixOffthread, getMermaidWorkerLoad, setMermaidWorker, setMermaidWorkerClientDebug, setMermaidWorkerMaxConcurrency, terminateWorker };

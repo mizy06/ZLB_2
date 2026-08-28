@@ -1,0 +1,37 @@
+import { RevealStrategy, clearHighlighterCache, defaultRevealDebounceMs, detectLanguage, editorWorkerPath, getOrCreateHighlighter, registerMonacoThemes, uniqueWorkerPaths, useMonaco, workerPathByLabel } from "./preloadMonacoWorkers.shared-C4yqmuza.js";
+
+//#region src/ensureMonacoWorkers.ts
+function ensureMonacoWorkers() {
+	if (typeof window === "undefined" || typeof document === "undefined") return;
+	try {
+		const existing = self.MonacoEnvironment;
+		if ((existing === null || existing === void 0 ? void 0 : existing.getWorker) || (existing === null || existing === void 0 ? void 0 : existing.getWorkerUrl)) return;
+		const workerUrlByLabel = Object.fromEntries(Object.entries(workerPathByLabel).map(([label, path]) => [label, new URL(path, import.meta.url)]));
+		const workerUrlEditor = new URL(editorWorkerPath, import.meta.url);
+		self.MonacoEnvironment = { getWorker(_, label) {
+			const url = workerUrlByLabel[label] ?? workerUrlEditor;
+			return new Worker(url, { type: "module" });
+		} };
+	} catch {}
+}
+
+//#endregion
+//#region src/preloadMonacoWorkers.ts
+async function preloadMonacoWorkers() {
+	if (typeof window === "undefined" || typeof document === "undefined") return;
+	const unique = uniqueWorkerPaths.map((p) => String(new URL(p, import.meta.url)));
+	ensureMonacoWorkers();
+	try {
+		await Promise.all(unique.map((u) => fetch(u, {
+			method: "GET",
+			cache: "force-cache"
+		}).catch(() => void 0)));
+	} catch {}
+}
+
+//#endregion
+//#region src/index.ts
+ensureMonacoWorkers();
+
+//#endregion
+export { RevealStrategy, clearHighlighterCache, defaultRevealDebounceMs, detectLanguage, ensureMonacoWorkers, getOrCreateHighlighter, preloadMonacoWorkers, registerMonacoThemes, useMonaco };

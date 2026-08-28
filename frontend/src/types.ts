@@ -339,6 +339,43 @@ export interface QueuedPromptView {
   attachments?: { fileId: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[];
 }
 
+/** Ordered event emitted by the mindmap backend job stream. */
+export interface JobEvent {
+  id: number;
+  task_id: string;
+  kind:
+    | 'status'
+    | 'agent_started'
+    | 'context_preparing'
+    | 'model_start'
+    | 'model_delta'
+    | 'model_complete'
+    | 'model_error'
+    | 'job_complete'
+    | 'job_failed'
+    | 'job_cancelled'
+    | 'usage'
+    | 'compaction_started'
+    | 'compaction';
+  created_at: string;
+  stage: string;
+  progress?: number | null;
+  message: string;
+  call_id?: string;
+  round_number?: number | null;
+  role: string;
+  model: string;
+  delta: string;
+  context_tokens?: number;
+  max_context_tokens?: number;
+  context_usage?: number;
+  total_tokens?: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  summary?: string;
+  trigger?: string;
+}
+
 /** Horizontal alignment of the conversation reading column within the pane. */
 
 /**

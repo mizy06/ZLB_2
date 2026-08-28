@@ -1,12 +1,10 @@
 <!-- apps/kimi-web/src/components/settings/Onboarding.vue -->
-<!-- First-run onboarding overlay: a short welcome + the language, color scheme
-     and accent preferences, all of which apply live. Re-openable from the
-     settings popover. Each preference can be changed any time later, so there's
-     nothing to "lose". -->
+<!-- Optional preferences dialog: the main interface is shown directly on first
+     load; this remains available only when explicitly reopened from Settings. -->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
 import { availableLocales, setLocale, type LocaleCode } from '../../i18n';
-import { useAppearance, type Accent, type ColorScheme } from '../../composables/client/useAppearance';
+import { useAppearance, type Accent } from '../../composables/client/useAppearance';
 import Button from '../ui/Button.vue';
 import Dialog from '../ui/Dialog.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
@@ -15,7 +13,7 @@ import BrandMark from '../BrandMark.vue';
 const emit = defineEmits<{ complete: []; skip: [] }>();
 
 const { t, locale } = useI18n();
-const { colorScheme, accent, setColorScheme, setAccent } = useAppearance();
+const { accent, setAccent } = useAppearance();
 
 function chooseLocale(code: LocaleCode): void {
   if (locale.value !== code) setLocale(code);
@@ -50,19 +48,6 @@ function finish(): void {
         :model-value="locale"
         :options="availableLocales.map((l) => ({ value: l.code, label: l.label }))"
         @update:model-value="chooseLocale($event as LocaleCode)"
-      />
-    </section>
-
-    <section class="ob-sec">
-      <div class="ob-label">{{ t('theme.colorSchemeLabel') }}</div>
-      <SegmentedControl
-        :model-value="colorScheme"
-        :options="[
-          { value: 'system', label: t('theme.system') },
-          { value: 'light', label: t('theme.light') },
-          { value: 'dark', label: t('theme.dark') },
-        ]"
-        @update:model-value="setColorScheme($event as ColorScheme)"
       />
     </section>
 

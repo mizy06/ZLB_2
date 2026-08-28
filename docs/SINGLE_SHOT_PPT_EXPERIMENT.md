@@ -64,6 +64,12 @@ secrets, volumes, and the public port. The experiment accepts PPTX only.
 Useful experiment controls:
 
 - `MINDMAP_EDITORIAL_MODEL`: defaults to `QWEN_VISION_MODEL`.
+- `MINDMAP_EDITORIAL_VISUAL_COMPACTOR_MODEL`: model for batched visual
+  evidence compression before a large document reaches the editor; default
+  `qwen3-vl-flash`.
+- `MINDMAP_EDITORIAL_CONTEXT_COMPACTOR_MODEL`: model for compressing the
+  graph/review history after the context high-water mark; default
+  `qwen3.8-flash`.
 - `MINDMAP_EDITORIAL_RENDER_DPI`: full-slide render DPI, default `120`.
 - `MINDMAP_EDITORIAL_IMAGE_MAX_EDGE`: JPEG long-edge cap override, default
   `1280`. The tested Qwen model reported the same visual token count at `1152`,
@@ -76,16 +82,19 @@ Useful experiment controls:
   final inline Base64 fallback only, default `96`. Slides are never silently
   dropped.
 - `MINDMAP_EDITORIAL_DRAFT_MAX_OUTPUT_TOKENS`: first-draft answer budget,
-  default `14000`; standard mode applies `9000` to the Chat fallback. The
-  current Qwen Responses compatibility surface does not expose a documented
-  hard output-token parameter, so its primary path relies on the bounded JSON
-  schema and role prompt.
+  default `24000`; both Chat Completions and Responses receive an explicit
+  output budget. A complete draft that is rejected solely for length is retried
+  once with up to `32000` output tokens and a complete-JSON instruction.
 - `MINDMAP_EDITORIAL_REVIEW_MAX_OUTPUT_TOKENS`: each reviewer answer budget,
   default `12000`; standard mode caps pruning/structure reviews at `4500` and
   the semantic omission Chat fallback at `3500`.
 - `MINDMAP_EDITORIAL_REVISION_MAX_OUTPUT_TOKENS`: editor revision budget,
-  default `14000`; this budget applies when the complete-graph safety fallback
-  uses Chat Completions.
+  default `24000`; complete-graph rewrites use the same one-time
+  length-truncation retry as the initial draft.
+- `MINDMAP_EDITORIAL_VISUAL_COMPACTOR_MAX_OUTPUT_TOKENS`: batched visual
+  evidence packet budget, default `2200`.
+- `MINDMAP_EDITORIAL_CONTEXT_COMPACTOR_MAX_OUTPUT_TOKENS`: text context
+  compaction summary budget, default `2000`.
 - `MINDMAP_EDITORIAL_PATCH_REVISIONS`: use transactional incremental Patch
   revisions, default `true` in the editorial Compose overlay. The editor still
   receives the original affected slide images rather than a source summary.

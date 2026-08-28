@@ -32,7 +32,7 @@ export default {
   daemon: '后台',
   backendTitle: '后端 {backend} · {endpoint} — 点击切换',
   noSessions: '暂无对话',
-  showMore: '加载更多 {count} 个对话',
+  showMore: '加载更多对话',
   showLess: '收起',
   showAll: '展开剩余 {count} 个对话',
   loadingMore: '加载中…',

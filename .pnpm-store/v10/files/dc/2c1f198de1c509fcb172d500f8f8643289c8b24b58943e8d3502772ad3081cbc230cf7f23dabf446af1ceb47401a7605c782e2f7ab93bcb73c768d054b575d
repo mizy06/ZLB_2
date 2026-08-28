@@ -1,0 +1,30 @@
+import "../utils-CdXSdLQq.js";
+import { n as renderer_default } from "../renderer-D309oy2n.js";
+
+//#region src/plugins/with-renderer.ts
+/**
+* Attach or refresh rendering methods on a markdown-it-shaped instance.
+* The main markdown-it-ts entry already exposes renderer methods; this helper is
+* for custom instances that provide parse/parseInline but need renderer methods.
+*/
+function withRenderer(md, options) {
+	if (!md.renderer) md.renderer = new renderer_default();
+	if (options && typeof options === "object") md.set(options);
+	md.render = function(src, env = {}) {
+		const tokens = this.parse(src, env);
+		return this.renderer.render(tokens, this.options, env);
+	};
+	md.renderAsync = async function(src, env = {}) {
+		const tokens = this.parse(src, env);
+		return this.renderer.renderAsync(tokens, this.options, env);
+	};
+	md.renderInline = function(src, env = {}) {
+		const tokens = this.parseInline(src, env);
+		return this.renderer.render(tokens, this.options, env);
+	};
+	return md;
+}
+var with_renderer_default = withRenderer;
+
+//#endregion
+export { with_renderer_default as default, withRenderer };

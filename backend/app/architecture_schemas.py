@@ -309,6 +309,9 @@ class JobView(BaseModel):
     loop_config: MindMapLoopConfig | None = None
     result: MindMapResult | None = None
     error: str | None = None
+    context_tokens: int = Field(default=0, ge=0)
+    max_context_tokens: int = Field(default=1_000_000, ge=1)
+    context_usage: float = Field(default=0.0, ge=0.0)
 
 
 class JobInteractionView(BaseModel):

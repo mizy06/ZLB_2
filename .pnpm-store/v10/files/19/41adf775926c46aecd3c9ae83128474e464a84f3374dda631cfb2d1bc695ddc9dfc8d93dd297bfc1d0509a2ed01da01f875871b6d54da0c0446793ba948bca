@@ -1,0 +1,119 @@
+
+interface RenderMetrics {
+    type: 'worker' | 'direct' | 'cache-hit';
+    duration: number;
+    formulaLength: number;
+    timestamp: number;
+    success: boolean;
+    error?: string;
+}
+declare class PerformanceMonitor {
+    private metrics;
+    private enabled;
+    private maxMetrics;
+    enable(): void;
+    disable(): void;
+    recordRender(metrics: RenderMetrics): void;
+    getStats(): {
+        totalRenders: number;
+        cacheHitRate: number;
+        averageWorkerTime: number;
+        averageDirectTime: number;
+        averageCacheHitTime: number;
+        workerSavings: number;
+        recommendation: string;
+        cacheHits?: undefined;
+        workerCalls?: undefined;
+        directCalls?: undefined;
+    } | {
+        totalRenders: number;
+        cacheHits: number;
+        cacheHitRate: string;
+        workerCalls: number;
+        directCalls: number;
+        averageWorkerTime: string;
+        averageDirectTime: string;
+        averageCacheHitTime: string;
+        workerSavings: string;
+        recommendation: string;
+    };
+    printReport(): {
+        totalRenders: number;
+        cacheHitRate: number;
+        averageWorkerTime: number;
+        averageDirectTime: number;
+        averageCacheHitTime: number;
+        workerSavings: number;
+        recommendation: string;
+        cacheHits?: undefined;
+        workerCalls?: undefined;
+        directCalls?: undefined;
+    } | {
+        totalRenders: number;
+        cacheHits: number;
+        cacheHitRate: string;
+        workerCalls: number;
+        directCalls: number;
+        averageWorkerTime: string;
+        averageDirectTime: string;
+        averageCacheHitTime: string;
+        workerSavings: string;
+        recommendation: string;
+    };
+    reset(): void;
+    exportMetrics(): {
+        metrics: RenderMetrics[];
+        stats: {
+            totalRenders: number;
+            cacheHitRate: number;
+            averageWorkerTime: number;
+            averageDirectTime: number;
+            averageCacheHitTime: number;
+            workerSavings: number;
+            recommendation: string;
+            cacheHits?: undefined;
+            workerCalls?: undefined;
+            directCalls?: undefined;
+        } | {
+            totalRenders: number;
+            cacheHits: number;
+            cacheHitRate: string;
+            workerCalls: number;
+            directCalls: number;
+            averageWorkerTime: string;
+            averageDirectTime: string;
+            averageCacheHitTime: string;
+            workerSavings: string;
+            recommendation: string;
+        };
+        timestamp: number;
+    };
+}
+declare const perfMonitor: PerformanceMonitor;
+declare function enablePerfMonitoring(): void;
+declare function disablePerfMonitoring(): void;
+declare function getPerfReport(): {
+    totalRenders: number;
+    cacheHitRate: number;
+    averageWorkerTime: number;
+    averageDirectTime: number;
+    averageCacheHitTime: number;
+    workerSavings: number;
+    recommendation: string;
+    cacheHits?: undefined;
+    workerCalls?: undefined;
+    directCalls?: undefined;
+} | {
+    totalRenders: number;
+    cacheHits: number;
+    cacheHitRate: string;
+    workerCalls: number;
+    directCalls: number;
+    averageWorkerTime: string;
+    averageDirectTime: string;
+    averageCacheHitTime: string;
+    workerSavings: string;
+    recommendation: string;
+};
+
+export { disablePerfMonitoring, enablePerfMonitoring, getPerfReport, perfMonitor };

@@ -1,0 +1,123 @@
+//#region src/types.d.ts
+interface SmoothMarkdownStreamOptions {
+  minCharsPerSecond?: number;
+  maxCharsPerSecond?: number;
+  targetLatencyMs?: number;
+  catchUpLatencyMs?: number;
+  catchUpThreshold?: number;
+  maxCommitFps?: number;
+  startDelayMs?: number;
+  maxCharsPerCommit?: number;
+  flushOnFinish?: boolean;
+}
+interface SmoothMarkdownStreamSnapshot {
+  source: string;
+  visible: string;
+  done: boolean;
+  paused: boolean;
+  pendingChars: number;
+  caughtUp: boolean;
+  final: boolean;
+}
+type SmoothStreamNotify = () => void;
+interface SmoothMarkdownStreamController {
+  getSnapshot: () => SmoothMarkdownStreamSnapshot;
+  subscribe: (listener: SmoothStreamNotify) => () => void;
+  enqueue: (chunk: string) => void;
+  finish: (options?: {
+    flush?: boolean;
+  }) => void;
+  flush: () => void;
+  reset: (initialMarkdown?: string) => void;
+  pause: () => void;
+  resume: () => void;
+  destroy: () => void;
+  dispose: () => void;
+}
+interface ResolveStreamingTextStateOptions {
+  nextContent: string;
+  previousContent: string;
+  typewriterEnabled: boolean;
+}
+interface StreamingTextStateResult {
+  settledContent: string;
+  streamedDelta: string;
+  appended: boolean;
+}
+interface StreamingRenderState {
+  settledContent: string;
+  streamedDelta: string;
+}
+interface ResolveStreamingTextUpdateOptions {
+  nextContent: string;
+  persistedContent?: string;
+  currentState: StreamingRenderState;
+  typewriterEnabled: boolean;
+  streamRenderVersionChanged?: boolean;
+}
+//#endregion
+//#region src/resolve-streaming-text-state.d.ts
+/**
+ * Resolve the next streaming text state given previous content.
+ * This is the basic variant used by all frameworks for simple
+ * append-detection during streaming updates.
+ */
+declare function resolveStreamingTextState({
+  nextContent,
+  previousContent,
+  typewriterEnabled
+}: ResolveStreamingTextStateOptions): StreamingTextStateResult;
+/**
+ * Resolve the next streaming text state given the current render state
+ * and an optional persisted content snapshot (e.g. from a shared stream
+ * state map). This variant handles:
+ * - React StrictMode replay (preserves active delta when rendered content
+ *   matches but the stream render version has not changed)
+ * - Stream version resets (settles the delta when the version changes)
+ * - Fallback to the basic resolver for all other cases
+ */
+declare function resolveStreamingTextUpdate({
+  nextContent,
+  persistedContent,
+  currentState,
+  typewriterEnabled,
+  streamRenderVersionChanged
+}: ResolveStreamingTextUpdateOptions): StreamingTextStateResult;
+//#endregion
+//#region src/shiki-language.d.ts
+interface RegisterHighlightOptions {
+  themes?: readonly string[];
+  langs?: readonly string[];
+}
+interface ShikiRendererOptions {
+  theme?: string;
+  themes?: readonly string[];
+  langs?: readonly string[];
+}
+interface RuntimeShikiRegistrationConfig {
+  key: string;
+  registerOptions: RegisterHighlightOptions;
+  rendererOptions: Pick<ShikiRendererOptions, 'themes' | 'langs'>;
+  ignoredLangs: boolean;
+}
+type RegisterHighlightFn = (opts?: RegisterHighlightOptions) => Promise<unknown> | unknown;
+type SharedHighlightRegistrationStatus = 'ready';
+declare function getLanguageBaseToken(rawLang?: string | null): string;
+declare function normalizeShikiLanguage(rawLang?: string | null): string;
+declare function getShikiLanguageMatchKey(rawLang?: string | null): string;
+declare function getShikiLangs(langs?: readonly unknown[]): string[] | undefined;
+declare function getShikiThemes(themes?: readonly unknown[]): string[] | undefined;
+declare function getShikiRendererOptions(themes?: readonly unknown[], langs?: readonly unknown[]): Pick<ShikiRendererOptions, 'themes' | 'langs'>;
+declare function getRegisterHighlightOptions(themes?: readonly unknown[], langs?: readonly unknown[]): RegisterHighlightOptions;
+declare function getHighlightRegistrationKey(themes?: readonly unknown[], langs?: readonly unknown[]): string;
+declare function getRuntimeShikiRegistrationConfig(themes?: readonly unknown[], langs?: readonly unknown[], options?: {
+  hasRegisterHighlight: boolean;
+  hasCreateRenderer: boolean;
+}): RuntimeShikiRegistrationConfig;
+declare function registerHighlightOnce(registerHighlight: RegisterHighlightFn | undefined, opts?: RegisterHighlightOptions, key?: string): Promise<SharedHighlightRegistrationStatus>;
+//#endregion
+//#region src/smooth-stream-controller.d.ts
+declare function createSmoothMarkdownStream(options?: SmoothMarkdownStreamOptions, notify?: SmoothStreamNotify): SmoothMarkdownStreamController;
+//#endregion
+export { RegisterHighlightFn, RegisterHighlightOptions, type ResolveStreamingTextStateOptions, type ResolveStreamingTextUpdateOptions, RuntimeShikiRegistrationConfig, ShikiRendererOptions, type SmoothMarkdownStreamController, type SmoothMarkdownStreamOptions, type SmoothMarkdownStreamSnapshot, type SmoothStreamNotify, type StreamingRenderState, type StreamingTextStateResult, createSmoothMarkdownStream, getHighlightRegistrationKey, getLanguageBaseToken, getRegisterHighlightOptions, getRuntimeShikiRegistrationConfig, getShikiLangs, getShikiLanguageMatchKey, getShikiRendererOptions, getShikiThemes, normalizeShikiLanguage, registerHighlightOnce, resolveStreamingTextState, resolveStreamingTextUpdate };
+//# sourceMappingURL=index.d.cts.map

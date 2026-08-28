@@ -534,7 +534,7 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
                         await main.frontend(path)
                     self.assertEqual(raised.exception.status_code, 404)
 
-    async def test_production_workbench_is_public(self):
+    async def test_production_workbench_requires_local_account(self):
         with patch.dict(
             os.environ,
             {
@@ -549,8 +549,8 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "settings", configured):
             payload = await main.health()
 
-        self.assertFalse(payload["auth_required"])
-        self.assertFalse(payload["auth_configured"])
+        self.assertTrue(payload["auth_required"])
+        self.assertTrue(payload["auth_configured"])
         self.assertEqual(configured.workbench_owner_id, "legacy-owner")
 
     async def test_session_routes_are_removed(self):

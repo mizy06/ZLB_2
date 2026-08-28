@@ -1,0 +1,38 @@
+import * as mdurl from 'mdurl';
+declare const ucmicro: {
+    Any: RegExp;
+    Cc: RegExp;
+    Cf: RegExp;
+    P: RegExp;
+    S: RegExp;
+    Z: RegExp;
+};
+export declare function isString(obj: unknown): obj is string;
+export declare function has(object: object, key: string | number | symbol): boolean;
+export declare function assign<T extends Record<string, any>>(obj: T, ...sources: any[]): T;
+export declare function isSpace(code: number): boolean;
+export declare function isWhiteSpace(code: number): boolean;
+export declare function isPunctChar(ch: string): boolean;
+export declare function isPunctCode(ch: number): boolean;
+export declare function isMdAsciiPunct(ch: number): boolean;
+export declare function normalizeReference(str: string): string;
+export declare function arrayReplaceAt<T>(src: T[], pos: number, newElements: T[]): T[];
+export declare function isValidEntityCode(c: number): boolean;
+export declare function fromCodePoint(c: number): string;
+export declare function unescapeMd(str: string): string;
+export declare function unescapeAll(str: string): string;
+export declare function escapeHtml(str: string): string;
+export declare function escapeRE(str: string): string;
+export declare const lib: {
+    readonly mdurl: typeof mdurl;
+    readonly ucmicro: {
+        Any: RegExp;
+        Cc: RegExp;
+        Cf: RegExp;
+        P: RegExp;
+        S: RegExp;
+        Z: RegExp;
+    };
+};
+export { mdurl, ucmicro };
+export declare function countLines(input: string): number;

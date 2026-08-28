@@ -49,7 +49,14 @@ export function mergeJobEvents(
   for (const event of [...events].sort((left, right) => left.id - right.id)) {
     if (event.id <= lastEventId) continue;
     lastEventId = event.id;
-    if (event.kind === "status" && event.stage) {
+    if (
+      (
+        event.kind === "status"
+        || event.kind === "agent_started"
+        || event.kind === "context_preparing"
+      )
+      && event.stage
+    ) {
       for (const step of steps) {
         if (step.stage !== event.stage && step.status === "running") {
           step.status = "completed";

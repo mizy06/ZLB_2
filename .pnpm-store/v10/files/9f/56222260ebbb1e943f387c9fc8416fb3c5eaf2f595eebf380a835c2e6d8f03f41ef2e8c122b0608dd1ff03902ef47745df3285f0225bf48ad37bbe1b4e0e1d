@@ -1,0 +1,4020 @@
+import { C as isValidEntityCode, E as unescapeAll, O as Token, S as isPunctCode, T as normalizeReference, _ as runWithKnownGlobalMarkdownState, b as isMdAsciiPunct, d as detectGlobalMarkdownState, g as resetKnownGlobalMarkdownState, k as __export, m as getKnownGlobalMarkdownState, n as beginParseDiagnostics, w as isWhiteSpace, x as isPunctChar, y as fromCodePoint } from "./strategy_diagnostics-DKBiEbYW.js";
+import { decodeHTML } from "entities";
+import * as mdurl from "mdurl";
+import { LinkifyIt } from "linkify-it";
+import punycode from "punycode.js";
+
+//#region src/helpers/parse_link_destination.ts
+/**
+* Parse link destination: returns { ok, pos, str }
+*/
+function parseLinkDestination(str, start, max) {
+	let code$1;
+	let pos = start;
+	const result = {
+		ok: false,
+		pos: 0,
+		str: ""
+	};
+	if (str.charCodeAt(pos) === 60) {
+		pos++;
+		while (pos < max) {
+			code$1 = str.charCodeAt(pos);
+			if (code$1 === 10) return result;
+			if (code$1 === 60) return result;
+			if (code$1 === 62) {
+				result.pos = pos + 1;
+				result.str = unescapeAll(str.slice(start + 1, pos));
+				result.ok = true;
+				return result;
+			}
+			if (code$1 === 92 && pos + 1 < max) {
+				pos += 2;
+				continue;
+			}
+			pos++;
+		}
+		return result;
+	}
+	let level = 0;
+	while (pos < max) {
+		code$1 = str.charCodeAt(pos);
+		if (code$1 === 32) break;
+		if (code$1 < 32 || code$1 === 127) break;
+		if (code$1 === 92 && pos + 1 < max) {
+			if (str.charCodeAt(pos + 1) === 32) break;
+			pos += 2;
+			continue;
+		}
+		if (code$1 === 40) {
+			level++;
+			if (level > 32) return result;
+		}
+		if (code$1 === 41) {
+			if (level === 0) break;
+			level--;
+		}
+		pos++;
+	}
+	if (start === pos) return result;
+	if (level !== 0) return result;
+	result.str = unescapeAll(str.slice(start, pos));
+	result.pos = pos;
+	result.ok = true;
+	return result;
+}
+var parse_link_destination_default = parseLinkDestination;
+
+//#endregion
+//#region src/helpers/parse_link_label.ts
+const FALLBACK_TO_INLINE_SCAN = -2;
+function scanPlainLinkLabel(src, start, max, disableNested) {
+	let level = 1;
+	let pos = start + 1;
+	while (pos < max) {
+		const marker = src.charCodeAt(pos);
+		if (marker === 93) {
+			level--;
+			if (level === 0) return pos;
+			if (disableNested) {
+				const next = pos + 1 < max ? src.charCodeAt(pos + 1) : 0;
+				if (next === 40 || next === 91) return FALLBACK_TO_INLINE_SCAN;
+			}
+			pos++;
+			continue;
+		}
+		if (marker === 92) {
+			pos += 2;
+			continue;
+		}
+		if (marker === 96 || marker === 60) return FALLBACK_TO_INLINE_SCAN;
+		if (marker === 33 && pos + 1 < max && src.charCodeAt(pos + 1) === 91) return FALLBACK_TO_INLINE_SCAN;
+		if (marker === 91) {
+			level++;
+			pos++;
+			continue;
+		}
+		pos++;
+	}
+	return -1;
+}
+function parseLinkLabel(state, start, disableNested) {
+	let level = 1;
+	let found = false;
+	let marker;
+	let prevPos;
+	const src = state.src;
+	const max = state.posMax;
+	const oldPos = state.pos;
+	const noCloseFrom = state.linkLabelNoCloseFrom;
+	if (noCloseFrom >= 0 && start + 1 >= noCloseFrom) return -1;
+	const nextClose = src.indexOf("]", start + 1);
+	if (nextClose < 0 || nextClose >= max) {
+		state.linkLabelNoCloseFrom = start + 1;
+		return -1;
+	}
+	const fastLabelEnd = scanPlainLinkLabel(src, start, max, disableNested);
+	if (fastLabelEnd !== FALLBACK_TO_INLINE_SCAN) return fastLabelEnd;
+	state.pos = start + 1;
+	while (state.pos < max) {
+		marker = src.charCodeAt(state.pos);
+		if (marker === 93) {
+			level--;
+			if (level === 0) {
+				found = true;
+				break;
+			}
+		}
+		prevPos = state.pos;
+		state.md.inline.skipToken(state);
+		if (marker === 91) {
+			if (prevPos === state.pos - 1) level++;
+			else if (disableNested) {
+				state.pos = oldPos;
+				return -1;
+			}
+		}
+	}
+	let labelEnd = -1;
+	if (found) labelEnd = state.pos;
+	state.pos = oldPos;
+	return labelEnd;
+}
+var parse_link_label_default = parseLinkLabel;
+
+//#endregion
+//#region src/helpers/parse_link_title.ts
+/**
+* Parse link title: returns { ok, can_continue, pos, str, marker }
+*/
+function parseLinkTitle(str, start, max, prev_state) {
+	let code$1;
+	let pos = start;
+	const state = {
+		ok: false,
+		can_continue: false,
+		pos: 0,
+		str: "",
+		marker: 0
+	};
+	if (prev_state) {
+		state.str = prev_state.str;
+		state.marker = prev_state.marker;
+	} else {
+		if (pos >= max) return state;
+		let marker = str.charCodeAt(pos);
+		if (marker !== 34 && marker !== 39 && marker !== 40) return state;
+		start++;
+		pos++;
+		if (marker === 40) marker = 41;
+		state.marker = marker;
+	}
+	while (pos < max) {
+		code$1 = str.charCodeAt(pos);
+		if (code$1 === state.marker) {
+			state.pos = pos + 1;
+			state.str += unescapeAll(str.slice(start, pos));
+			state.ok = true;
+			return state;
+		} else if (code$1 === 40 && state.marker === 41) return state;
+		else if (code$1 === 92 && pos + 1 < max) pos++;
+		pos++;
+	}
+	state.can_continue = true;
+	state.str += unescapeAll(str.slice(start, pos));
+	return state;
+}
+var parse_link_title_default = parseLinkTitle;
+
+//#endregion
+//#region src/helpers/token.ts
+function attrIndex(token, name) {
+	if (!token.attrs) return -1;
+	for (let i = 0; i < token.attrs.length; i++) if (token.attrs[i][0] === name) return i;
+	return -1;
+}
+function attrPush(token, attrData) {
+	if (!token.attrs) token.attrs = [];
+	token.attrs.push(attrData);
+}
+function attrSet(token, name, value) {
+	const idx = attrIndex(token, name);
+	const attrData = [name, value];
+	if (idx < 0) attrPush(token, attrData);
+	else token.attrs[idx] = attrData;
+}
+function attrGet(token, name) {
+	const idx = attrIndex(token, name);
+	if (idx >= 0) return token.attrs[idx][1];
+	return null;
+}
+function attrJoin(token, name, value) {
+	const idx = attrIndex(token, name);
+	if (idx < 0) attrPush(token, [name, value]);
+	else token.attrs[idx][1] = `${token.attrs[idx][1]} ${value}`;
+}
+
+//#endregion
+//#region src/helpers/index.ts
+var helpers_exports = /* @__PURE__ */ __export({
+	attrGet: () => attrGet,
+	attrIndex: () => attrIndex,
+	attrJoin: () => attrJoin,
+	attrPush: () => attrPush,
+	attrSet: () => attrSet,
+	parseLinkDestination: () => parseLinkDestination,
+	parseLinkLabel: () => parseLinkLabel,
+	parseLinkTitle: () => parseLinkTitle
+});
+
+//#endregion
+//#region src/parse/source.ts
+function hasNormalizationChars(src) {
+	return src.includes("\r") || src.includes("\0");
+}
+function sourceToString(src) {
+	return typeof src === "string" ? src : src.toString();
+}
+
+//#endregion
+//#region src/rules/core/block.ts
+/**
+* Core rule: block
+* Runs block-level parser on the input.
+*/
+function block(state) {
+	if (state.inlineMode) {
+		const token = new Token("inline", "", 0);
+		token.content = sourceToString(state.src);
+		token.map = [0, 1];
+		token.children = [];
+		token.level = 0;
+		state.tokens.push(token);
+	} else if (state.md && state.md.block) state.md.block.parse(state.src, state.md, state.env, state.tokens);
+}
+
+//#endregion
+//#region src/rules/inline/autolink.ts
+/**
+* Process autolinks '<protocol:...>'
+*/
+const EMAIL_RE = /^([a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)$/;
+const AUTOLINK_RE = /^([a-zA-Z][a-zA-Z0-9+.-]{1,31}):([^<>\x00-\x20]*)$/;
+function autolink(state, silent) {
+	let pos = state.pos;
+	const src = state.src;
+	if (src.charCodeAt(pos) !== 60) return false;
+	const start = pos;
+	const max = state.posMax;
+	for (;;) {
+		if (++pos >= max) return false;
+		const ch = src.charCodeAt(pos);
+		if (ch === 60) return false;
+		if (ch === 62) break;
+	}
+	const url = src.slice(start + 1, pos);
+	if (AUTOLINK_RE.test(url)) {
+		const fullUrl = state.md.normalizeLink(url);
+		if (!state.md.validateLink(fullUrl)) return false;
+		if (!silent) {
+			const token_o = state.push("link_open", "a", 1);
+			token_o.attrs = [["href", fullUrl]];
+			token_o.markup = "autolink";
+			token_o.info = "auto";
+			const token_t = state.push("text", "", 0);
+			token_t.content = state.md.normalizeLinkText(url);
+			const token_c = state.push("link_close", "a", -1);
+			token_c.markup = "autolink";
+			token_c.info = "auto";
+		}
+		state.pos += url.length + 2;
+		return true;
+	}
+	if (EMAIL_RE.test(url)) {
+		const fullUrl = state.md.normalizeLink(`mailto:${url}`);
+		if (!state.md.validateLink(fullUrl)) return false;
+		if (!silent) {
+			const token_o = state.push("link_open", "a", 1);
+			token_o.attrs = [["href", fullUrl]];
+			token_o.markup = "autolink";
+			token_o.info = "auto";
+			const token_t = state.push("text", "", 0);
+			token_t.content = state.md.normalizeLinkText(url);
+			const token_c = state.push("link_close", "a", -1);
+			token_c.markup = "autolink";
+			token_c.info = "auto";
+		}
+		state.pos += url.length + 2;
+		return true;
+	}
+	return false;
+}
+var autolink_default = autolink;
+
+//#endregion
+//#region src/rules/inline/backticks.ts
+/**
+* Parse backticks (inline code)
+*/
+function backticks(state, silent) {
+	const src = state.src;
+	let pos = state.pos;
+	if (src.charCodeAt(pos) !== 96) return false;
+	const start = pos;
+	pos++;
+	const max = state.posMax;
+	while (pos < max && src.charCodeAt(pos) === 96) pos++;
+	const marker = src.slice(start, pos);
+	const openerLength = marker.length;
+	if (state.backticksScanned && (state.backticks[openerLength] || 0) <= start) {
+		if (!silent) state.pending += marker;
+		state.pos += openerLength;
+		return true;
+	}
+	let matchEnd = pos;
+	let matchStart;
+	while ((matchStart = src.indexOf("`", matchEnd)) !== -1) {
+		matchEnd = matchStart + 1;
+		while (matchEnd < max && src.charCodeAt(matchEnd) === 96) matchEnd++;
+		const closerLength = matchEnd - matchStart;
+		if (closerLength === openerLength) {
+			if (!silent) {
+				const token = state.push("code_inline", "code", 0);
+				token.markup = marker;
+				let content = src.slice(pos, matchStart);
+				if (content.includes("\n")) content = content.replace(/\n/g, " ");
+				if (content.length > 2 && content.charCodeAt(0) === 32 && content.charCodeAt(content.length - 1) === 32) content = content.slice(1, -1);
+				token.content = content;
+			}
+			state.pos = matchEnd;
+			return true;
+		}
+		state.backticks[closerLength] = matchStart;
+	}
+	state.backticksScanned = true;
+	if (!silent) state.pending += marker;
+	state.pos += openerLength;
+	return true;
+}
+var backticks_default = backticks;
+
+//#endregion
+//#region src/rules/inline/balance_pairs.ts
+function processDelimiters(delimiters) {
+	const openersBottom = {};
+	const max = delimiters.length;
+	if (!max) return;
+	let headerIdx = 0;
+	let lastTokenIdx = -2;
+	const jumps = [];
+	for (let closerIdx = 0; closerIdx < max; closerIdx++) {
+		const closer = delimiters[closerIdx];
+		jumps.push(0);
+		if (delimiters[headerIdx].marker !== closer.marker || lastTokenIdx !== closer.token - 1) headerIdx = closerIdx;
+		lastTokenIdx = closer.token;
+		closer.length = closer.length || 0;
+		if (!closer.close) continue;
+		if (!Object.prototype.hasOwnProperty.call(openersBottom, closer.marker)) openersBottom[closer.marker] = [
+			-1,
+			-1,
+			-1,
+			-1,
+			-1,
+			-1
+		];
+		const minOpenerIdx = openersBottom[closer.marker][(closer.open ? 3 : 0) + closer.length % 3];
+		let openerIdx = headerIdx - jumps[headerIdx] - 1;
+		let newMinOpenerIdx = openerIdx;
+		for (; openerIdx > minOpenerIdx; openerIdx -= jumps[openerIdx] + 1) {
+			const opener = delimiters[openerIdx];
+			if (opener.marker !== closer.marker) continue;
+			if (opener.open && opener.end < 0) {
+				let isOddMatch = false;
+				if (opener.close || closer.open) {
+					if ((opener.length + closer.length) % 3 === 0) {
+						if (opener.length % 3 !== 0 || closer.length % 3 !== 0) isOddMatch = true;
+					}
+				}
+				if (!isOddMatch) {
+					const lastJump = openerIdx > 0 && !delimiters[openerIdx - 1].open ? jumps[openerIdx - 1] + 1 : 0;
+					jumps[closerIdx] = closerIdx - openerIdx + lastJump;
+					jumps[openerIdx] = lastJump;
+					closer.open = false;
+					opener.end = closerIdx;
+					opener.close = false;
+					newMinOpenerIdx = -1;
+					lastTokenIdx = -2;
+					break;
+				}
+			}
+		}
+		if (newMinOpenerIdx !== -1) openersBottom[closer.marker][(closer.open ? 3 : 0) + (closer.length || 0) % 3] = newMinOpenerIdx;
+	}
+}
+function balance_pairs(state) {
+	const tokens_meta = state.tokens_meta;
+	const max = state.tokens_meta.length;
+	processDelimiters(state.delimiters);
+	for (let curr = 0; curr < max; curr++) if (tokens_meta[curr] && tokens_meta[curr].delimiters) processDelimiters(tokens_meta[curr].delimiters);
+}
+var balance_pairs_default = balance_pairs;
+
+//#endregion
+//#region src/rules/inline/emphasis.ts
+const MARKER_ASTERISK = "*";
+const MARKER_UNDERSCORE = "_";
+function emphasis_tokenize(state, silent) {
+	if (silent) return false;
+	const marker = state.src.charCodeAt(state.pos);
+	if (marker !== 95 && marker !== 42) return false;
+	const scanned = state.scanDelims(state.pos, marker === 42);
+	if (!scanned || scanned.length === 0) return false;
+	const markerChar = marker === 42 ? MARKER_ASTERISK : MARKER_UNDERSCORE;
+	const scannedLength = scanned.length;
+	const canOpen = scanned.can_open;
+	const canClose = scanned.can_close;
+	const tokens = state.tokens;
+	const delimiters = state.delimiters;
+	for (let i = 0; i < scannedLength; i++) {
+		const token = state.push("text", "", 0);
+		token.content = markerChar;
+		delimiters.push({
+			marker,
+			length: scannedLength,
+			token: tokens.length - 1,
+			end: -1,
+			open: canOpen,
+			close: canClose
+		});
+	}
+	state.pos += scannedLength;
+	return true;
+}
+function postProcess$1(state, delimiters) {
+	const max = delimiters.length;
+	const tokens = state.tokens;
+	for (let i = max - 1; i >= 0; i--) {
+		const startDelim = delimiters[i];
+		const marker = startDelim.marker;
+		if (marker !== 95 && marker !== 42) continue;
+		if (startDelim.end === -1) continue;
+		const endDelim = delimiters[startDelim.end];
+		const startTokenIdx = startDelim.token;
+		const endTokenIdx = endDelim.token;
+		const isStrong = i > 0 && delimiters[i - 1].end === startDelim.end + 1 && delimiters[i - 1].marker === marker && delimiters[i - 1].token === startTokenIdx - 1 && delimiters[startDelim.end + 1].token === endTokenIdx + 1;
+		const markerChar = marker === 42 ? MARKER_ASTERISK : MARKER_UNDERSCORE;
+		const token_o = tokens[startTokenIdx];
+		if (isStrong) {
+			token_o.type = "strong_open";
+			token_o.tag = "strong";
+			token_o.nesting = 1;
+			token_o.markup = markerChar + markerChar;
+			token_o.content = "";
+		} else {
+			token_o.type = "em_open";
+			token_o.tag = "em";
+			token_o.nesting = 1;
+			token_o.markup = markerChar;
+			token_o.content = "";
+		}
+		const token_c = tokens[endTokenIdx];
+		if (isStrong) {
+			token_c.type = "strong_close";
+			token_c.tag = "strong";
+			token_c.nesting = -1;
+			token_c.markup = markerChar + markerChar;
+			token_c.content = "";
+		} else {
+			token_c.type = "em_close";
+			token_c.tag = "em";
+			token_c.nesting = -1;
+			token_c.markup = markerChar;
+			token_c.content = "";
+		}
+		if (isStrong) {
+			tokens[delimiters[i - 1].token].content = "";
+			tokens[delimiters[startDelim.end + 1].token].content = "";
+			i--;
+		}
+	}
+}
+function emphasis_postProcess(state) {
+	const tokens_meta = state.tokens_meta;
+	const max = state.tokens_meta.length;
+	postProcess$1(state, state.delimiters);
+	for (let curr = 0; curr < max; curr++) if (tokens_meta[curr] && tokens_meta[curr].delimiters) postProcess$1(state, tokens_meta[curr].delimiters);
+}
+const emphasis = {
+	tokenize: emphasis_tokenize,
+	postProcess: emphasis_postProcess
+};
+
+//#endregion
+//#region src/rules/inline/entity.ts
+function decodeHTML$1(str) {
+	return decodeHTML(str);
+}
+function isDigit$1(code$1) {
+	return code$1 >= 48 && code$1 <= 57;
+}
+function isHexDigit(code$1) {
+	const lower = code$1 | 32;
+	return isDigit$1(code$1) || lower >= 97 && lower <= 102;
+}
+function isAsciiLetter$1(code$1) {
+	const lower = code$1 | 32;
+	return lower >= 97 && lower <= 122;
+}
+function isAsciiAlphaNum(code$1) {
+	return isAsciiLetter$1(code$1) || isDigit$1(code$1);
+}
+function scanNumericEntity(src, start, max) {
+	let pos = start + 2;
+	if (pos >= max) return null;
+	let isHex = false;
+	let digitLimit = 7;
+	let digitStart = pos;
+	if ((src.charCodeAt(pos) | 32) === 120) {
+		isHex = true;
+		digitLimit = 6;
+		pos++;
+		digitStart = pos;
+	}
+	while (pos < max && pos - digitStart < digitLimit) {
+		const ch = src.charCodeAt(pos);
+		if (!(isHex ? isHexDigit(ch) : isDigit$1(ch))) break;
+		pos++;
+	}
+	if (pos === digitStart || pos >= max) return null;
+	if (src.charCodeAt(pos) !== 59) return null;
+	return src.slice(start, pos + 1);
+}
+function scanNamedEntity(src, start, max) {
+	let pos = start + 1;
+	if (pos >= max || !isAsciiLetter$1(src.charCodeAt(pos))) return null;
+	pos++;
+	while (pos < max && pos - start - 1 < 32 && isAsciiAlphaNum(src.charCodeAt(pos))) pos++;
+	if (pos - start - 1 < 2 || pos >= max || src.charCodeAt(pos) !== 59) return null;
+	const markup = src.slice(start, pos + 1);
+	return decodeHTML$1(markup) !== markup ? markup : null;
+}
+function entity(state, silent) {
+	const pos = state.pos;
+	const max = state.posMax;
+	if (state.src.charCodeAt(pos) !== 38) return false;
+	if (pos + 1 >= max) return false;
+	if (state.src.charCodeAt(pos + 1) === 35) {
+		const markup = scanNumericEntity(state.src, pos, max);
+		if (markup) {
+			if (!silent) {
+				const code$1 = (markup.charCodeAt(2) | 32) === 120 ? Number.parseInt(markup.slice(3, -1), 16) : Number.parseInt(markup.slice(2, -1), 10);
+				const token = state.push("text_special", "", 0);
+				token.content = isValidEntityCode(code$1) ? fromCodePoint(code$1) : fromCodePoint(65533);
+				token.markup = markup;
+				token.info = "entity";
+			}
+			state.pos += markup.length;
+			return true;
+		}
+	} else {
+		const markup = scanNamedEntity(state.src, pos, max);
+		if (markup) {
+			const decoded = decodeHTML$1(markup);
+			if (!silent) {
+				const token = state.push("text_special", "", 0);
+				token.content = decoded;
+				token.markup = markup;
+				token.info = "entity";
+			}
+			state.pos += markup.length;
+			return true;
+		}
+	}
+	return false;
+}
+var entity_default = entity;
+
+//#endregion
+//#region src/rules/inline/escape.ts
+const ESCAPED = (() => {
+	const table$1 = new Array(256).fill(0);
+	const chars = "\\!\"#$%&'()*+,./:;<=>?@[]^_`{|}~-";
+	for (let i = 0; i < 32; i++) table$1[chars.charCodeAt(i)] = 1;
+	return table$1;
+})();
+const ESCAPED_MARKUP = new Array(128);
+const ESCAPED_CONTENT = new Array(128);
+for (let i = 0; i < 128; i++) {
+	const ch = String.fromCharCode(i);
+	ESCAPED_MARKUP[i] = `\\${ch}`;
+	ESCAPED_CONTENT[i] = ESCAPED[i] ? ch : ESCAPED_MARKUP[i];
+}
+function pushEscapeToken(state, content, markup) {
+	if (state.pending) state.pushPending();
+	const token = new Token("text_special", "", 0);
+	token.level = state.level;
+	token.content = content;
+	token.markup = markup;
+	token.info = "escape";
+	state.pendingLevel = state.level;
+	state.tokens.push(token);
+	state.tokens_meta.push(null);
+}
+function escape(state, silent) {
+	let pos = state.pos;
+	const max = state.posMax;
+	const src = state.src;
+	if (src.charCodeAt(pos) !== 92) return false;
+	pos++;
+	if (pos >= max) return false;
+	let ch = src.charCodeAt(pos);
+	if (ch === 10) {
+		if (!silent) state.push("hardbreak", "br", 0);
+		pos++;
+		while (pos < max) {
+			ch = src.charCodeAt(pos);
+			if (ch !== 9 && ch !== 32) break;
+			pos++;
+		}
+		state.pos = pos;
+		return true;
+	}
+	if (ch < 128) {
+		if (silent) {
+			state.pos = pos + 1;
+			return true;
+		}
+		pushEscapeToken(state, ESCAPED_CONTENT[ch], ESCAPED_MARKUP[ch]);
+		state.pos = pos + 1;
+		return true;
+	}
+	if (silent) {
+		if (ch >= 55296 && ch <= 56319 && pos + 1 < max) {
+			const ch2 = src.charCodeAt(pos + 1);
+			if (ch2 >= 56320 && ch2 <= 57343) pos++;
+		}
+		state.pos = pos + 1;
+		return true;
+	}
+	let escapedStr = src.charAt(pos);
+	if (ch >= 55296 && ch <= 56319 && pos + 1 < max) {
+		const ch2 = src.charCodeAt(pos + 1);
+		if (ch2 >= 56320 && ch2 <= 57343) {
+			escapedStr += src.charAt(pos + 1);
+			pos++;
+		}
+	}
+	const origStr = `\\${escapedStr}`;
+	pushEscapeToken(state, ch < 256 && ESCAPED[ch] ? escapedStr : origStr, origStr);
+	state.pos = pos + 1;
+	return true;
+}
+var escape_default = escape;
+
+//#endregion
+//#region src/rules/inline/fragments_join.ts
+function fragments_join(state) {
+	let curr, last;
+	let level = 0;
+	const tokens = state.tokens;
+	const max = state.tokens.length;
+	for (curr = last = 0; curr < max; curr++) {
+		const token = tokens[curr];
+		if (!token) continue;
+		if (token.nesting && token.nesting < 0) level--;
+		token.level = level;
+		if (token.nesting && token.nesting > 0) level++;
+		if (token.type === "text" && curr + 1 < max && tokens[curr + 1]?.type === "text") tokens[curr + 1].content = token.content + tokens[curr + 1].content;
+		else {
+			if (curr !== last) tokens[last] = token;
+			last++;
+		}
+	}
+	if (curr !== last) tokens.length = last;
+}
+var fragments_join_default = fragments_join;
+
+//#endregion
+//#region src/common/html_re.ts
+const open_tag = `<[A-Za-z][A-Za-z0-9\\-]*(?:\\s+[a-zA-Z_:][a-zA-Z0-9:._-]*(?:\\s*=\\s*(?:[^"'=<>\`\\x00-\\x20]+|'[^']*'|"[^"]*"))?)*\\s*\\/?>`;
+const close_tag = "<\\/[A-Za-z][A-Za-z0-9\\-]*\\s*>";
+const HTML_TAG_RE = /* @__PURE__ */ new RegExp(`^(?:${open_tag}|${close_tag}|<!---?>|<!--(?:[^-]|-[^-]|--[^>])*-->|<\\?[\\s\\S]*?\\?>|<![A-Za-z][^>]*>|<!\\[CDATA\\[[\\s\\S]*?\\]\\]>)`);
+const HTML_OPEN_CLOSE_TAG_RE = /* @__PURE__ */ new RegExp(`^(?:${open_tag}|${close_tag})`);
+
+//#endregion
+//#region src/rules/inline/html_inline.ts
+function isHtmlSpace(code$1) {
+	return code$1 === 32 || code$1 === 9 || code$1 === 10 || code$1 === 12 || code$1 === 13;
+}
+function isLinkOpen$1(str) {
+	if (str.length < 3) return false;
+	if (str.charCodeAt(0) !== 60) return false;
+	if ((str.charCodeAt(1) | 32) !== 97) return false;
+	const ch = str.charCodeAt(2);
+	return ch === 62 || isHtmlSpace(ch);
+}
+function isLinkClose$1(str) {
+	if (str.length < 4) return false;
+	if (str.charCodeAt(0) !== 60 || str.charCodeAt(1) !== 47) return false;
+	if ((str.charCodeAt(2) | 32) !== 97) return false;
+	for (let i = 3; i < str.length; i++) {
+		const ch = str.charCodeAt(i);
+		if (ch === 62) return true;
+		if (!isHtmlSpace(ch)) return false;
+	}
+	return false;
+}
+function isLetter(ch) {
+	const lc = ch | 32;
+	return lc >= 97 && lc <= 122;
+}
+function html_inline(state, silent) {
+	if (!state.md.options.html) return false;
+	const max = state.posMax;
+	const pos = state.pos;
+	const src = state.src;
+	if (src.charCodeAt(pos) !== 60 || pos + 2 >= max) return false;
+	const ch = src.charCodeAt(pos + 1);
+	if (ch !== 33 && ch !== 63 && ch !== 47 && !isLetter(ch)) return false;
+	const match = src.slice(pos).match(HTML_TAG_RE);
+	if (!match) return false;
+	const markup = match[0];
+	if (!silent) {
+		const token = state.pushSimple("html_inline", "");
+		token.content = markup;
+		if (isLinkOpen$1(markup)) state.linkLevel++;
+		if (isLinkClose$1(markup)) state.linkLevel--;
+	}
+	state.pos += markup.length;
+	return true;
+}
+var html_inline_default = html_inline;
+
+//#endregion
+//#region src/rules/inline/image.ts
+function image(state, silent) {
+	let code$1, content, label, pos, ref, res, title, start;
+	let href = "";
+	const oldPos = state.pos;
+	const max = state.posMax;
+	if (state.src.charCodeAt(state.pos) !== 33) return false;
+	if (state.src.charCodeAt(state.pos + 1) !== 91) return false;
+	const labelStart = state.pos + 2;
+	const labelEnd = parse_link_label_default(state, state.pos + 1, false);
+	if (labelEnd < 0) return false;
+	pos = labelEnd + 1;
+	if (pos < max && state.src.charCodeAt(pos) === 40) {
+		pos++;
+		for (; pos < max; pos++) {
+			code$1 = state.src.charCodeAt(pos);
+			if (code$1 !== 32 && code$1 !== 10) break;
+		}
+		if (pos >= max) return false;
+		res = parse_link_destination_default(state.src, pos, state.posMax);
+		if (res.ok) {
+			href = state.md.normalizeLink(res.str);
+			if (state.md.validateLink(href)) pos = res.pos;
+			else href = "";
+			start = pos;
+			for (; pos < max; pos++) {
+				code$1 = state.src.charCodeAt(pos);
+				if (code$1 !== 32 && code$1 !== 10) break;
+			}
+			res = parse_link_title_default(state.src, pos, state.posMax);
+			if (pos < max && start !== pos && res.ok) {
+				title = res.str;
+				pos = res.pos;
+				for (; pos < max; pos++) {
+					code$1 = state.src.charCodeAt(pos);
+					if (code$1 !== 32 && code$1 !== 10) break;
+				}
+			} else title = "";
+		}
+		if (pos >= max || state.src.charCodeAt(pos) !== 41) {
+			state.pos = oldPos;
+			return false;
+		}
+		pos++;
+	} else {
+		if (typeof state.env.references === "undefined") return false;
+		if (pos < max && state.src.charCodeAt(pos) === 91) {
+			start = pos + 1;
+			pos = parse_link_label_default(state, pos);
+			if (pos >= 0) label = state.src.slice(start, pos++);
+			else pos = labelEnd + 1;
+		} else pos = labelEnd + 1;
+		if (!label) label = state.src.slice(labelStart, labelEnd);
+		ref = state.env.references[normalizeReference(label)];
+		if (!ref) {
+			state.pos = oldPos;
+			return false;
+		}
+		href = ref.href;
+		title = ref.title;
+	}
+	if (!silent) {
+		content = state.src.slice(labelStart, labelEnd);
+		const tokens = [];
+		state.md.inline.parse(content, state.md, state.env, tokens);
+		const token = state.push("image", "img", 0);
+		token.attrs = [["src", href], ["alt", ""]];
+		token.children = tokens;
+		token.content = content;
+		if (title) token.attrs.push(["title", title]);
+	}
+	state.pos = pos;
+	state.posMax = max;
+	return true;
+}
+var image_default = image;
+
+//#endregion
+//#region src/rules/inline/link.ts
+function skipSpaces(src, pos, max) {
+	while (pos < max) {
+		const code$1 = src.charCodeAt(pos);
+		if (code$1 !== 32 && code$1 !== 10) break;
+		pos++;
+	}
+	return pos;
+}
+function link(state, silent) {
+	if (state.src.charCodeAt(state.pos) !== 91) return false;
+	const src = state.src;
+	const oldPos = state.pos;
+	const max = state.posMax;
+	const labelStart = state.pos + 1;
+	const labelEnd = parse_link_label_default(state, state.pos, true);
+	if (labelEnd < 0) return false;
+	let pos = labelEnd + 1;
+	let href = "";
+	let title = "";
+	let parseReference = true;
+	if (pos < max && src.charCodeAt(pos) === 40) {
+		pos = skipSpaces(src, pos + 1, max);
+		const destRes = parse_link_destination_default(src, pos, max);
+		if (destRes.ok) {
+			const normalized = state.md.normalizeLink(destRes.str);
+			if (state.md.validateLink(normalized)) {
+				href = normalized;
+				pos = destRes.pos;
+				parseReference = false;
+			}
+		} else if (pos < max && src.charCodeAt(pos) === 41) {
+			href = "";
+			parseReference = false;
+		}
+		if (!parseReference) {
+			pos = skipSpaces(src, pos, max);
+			if (pos < max && src.charCodeAt(pos) !== 41) {
+				const titleRes = parse_link_title_default(src, pos, max);
+				if (titleRes.ok) {
+					title = titleRes.str;
+					pos = skipSpaces(src, titleRes.pos, max);
+				}
+			}
+			if (pos < max && src.charCodeAt(pos) === 41) pos++;
+			else parseReference = true;
+		}
+	}
+	if (parseReference) {
+		if (typeof state.env.references === "undefined") return false;
+		let label;
+		pos = labelEnd + 1;
+		if (pos < max && src.charCodeAt(pos) === 91) {
+			const refStart = pos + 1;
+			const refEnd = parse_link_label_default(state, pos);
+			if (refEnd >= 0) {
+				label = src.slice(refStart, refEnd);
+				if (!label) label = src.slice(labelStart, labelEnd);
+				pos = refEnd + 1;
+			} else label = src.slice(labelStart, labelEnd);
+		} else label = src.slice(labelStart, labelEnd);
+		const ref = state.env.references[normalizeReference(label)];
+		if (!ref) {
+			state.pos = oldPos;
+			return false;
+		}
+		href = ref.href;
+		title = ref.title;
+	}
+	if (!silent) {
+		state.pos = labelStart;
+		state.posMax = labelEnd;
+		const token_o = state.push("link_open", "a", 1);
+		token_o.attrs = title ? [["href", href], ["title", title]] : [["href", href]];
+		state.linkLevel++;
+		state.md.inline.tokenize(state);
+		state.linkLevel--;
+		state.push("link_close", "a", -1);
+	}
+	state.pos = pos;
+	state.posMax = max;
+	return true;
+}
+var link_default = link;
+
+//#endregion
+//#region src/rules/inline/linkify.ts
+function isAsciiLetter(code$1) {
+	const lower = code$1 | 32;
+	return lower >= 97 && lower <= 122;
+}
+function isDigit(code$1) {
+	return code$1 >= 48 && code$1 <= 57;
+}
+function isSchemeChar(code$1) {
+	return isAsciiLetter(code$1) || isDigit(code$1) || code$1 === 43 || code$1 === 45 || code$1 === 46;
+}
+function extractTrailingScheme(pending) {
+	if (pending.length === 0) return null;
+	let start = pending.length - 1;
+	while (start >= 0 && isSchemeChar(pending.charCodeAt(start))) start--;
+	start++;
+	if (start >= pending.length || !isAsciiLetter(pending.charCodeAt(start))) return null;
+	return pending.slice(start);
+}
+function scanLinkifyCandidate(src, start, max) {
+	let end = start;
+	while (end < max) {
+		const ch = src.charCodeAt(end);
+		if (ch <= 32 || ch === 127 || ch === 60) break;
+		end++;
+	}
+	return src.slice(start, end);
+}
+function linkify$1(state, silent) {
+	if (!state.md.options.linkify) return false;
+	if (state.linkLevel > 0) return false;
+	const pos = state.pos;
+	const max = state.posMax;
+	if (pos + 3 > max) return false;
+	if (state.src.charCodeAt(pos) !== 58) return false;
+	if (state.src.charCodeAt(pos + 1) !== 47) return false;
+	if (state.src.charCodeAt(pos + 2) !== 47) return false;
+	const proto = extractTrailingScheme(state.pending);
+	if (!proto) return false;
+	const candidate = scanLinkifyCandidate(state.src, pos - proto.length, max);
+	const link$1 = state.md.linkify.matchAtStart(candidate);
+	if (!link$1) return false;
+	let url = link$1.url;
+	if (url.length <= proto.length) return false;
+	let urlEnd = url.length;
+	while (urlEnd > 0 && url.charCodeAt(urlEnd - 1) === 42) urlEnd--;
+	if (urlEnd !== url.length) url = url.slice(0, urlEnd);
+	const fullUrl = state.md.normalizeLink(url);
+	if (!state.md.validateLink(fullUrl)) return false;
+	if (!silent) {
+		state.pending = state.pending.slice(0, -proto.length);
+		const token_o = state.push("link_open", "a", 1);
+		token_o.attrs = [["href", fullUrl]];
+		token_o.markup = "linkify";
+		token_o.info = "auto";
+		const token_t = state.push("text", "", 0);
+		token_t.content = state.md.normalizeLinkText(url);
+		const token_c = state.push("link_close", "a", -1);
+		token_c.markup = "linkify";
+		token_c.info = "auto";
+	}
+	state.pos += url.length - proto.length;
+	return true;
+}
+
+//#endregion
+//#region src/rules/inline/newline.ts
+/**
+* Inline rule: newline
+* Process newlines
+*/
+function newline(state, silent) {
+	let pos = state.pos;
+	if (state.src.charCodeAt(pos) !== 10) return false;
+	const pmax = state.pending.length - 1;
+	const max = state.posMax;
+	if (!silent) if (pmax >= 0 && state.pending.charCodeAt(pmax) === 32) if (pmax >= 1 && state.pending.charCodeAt(pmax - 1) === 32) {
+		let ws = pmax - 1;
+		while (ws >= 1 && state.pending.charCodeAt(ws - 1) === 32) ws--;
+		state.pending = state.pending.slice(0, ws);
+		state.pushSimple("hardbreak", "br");
+	} else {
+		state.pending = state.pending.slice(0, -1);
+		state.pushSimple("softbreak", "br");
+	}
+	else state.pushSimple("softbreak", "br");
+	pos++;
+	while (pos < max) {
+		const ch = state.src.charCodeAt(pos);
+		if (ch !== 9 && ch !== 32) break;
+		pos++;
+	}
+	state.pos = pos;
+	return true;
+}
+var newline_default = newline;
+
+//#endregion
+//#region src/rules/inline/strikethrough.ts
+function strikethrough_tokenize(state, silent) {
+	const start = state.pos;
+	const marker = state.src.charCodeAt(start);
+	if (silent) return false;
+	if (marker !== 126) return false;
+	const scanned = state.scanDelims(state.pos, true);
+	if (!scanned) return false;
+	let len = scanned.length;
+	const ch = String.fromCharCode(marker);
+	if (len < 2) return false;
+	let token;
+	if (len % 2) {
+		token = state.push("text", "", 0);
+		token.content = ch;
+		len--;
+	}
+	for (let i = 0; i < len; i += 2) {
+		token = state.push("text", "", 0);
+		token.content = ch + ch;
+		state.delimiters.push({
+			marker,
+			length: 0,
+			token: state.tokens.length - 1,
+			end: -1,
+			open: scanned.can_open,
+			close: scanned.can_close
+		});
+	}
+	state.pos += scanned.length;
+	return true;
+}
+function postProcess(state, delimiters) {
+	let token;
+	const loneMarkers = [];
+	const max = delimiters.length;
+	for (let i = 0; i < max; i++) {
+		const startDelim = delimiters[i];
+		if (startDelim.marker !== 126) continue;
+		if (startDelim.end === -1) continue;
+		const endDelim = delimiters[startDelim.end];
+		token = state.tokens[startDelim.token];
+		token.type = "s_open";
+		token.tag = "s";
+		token.nesting = 1;
+		token.markup = "~~";
+		token.content = "";
+		token = state.tokens[endDelim.token];
+		token.type = "s_close";
+		token.tag = "s";
+		token.nesting = -1;
+		token.markup = "~~";
+		token.content = "";
+		if (state.tokens[endDelim.token - 1].type === "text" && state.tokens[endDelim.token - 1].content === "~") loneMarkers.push(endDelim.token - 1);
+	}
+	while (loneMarkers.length) {
+		const i = loneMarkers.pop();
+		let j = i + 1;
+		while (j < state.tokens.length && state.tokens[j].type === "s_close") j++;
+		j--;
+		if (i !== j) {
+			token = state.tokens[j];
+			state.tokens[j] = state.tokens[i];
+			state.tokens[i] = token;
+		}
+	}
+}
+function strikethrough_postProcess(state) {
+	const delimiters = state.delimiters;
+	postProcess(state, delimiters);
+	const tokens_meta = state.tokens_meta;
+	if (tokens_meta) {
+		for (let curr = 0; curr < tokens_meta.length; curr++) if (tokens_meta[curr] && tokens_meta[curr].delimiters) postProcess(state, tokens_meta[curr].delimiters);
+	}
+}
+const strikethrough = {
+	tokenize: strikethrough_tokenize,
+	postProcess: strikethrough_postProcess
+};
+
+//#endregion
+//#region src/rules/inline/text.ts
+/**
+* Inline rule: text
+* Skip text characters for text token, place those to pending buffer
+* and increment current pos
+*/
+const TERMINATOR_TABLE = new Uint8Array(256);
+for (const code$1 of [
+	10,
+	33,
+	35,
+	36,
+	37,
+	38,
+	42,
+	43,
+	45,
+	58,
+	60,
+	61,
+	62,
+	64,
+	91,
+	92,
+	93,
+	94,
+	95,
+	96,
+	123,
+	125,
+	126
+]) TERMINATOR_TABLE[code$1] = 1;
+function isTerminatorChar(ch) {
+	return ch < 256 && TERMINATOR_TABLE[ch] === 1;
+}
+function text(state, silent) {
+	const src = state.src;
+	const start = state.pos;
+	const max = state.posMax;
+	if (start >= max || isTerminatorChar(src.charCodeAt(start))) return false;
+	let pos = start + 1;
+	while (pos < max && !isTerminatorChar(src.charCodeAt(pos))) pos++;
+	if (!silent) state.pending += pos === start + 1 ? src.charAt(start) : src.slice(start, pos);
+	state.pos = pos;
+	return true;
+}
+var text_default = text;
+
+//#endregion
+//#region src/parse/rule_profile.ts
+function now() {
+	if (typeof performance !== "undefined" && typeof performance.now === "function") return performance.now();
+	return Date.now();
+}
+function median(values) {
+	if (values.length === 0) return 0;
+	const sorted = values.slice().sort((a, b) => a - b);
+	const mid = Math.floor(sorted.length / 2);
+	return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+function createRecord(chain, name) {
+	return {
+		chain,
+		name,
+		calls: 0,
+		hits: 0,
+		inclusiveMs: 0,
+		medianMs: 0,
+		maxMs: 0,
+		normalCalls: 0,
+		normalHits: 0,
+		silentCalls: 0,
+		silentHits: 0,
+		samples: []
+	};
+}
+function getRuleProfile(env) {
+	const carrier = env;
+	if (!carrier) return null;
+	if (carrier.__mdtsRuleProfile) return carrier.__mdtsRuleProfile;
+	if (!carrier.__mdtsProfileRules) return null;
+	const meta = carrier.__mdtsProfileRules === true ? {} : carrier.__mdtsProfileRules;
+	const session = {
+		enabled: true,
+		fixture: meta.fixture,
+		mode: meta.mode,
+		startedAt: now(),
+		records: Object.create(null)
+	};
+	carrier.__mdtsRuleProfile = session;
+	return session;
+}
+function recordRuleInvocation(env, chain, name, durationMs, hit, silent) {
+	const session = getRuleProfile(env);
+	if (!session) return;
+	const key = `${chain}:${name}`;
+	const record = session.records[key] ?? (session.records[key] = createRecord(chain, name));
+	record.calls++;
+	record.inclusiveMs += durationMs;
+	if (durationMs > record.maxMs) record.maxMs = durationMs;
+	record.samples.push(durationMs);
+	if (silent) {
+		record.silentCalls++;
+		if (hit) record.silentHits++;
+	} else {
+		record.normalCalls++;
+		if (hit) record.normalHits++;
+	}
+	if (hit) record.hits++;
+	session.completedAt = now();
+}
+function finalizeRuleProfile(env) {
+	const session = getRuleProfile(env);
+	if (!session) return null;
+	const records = Object.keys(session.records);
+	for (let i = 0; i < records.length; i++) {
+		const record = session.records[records[i]];
+		record.medianMs = median(record.samples);
+	}
+	session.completedAt = now();
+	return session;
+}
+
+//#endregion
+//#region src/parse/parser_inline/ruler.ts
+var InlineRuler = class {
+	rules = [];
+	cache = null;
+	namedCache = null;
+	version = 0;
+	invalidateCache() {
+		this.cache = null;
+		this.namedCache = null;
+		this.version++;
+	}
+	/**
+	* Push new rule to the end of chain
+	*/
+	push(name, fn, options) {
+		const idx = this.rules.findIndex((r) => r.name === name);
+		if (idx >= 0) this.rules.splice(idx, 1);
+		this.rules.push({
+			name,
+			fn,
+			alt: options?.alt || [],
+			enabled: true
+		});
+		this.invalidateCache();
+	}
+	at(name, fn, options) {
+		const index = this.rules.findIndex((rule) => rule.name === name);
+		if (fn === void 0) {
+			if (index < 0) return void 0;
+			const rule = this.rules[index];
+			return Object.freeze({
+				name: rule.name,
+				fn: rule.fn,
+				alt: rule.alt ? Object.freeze(rule.alt.slice()) : void 0,
+				enabled: rule.enabled
+			});
+		}
+		if (index < 0) throw new Error(`Parser rule not found: ${name}`);
+		this.rules[index].fn = fn;
+		if (options?.alt !== void 0) this.rules[index].alt = options.alt;
+		this.invalidateCache();
+	}
+	before(beforeName, name, fn, options) {
+		const i = this.rules.findIndex((r) => r.name === beforeName);
+		if (i < 0) throw new Error(`Parser rule not found: ${beforeName}`);
+		const exists = this.rules.findIndex((r) => r.name === name);
+		if (exists >= 0) this.rules.splice(exists, 1);
+		this.rules.splice(i, 0, {
+			name,
+			fn,
+			alt: options?.alt || [],
+			enabled: true
+		});
+		this.invalidateCache();
+	}
+	after(afterName, name, fn, options) {
+		const i = this.rules.findIndex((r) => r.name === afterName);
+		if (i < 0) throw new Error(`Parser rule not found: ${afterName}`);
+		const exists = this.rules.findIndex((r) => r.name === name);
+		if (exists >= 0) this.rules.splice(exists, 1);
+		this.rules.splice(i + 1, 0, {
+			name,
+			fn,
+			alt: options?.alt || [],
+			enabled: true
+		});
+		this.invalidateCache();
+	}
+	enable(names, ignoreInvalid) {
+		const list$1 = Array.isArray(names) ? names : [names];
+		const found = [];
+		let changed = false;
+		for (const n of list$1) {
+			const idx = this.rules.findIndex((r) => r.name === n);
+			if (idx < 0) {
+				if (!ignoreInvalid) throw new Error(`Rules manager: invalid rule name ${n}`);
+				continue;
+			}
+			found.push(n);
+			if (!this.rules[idx].enabled) {
+				this.rules[idx].enabled = true;
+				changed = true;
+			}
+		}
+		if (changed) this.invalidateCache();
+		return found;
+	}
+	disable(names, ignoreInvalid) {
+		const list$1 = Array.isArray(names) ? names : [names];
+		const found = [];
+		let changed = false;
+		for (const n of list$1) {
+			const idx = this.rules.findIndex((r) => r.name === n);
+			if (idx < 0) {
+				if (!ignoreInvalid) throw new Error(`Rules manager: invalid rule name ${n}`);
+				continue;
+			}
+			found.push(n);
+			if (this.rules[idx].enabled) {
+				this.rules[idx].enabled = false;
+				changed = true;
+			}
+		}
+		if (changed) this.invalidateCache();
+		return found;
+	}
+	enableOnly(names) {
+		const allow = new Set(names);
+		let changed = false;
+		for (const r of this.rules) {
+			const next = allow.has(r.name);
+			if (r.enabled !== next) {
+				r.enabled = next;
+				changed = true;
+			}
+		}
+		if (changed) this.invalidateCache();
+	}
+	/**
+	* Get rules for specified chain name (or empty string for default)
+	*/
+	getRules(chainName) {
+		const chain = chainName || "";
+		if (!this.cache) this.compileCache();
+		return this.cache.get(chain) ?? [];
+	}
+	getNamedRules(chainName) {
+		const chain = chainName || "";
+		if (!this.namedCache) this.compileCache();
+		return this.namedCache.get(chain) ?? [];
+	}
+	compileCache() {
+		const chains = new Set([""]);
+		for (const rule of this.rules) {
+			if (!rule.enabled) continue;
+			if (rule.alt) for (const alt of rule.alt) chains.add(alt);
+		}
+		const cache = /* @__PURE__ */ new Map();
+		const namedCache = /* @__PURE__ */ new Map();
+		for (const chain of chains) {
+			const bucket = [];
+			const namedBucket = [];
+			for (const rule of this.rules) {
+				if (!rule.enabled) continue;
+				if (chain !== "" && !rule.alt?.includes(chain)) continue;
+				bucket.push(rule.fn);
+				namedBucket.push({
+					name: rule.name,
+					fn: rule.fn
+				});
+			}
+			cache.set(chain, bucket);
+			namedCache.set(chain, namedBucket);
+		}
+		this.cache = cache;
+		this.namedCache = namedCache;
+	}
+};
+
+//#endregion
+//#region src/parse/parser_inline/state_inline.ts
+/**
+* StateInline - state object for inline parser
+*/
+var StateInline = class {
+	src;
+	md;
+	env;
+	tokens;
+	tokens_meta;
+	pos;
+	posMax;
+	level;
+	pending;
+	pendingLevel;
+	cache;
+	delimiters;
+	_prev_delimiters;
+	backticks;
+	backticksScanned;
+	linkLevel;
+	linkLabelNoCloseFrom;
+	maxNesting;
+	constructor(src, md, env, outTokens) {
+		this.src = src;
+		this.md = md;
+		this.env = env;
+		this.tokens = outTokens;
+		this.tokens_meta = new Array(outTokens.length);
+		this.pos = 0;
+		this.posMax = src.length;
+		this.level = 0;
+		this.pending = "";
+		this.pendingLevel = 0;
+		this.cache = [];
+		this.delimiters = [];
+		this._prev_delimiters = [];
+		this.backticks = {};
+		this.backticksScanned = false;
+		this.linkLevel = 0;
+		this.linkLabelNoCloseFrom = -1;
+		this.maxNesting = md.options.maxNesting;
+	}
+	/**
+	* Push pending text as a text token
+	*/
+	pushPending() {
+		const token = new Token("text", "", 0);
+		token.content = this.pending;
+		token.level = this.pendingLevel;
+		this.tokens.push(token);
+		this.pending = "";
+		return token;
+	}
+	pushSimple(type, tag) {
+		if (this.pending) this.pushPending();
+		const token = new Token(type, tag, 0);
+		token.level = this.level;
+		this.pendingLevel = this.level;
+		this.tokens.push(token);
+		this.tokens_meta.push(null);
+		return token;
+	}
+	/**
+	* Push a new token to the output
+	*/
+	push(type, tag, nesting) {
+		if (this.pending) this.pushPending();
+		if (nesting === 0) return this.pushSimple(type, tag);
+		const token = new Token(type, tag, nesting);
+		let token_meta = null;
+		if (nesting < 0) {
+			this.level--;
+			this.delimiters = this._prev_delimiters.pop();
+		}
+		token.level = this.level;
+		if (nesting > 0) {
+			this.level++;
+			this._prev_delimiters.push(this.delimiters);
+			this.delimiters = [];
+			token_meta = { delimiters: this.delimiters };
+		}
+		this.pendingLevel = this.level;
+		this.tokens.push(token);
+		this.tokens_meta.push(token_meta);
+		return token;
+	}
+	/**
+	* Scan delimiter run (for emphasis)
+	*/
+	scanDelims(start, canSplitWord) {
+		const { src, posMax } = this;
+		const marker = src.charCodeAt(start);
+		let pos = start;
+		while (pos < posMax && src.charCodeAt(pos) === marker) pos++;
+		const count = pos - start;
+		const lastChar = start > 0 ? src.charCodeAt(start - 1) : 32;
+		const nextChar = pos < posMax ? src.charCodeAt(pos) : 32;
+		const isLastWhiteSpace = isWhiteSpace(lastChar);
+		const isNextWhiteSpace = isWhiteSpace(nextChar);
+		const isLastPunctChar = isPunctCode(lastChar);
+		const isNextPunctChar = isPunctCode(nextChar);
+		const left_flanking = !isNextWhiteSpace && (!isNextPunctChar || isLastWhiteSpace || isLastPunctChar);
+		const right_flanking = !isLastWhiteSpace && (!isLastPunctChar || isNextWhiteSpace || isNextPunctChar);
+		return {
+			can_open: left_flanking && (canSplitWord || !right_flanking || isLastPunctChar),
+			can_close: right_flanking && (canSplitWord || !left_flanking || isNextPunctChar),
+			length: count
+		};
+	}
+};
+StateInline.prototype.Token = Token;
+
+//#endregion
+//#region src/parse/parser_inline/index.ts
+/**
+* ParserInline - inline parser with Ruler-based rule management
+*/
+const INLINE_TERMINATOR_RE = /[\n!#$%&*+\-:<=>@[\]\\^_`{}~]/;
+function runDefaultRule(state, silent) {
+	switch (state.src.charCodeAt(state.pos)) {
+		case 10: return newline_default(state, silent);
+		case 33: return image_default(state, silent);
+		case 38: return entity_default(state, silent);
+		case 42:
+		case 95: return emphasis.tokenize(state, silent);
+		case 58: return state.md.options.linkify && linkify$1(state, silent);
+		case 60: return autolink_default(state, silent) || html_inline_default(state, silent);
+		case 91: return link_default(state, silent);
+		case 92: return escape_default(state, silent);
+		case 96: return backticks_default(state, silent);
+		case 126: return strikethrough.tokenize(state, silent);
+		default: return text_default(state, silent);
+	}
+}
+function isPlainInlineText(src) {
+	return !INLINE_TERMINATOR_RE.test(src);
+}
+var ParserInline = class {
+	ruler;
+	ruler2;
+	cachedRulesVersion = -1;
+	cachedRules = [];
+	cachedRules2Version = -1;
+	cachedRules2 = [];
+	defaultRulerVersion;
+	defaultRuler2Version;
+	constructor() {
+		this.ruler = new InlineRuler();
+		this.ruler2 = new InlineRuler();
+		this.ruler.push("text", text_default);
+		this.ruler.push("linkify", linkify$1);
+		this.ruler.push("newline", newline_default);
+		this.ruler.push("escape", escape_default);
+		this.ruler.push("backticks", backticks_default);
+		this.ruler.push("strikethrough", strikethrough.tokenize);
+		this.ruler.push("emphasis", emphasis.tokenize);
+		this.ruler.push("link", link_default);
+		this.ruler.push("image", image_default);
+		this.ruler.push("autolink", autolink_default);
+		this.ruler.push("html_inline", html_inline_default);
+		this.ruler.push("entity", entity_default);
+		this.ruler2.push("balance_pairs", balance_pairs_default);
+		this.ruler2.push("strikethrough", strikethrough.postProcess);
+		this.ruler2.push("emphasis", emphasis.postProcess);
+		this.ruler2.push("fragments_join", fragments_join_default);
+		this.defaultRulerVersion = this.ruler.version;
+		this.defaultRuler2Version = this.ruler2.version;
+	}
+	/**
+	* Skip single token by running all rules in validation mode
+	*/
+	skipToken(state) {
+		const pos = state.pos;
+		const rules = this.getRules();
+		const len = rules.length;
+		const cache = state.cache;
+		const cached = cache[pos];
+		const shouldProfile = !!state.env && (Object.prototype.hasOwnProperty.call(state.env, "__mdtsRuleProfile") || Object.prototype.hasOwnProperty.call(state.env, "__mdtsProfileRules"));
+		if (cached !== void 0) {
+			state.pos = cached;
+			return;
+		}
+		let ok = false;
+		if (state.level < state.maxNesting) if (!shouldProfile) if (this.isDefaultRuleset()) {
+			state.level++;
+			ok = runDefaultRule(state, true);
+			state.level--;
+			if (ok && pos >= state.pos) throw new Error("inline rule didn't increment state.pos");
+		} else for (let i = 0; i < len; i++) {
+			state.level++;
+			ok = rules[i](state, true);
+			state.level--;
+			if (ok) {
+				if (pos >= state.pos) throw new Error("inline rule didn't increment state.pos");
+				break;
+			}
+		}
+		else {
+			const namedRules = this.ruler.getNamedRules("");
+			for (let i = 0; i < len; i++) {
+				state.level++;
+				const startedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				ok = namedRules[i].fn(state, true);
+				const endedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				recordRuleInvocation(state.env, "inline", namedRules[i].name, endedAt - startedAt, !!ok, true);
+				state.level--;
+				if (ok) {
+					if (pos >= state.pos) throw new Error("inline rule didn't increment state.pos");
+					break;
+				}
+			}
+		}
+		else state.pos = state.posMax;
+		if (!ok) state.pos++;
+		cache[pos] = state.pos;
+	}
+	/**
+	* Generate tokens for input string
+	*/
+	tokenize(state) {
+		const rules = this.getRules();
+		const len = rules.length;
+		const end = state.posMax;
+		if (!(!!state.env && (Object.prototype.hasOwnProperty.call(state.env, "__mdtsRuleProfile") || Object.prototype.hasOwnProperty.call(state.env, "__mdtsProfileRules")))) {
+			const useDefaultDispatch = this.isDefaultRuleset();
+			while (state.pos < end) {
+				const prevPos = state.pos;
+				let ok = false;
+				if (state.level < state.maxNesting) {
+					if (useDefaultDispatch) ok = runDefaultRule(state, false);
+					else for (let i = 0; i < len; i++) {
+						ok = rules[i](state, false);
+						if (ok) break;
+					}
+					if (ok && prevPos >= state.pos) throw new Error("inline rule didn't increment state.pos");
+				}
+				if (ok) {
+					if (state.pos >= end) break;
+					continue;
+				}
+				state.pending += state.src.charAt(state.pos++);
+			}
+			if (state.pending) state.pushPending();
+			return;
+		}
+		const namedRules = this.ruler.getNamedRules("");
+		while (state.pos < end) {
+			const prevPos = state.pos;
+			let ok = false;
+			if (state.level < state.maxNesting) for (let i = 0; i < len; i++) {
+				const startedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				ok = namedRules[i].fn(state, false);
+				const endedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				recordRuleInvocation(state.env, "inline", namedRules[i].name, endedAt - startedAt, !!ok, false);
+				if (ok) {
+					if (prevPos >= state.pos) throw new Error("inline rule didn't increment state.pos");
+					break;
+				}
+			}
+			if (ok) {
+				if (state.pos >= end) break;
+				continue;
+			}
+			state.pending += state.src.charAt(state.pos++);
+		}
+		if (state.pending) state.pushPending();
+	}
+	/**
+	* ParserInline.parse(str, md, env, outTokens)
+	*
+	* Process input string and push inline tokens into `outTokens`.
+	* Matches the signature from original markdown-it/lib/parser_inline.mjs
+	*/
+	isDefaultRuleset() {
+		return this.ruler.version === this.defaultRulerVersion && this.ruler2.version === this.defaultRuler2Version;
+	}
+	parseSource(src, md, env, outTokens) {
+		if (typeof src === "string" && src.length > 0 && this.isDefaultRuleset() && isPlainInlineText(src)) {
+			const token = new Token("text", "", 0);
+			token.content = src;
+			outTokens.push(token);
+			return;
+		}
+		const state = new StateInline(src, md, env, outTokens);
+		this.tokenize(state);
+		const rules2 = this.getRules2();
+		const len = rules2.length;
+		if (!(!!state.env && (Object.prototype.hasOwnProperty.call(state.env, "__mdtsRuleProfile") || Object.prototype.hasOwnProperty.call(state.env, "__mdtsProfileRules")))) {
+			for (let i = 0; i < len; i++) rules2[i](state, false);
+			return;
+		}
+		const namedRules2 = this.ruler2.getNamedRules("");
+		for (let i = 0; i < len; i++) {
+			const startedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+			namedRules2[i].fn(state, false);
+			const endedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+			recordRuleInvocation(state.env, "inline2", namedRules2[i].name, endedAt - startedAt, true, false);
+		}
+	}
+	parse(str, md, env, outTokens) {
+		this.parseSource(str, md, env, outTokens);
+	}
+	getRules() {
+		if (this.cachedRulesVersion !== this.ruler.version) {
+			this.cachedRules = this.ruler.getRules("");
+			this.cachedRulesVersion = this.ruler.version;
+		}
+		return this.cachedRules;
+	}
+	getRules2() {
+		if (this.cachedRules2Version !== this.ruler2.version) {
+			this.cachedRules2 = this.ruler2.getRules("");
+			this.cachedRules2Version = this.ruler2.version;
+		}
+		return this.cachedRules2;
+	}
+};
+
+//#endregion
+//#region src/rules/core/inline.ts
+/**
+* Core rule: inline
+* Iterates through tokens and runs inline parser on 'inline' type tokens.
+*/
+function inline(state) {
+	const tokens = state.tokens;
+	const canUsePlainTextFastPath = !!(state.md?.inline)?.isDefaultRuleset?.();
+	for (let i = 0, l = tokens.length; i < l; i++) {
+		const tok = tokens[i];
+		if (tok.type === "inline" && state.md) {
+			if (!tok.children) tok.children = [];
+			if (canUsePlainTextFastPath && tok.content.length > 0 && isPlainInlineText(tok.content)) {
+				const text$1 = new Token("text", "", 0);
+				text$1.content = tok.content;
+				tok.children.push(text$1);
+				continue;
+			}
+			state.md.inline.parse(tok.content, state.md, state.env, tok.children);
+		}
+	}
+}
+
+//#endregion
+//#region src/rules/core/linkify.ts
+const CJK_CHAR_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const ASCII_DOMAIN_START_RE = /[0-9a-z]/i;
+function isLinkOpen(str) {
+	return /^<a[>\s]/i.test(str);
+}
+function isLinkClose(str) {
+	return /^<\/a\s*>/i.test(str);
+}
+function trimCjkPrefixFromFuzzyLink(linkify$2, link$1) {
+	if (link$1.schema || link$1.index !== 0 || !link$1.raw) return link$1;
+	for (let offset = 1; offset < link$1.raw.length; offset++) {
+		const prevChar = link$1.raw[offset - 1];
+		const nextChar = link$1.raw[offset];
+		if (!CJK_CHAR_RE.test(prevChar) || !ASCII_DOMAIN_START_RE.test(nextChar)) continue;
+		const suffix = link$1.raw.slice(offset);
+		const candidate = linkify$2.match(suffix)?.[0];
+		if (!candidate || candidate.index !== 0 || candidate.lastIndex !== suffix.length) continue;
+		return {
+			...candidate,
+			index: link$1.index + offset,
+			lastIndex: link$1.index + offset + candidate.lastIndex
+		};
+	}
+	return link$1;
+}
+function linkify(state) {
+	const blockTokens = state.tokens;
+	if (!state.md?.options?.linkify) return;
+	for (let j = 0; j < blockTokens.length; j++) {
+		const blockToken = blockTokens[j];
+		if (blockToken.type !== "inline" || !state.md.linkify.test(blockToken.content)) continue;
+		let tokens = blockToken.children;
+		if (!tokens) {
+			tokens = [];
+			blockToken.children = tokens;
+		}
+		let htmlLinkLevel = 0;
+		for (let i = tokens.length - 1; i >= 0; i--) {
+			const currentToken = tokens[i];
+			if (currentToken.type === "link_close") {
+				i--;
+				while (i >= 0 && tokens[i].level !== currentToken.level && tokens[i].type !== "link_open") i--;
+				continue;
+			}
+			if (currentToken.type === "html_inline") {
+				if (isLinkOpen(currentToken.content) && htmlLinkLevel > 0) htmlLinkLevel--;
+				if (isLinkClose(currentToken.content)) htmlLinkLevel++;
+			}
+			if (htmlLinkLevel > 0) continue;
+			if (currentToken.type !== "text" || !state.md.linkify.test(currentToken.content)) continue;
+			const text$1 = currentToken.content;
+			let links = (state.md.linkify.match(text$1) || []).map((link$1) => trimCjkPrefixFromFuzzyLink(state.md.linkify, link$1));
+			if (links.length === 0) continue;
+			const nodes = [];
+			let level = currentToken.level;
+			let lastPos = 0;
+			if (links.length > 0 && links[0].index === 0 && i > 0 && tokens[i - 1].type === "text_special") links = links.slice(1);
+			for (let ln = 0; ln < links.length; ln++) {
+				const link$1 = links[ln];
+				const fullUrl = state.md.normalizeLink(link$1.url);
+				if (!state.md.validateLink(fullUrl)) continue;
+				let urlText = link$1.text;
+				if (!link$1.schema) urlText = state.md.normalizeLinkText(`http://${urlText}`).replace(/^http:\/\//, "");
+				else if (link$1.schema === "mailto:" && !/^mailto:/i.test(urlText)) urlText = state.md.normalizeLinkText(`mailto:${urlText}`).replace(/^mailto:/, "");
+				else urlText = state.md.normalizeLinkText(urlText);
+				const pos = link$1.index;
+				if (pos > lastPos) {
+					const textToken = new Token("text", "", 0);
+					textToken.content = text$1.slice(lastPos, pos);
+					textToken.level = level;
+					nodes.push(textToken);
+				}
+				const tokenOpen = new Token("link_open", "a", 1);
+				tokenOpen.attrs = [["href", fullUrl]];
+				tokenOpen.level = level++;
+				tokenOpen.markup = "linkify";
+				tokenOpen.info = "auto";
+				nodes.push(tokenOpen);
+				const tokenText = new Token("text", "", 0);
+				tokenText.content = urlText;
+				tokenText.level = level;
+				nodes.push(tokenText);
+				const tokenClose = new Token("link_close", "a", -1);
+				tokenClose.level = --level;
+				tokenClose.markup = "linkify";
+				tokenClose.info = "auto";
+				nodes.push(tokenClose);
+				lastPos = link$1.lastIndex;
+			}
+			if (lastPos === 0) continue;
+			if (lastPos < text$1.length) {
+				const textToken = new Token("text", "", 0);
+				textToken.content = text$1.slice(lastPos);
+				textToken.level = level;
+				nodes.push(textToken);
+			}
+			tokens.splice(i, 1, ...nodes);
+		}
+	}
+}
+
+//#endregion
+//#region src/rules/core/normalize.ts
+const NEWLINES_RE = /\r\n?|\n/g;
+const NULL_RE = /\0/g;
+function normalize(state) {
+	if (!state || typeof state.src !== "string") return;
+	const src = state.src;
+	const hasCR = src.includes("\r");
+	const hasNull = src.includes("\0");
+	if (!hasCR && !hasNull) return;
+	let str = src;
+	if (hasCR) str = str.replace(NEWLINES_RE, "\n");
+	if (hasNull) str = str.replace(NULL_RE, "�");
+	state.src = str;
+}
+
+//#endregion
+//#region src/rules/core/replacements.ts
+const RARE_RE = /\+-|\.\.|\?\?\?\?|!!!!|,,|--/;
+const SCOPED_ABBR_TEST_RE = /\((?:c|tm|r)\)/i;
+const SCOPED_ABBR_RE = /\((c|tm|r)\)/gi;
+const SCOPED_ABBR = {
+	c: "©",
+	r: "®",
+	tm: "™"
+};
+function replaceFn(_match, name) {
+	return SCOPED_ABBR[name.toLowerCase()];
+}
+function replace_scoped(inlineTokens) {
+	let inside_autolink = 0;
+	for (let i = inlineTokens.length - 1; i >= 0; i--) {
+		const token = inlineTokens[i];
+		if (token.type === "text" && !inside_autolink) token.content = token.content.replace(SCOPED_ABBR_RE, replaceFn);
+		if (token.type === "link_open" && token.info === "auto") inside_autolink--;
+		if (token.type === "link_close" && token.info === "auto") inside_autolink++;
+	}
+}
+function replace_rare(inlineTokens) {
+	let inside_autolink = 0;
+	for (let i = inlineTokens.length - 1; i >= 0; i--) {
+		const token = inlineTokens[i];
+		if (token.type === "text" && !inside_autolink) {
+			if (RARE_RE.test(token.content)) token.content = token.content.replace(/\+-/g, "±").replace(/\.{2,}/g, "…").replace(/([?!])…/g, "$1..").replace(/([?!]){4,}/g, "$1$1$1").replace(/,{2,}/g, ",").replace(/(^|[^-])---(?=[^-]|$)/gm, "$1—").replace(/(^|\s)--(?=\s|$)/gm, "$1–").replace(/(^|[^-\s])--(?=[^-\s]|$)/gm, "$1–");
+		}
+		if (token.type === "link_open" && token.info === "auto") inside_autolink--;
+		if (token.type === "link_close" && token.info === "auto") inside_autolink++;
+	}
+}
+function replacements(state) {
+	if (!state.md?.options?.typographer) return;
+	for (let blkIdx = state.tokens.length - 1; blkIdx >= 0; blkIdx--) {
+		const blk = state.tokens[blkIdx];
+		if (blk.type !== "inline") continue;
+		const blkContent = blk.content || (Array.isArray(blk.children) ? blk.children.map((c) => c.type === "text" ? c.content : "").join("") : "");
+		if (SCOPED_ABBR_TEST_RE.test(blkContent)) replace_scoped(blk.children || []);
+		if (RARE_RE.test(blkContent)) replace_rare(blk.children || []);
+	}
+}
+
+//#endregion
+//#region src/rules/core/ruler.ts
+var CoreRuler = class {
+	rules = [];
+	cache = null;
+	namedCache = null;
+	version = 0;
+	invalidateCache() {
+		this.cache = null;
+		this.namedCache = null;
+		this.version++;
+	}
+	push(name, fn) {
+		const idx = this.rules.findIndex((r) => r.name === name);
+		if (idx >= 0) this.rules.splice(idx, 1);
+		this.rules.push({
+			name,
+			fn,
+			enabled: true
+		});
+		this.invalidateCache();
+	}
+	at(name, fn) {
+		const idx = this.rules.findIndex((r) => r.name === name);
+		if (idx < 0) throw new Error(`Parser rule not found: ${name}`);
+		this.rules[idx].fn = fn;
+		this.invalidateCache();
+	}
+	before(beforeName, name, fn) {
+		const i = this.rules.findIndex((r) => r.name === beforeName);
+		if (i < 0) throw new Error(`Parser rule not found: ${beforeName}`);
+		const exists = this.rules.findIndex((r) => r.name === name);
+		if (exists >= 0) this.rules.splice(exists, 1);
+		this.rules.splice(i, 0, {
+			name,
+			fn,
+			enabled: true
+		});
+		this.invalidateCache();
+	}
+	after(afterName, name, fn) {
+		const i = this.rules.findIndex((r) => r.name === afterName);
+		if (i < 0) throw new Error(`Parser rule not found: ${afterName}`);
+		const exists = this.rules.findIndex((r) => r.name === name);
+		if (exists >= 0) this.rules.splice(exists, 1);
+		this.rules.splice(i + 1, 0, {
+			name,
+			fn,
+			enabled: true
+		});
+		this.invalidateCache();
+	}
+	enable(names, ignoreInvalid) {
+		const list$1 = Array.isArray(names) ? names : [names];
+		const found = [];
+		let changed = false;
+		for (const n of list$1) {
+			const idx = this.rules.findIndex((r) => r.name === n);
+			if (idx < 0) {
+				if (!ignoreInvalid) throw new Error(`Rules manager: invalid rule name ${n}`);
+				continue;
+			}
+			found.push(n);
+			if (!this.rules[idx].enabled) {
+				this.rules[idx].enabled = true;
+				changed = true;
+			}
+		}
+		if (changed) this.invalidateCache();
+		return found;
+	}
+	disable(names, ignoreInvalid) {
+		const list$1 = Array.isArray(names) ? names : [names];
+		const found = [];
+		let changed = false;
+		for (const n of list$1) {
+			const idx = this.rules.findIndex((r) => r.name === n);
+			if (idx < 0) {
+				if (!ignoreInvalid) throw new Error(`Rules manager: invalid rule name ${n}`);
+				continue;
+			}
+			found.push(n);
+			if (this.rules[idx].enabled) {
+				this.rules[idx].enabled = false;
+				changed = true;
+			}
+		}
+		if (changed) this.invalidateCache();
+		return found;
+	}
+	enableOnly(names) {
+		const set = new Set(names);
+		let changed = false;
+		for (const r of this.rules) {
+			const next = set.has(r.name);
+			if (r.enabled !== next) {
+				r.enabled = next;
+				changed = true;
+			}
+		}
+		if (changed) this.invalidateCache();
+	}
+	compileCache() {
+		this.cache = this.rules.filter((r) => r.enabled).map((r) => r.fn);
+		this.namedCache = this.rules.filter((r) => r.enabled).map((r) => ({
+			name: r.name,
+			fn: r.fn
+		}));
+	}
+	getRules(_chainName = "") {
+		if (!this.cache) this.compileCache();
+		return this.cache;
+	}
+	getNamedRules(_chainName = "") {
+		if (!this.namedCache) this.compileCache();
+		return this.namedCache;
+	}
+};
+
+//#endregion
+//#region src/rules/core/smartquotes.ts
+const QUOTE_TEST_RE = /['"]/;
+const QUOTE_RE = /['"]/g;
+const APOSTROPHE = "’";
+function replaceAt(str, index, ch) {
+	return str.slice(0, index) + ch + str.slice(index + 1);
+}
+function process_inlines(tokens, state) {
+	let j;
+	const stack = [];
+	const quotes = state.md && state.md.options && state.md.options.quotes || "“”‘’";
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+		const thisLevel = tokens[i].level;
+		for (j = stack.length - 1; j >= 0; j--) if (stack[j].level <= thisLevel) break;
+		stack.length = j + 1;
+		if (token.type !== "text") continue;
+		let text$1 = token.content;
+		let pos = 0;
+		let max = text$1.length;
+		OUTER: while (pos < max) {
+			QUOTE_RE.lastIndex = pos;
+			const t = QUOTE_RE.exec(text$1);
+			if (!t) break;
+			let canOpen = true;
+			let canClose = true;
+			pos = t.index + 1;
+			const isSingle = t[0] === "'";
+			let lastChar = 32;
+			if (t.index - 1 >= 0) lastChar = text$1.charCodeAt(t.index - 1);
+			else for (j = i - 1; j >= 0; j--) {
+				if (tokens[j].type === "softbreak" || tokens[j].type === "hardbreak") break;
+				if (!tokens[j].content) continue;
+				lastChar = tokens[j].content.charCodeAt(tokens[j].content.length - 1);
+				break;
+			}
+			let nextChar = 32;
+			if (pos < max) nextChar = text$1.charCodeAt(pos);
+			else for (j = i + 1; j < tokens.length; j++) {
+				if (tokens[j].type === "softbreak" || tokens[j].type === "hardbreak") break;
+				if (!tokens[j].content) continue;
+				nextChar = tokens[j].content.charCodeAt(0);
+				break;
+			}
+			const isLastPunctChar = isMdAsciiPunct(lastChar) || isPunctChar(String.fromCharCode(lastChar));
+			const isNextPunctChar = isMdAsciiPunct(nextChar) || isPunctChar(String.fromCharCode(nextChar));
+			const isLastWhiteSpace = isWhiteSpace(lastChar);
+			const isNextWhiteSpace = isWhiteSpace(nextChar);
+			if (isNextWhiteSpace) canOpen = false;
+			else if (isNextPunctChar) {
+				if (!(isLastWhiteSpace || isLastPunctChar)) canOpen = false;
+			}
+			if (isLastWhiteSpace) canClose = false;
+			else if (isLastPunctChar) {
+				if (!(isNextWhiteSpace || isNextPunctChar)) canClose = false;
+			}
+			if (nextChar === 34 && t[0] === "\"") {
+				if (lastChar >= 48 && lastChar <= 57) canClose = canOpen = false;
+			}
+			if (canOpen && canClose) {
+				canOpen = isLastPunctChar;
+				canClose = isNextPunctChar;
+			}
+			if (!canOpen && !canClose) {
+				if (isSingle) token.content = replaceAt(token.content, t.index, APOSTROPHE);
+				continue;
+			}
+			if (canClose) for (j = stack.length - 1; j >= 0; j--) {
+				let item = stack[j];
+				if (stack[j].level < thisLevel) break;
+				if (item.single === isSingle && stack[j].level === thisLevel) {
+					item = stack[j];
+					let openQuote;
+					let closeQuote;
+					if (isSingle) {
+						openQuote = quotes[2] || "‘";
+						closeQuote = quotes[3] || "’";
+					} else {
+						openQuote = quotes[0] || "“";
+						closeQuote = quotes[1] || "”";
+					}
+					token.content = replaceAt(token.content, t.index, closeQuote);
+					tokens[item.token].content = replaceAt(tokens[item.token].content, item.pos, openQuote);
+					pos += closeQuote.length - 1;
+					if (item.token === i) pos += openQuote.length - 1;
+					text$1 = token.content;
+					max = text$1.length;
+					stack.length = j;
+					continue OUTER;
+				}
+			}
+			if (canOpen) stack.push({
+				token: i,
+				pos: t.index,
+				single: isSingle,
+				level: thisLevel
+			});
+			else if (canClose && isSingle) token.content = replaceAt(token.content, t.index, APOSTROPHE);
+		}
+	}
+}
+function smartquotes(state) {
+	if (!state.md.options.typographer) return;
+	for (let blkIdx = state.tokens.length - 1; blkIdx >= 0; blkIdx--) {
+		const inlineToken = state.tokens[blkIdx];
+		if (inlineToken.type !== "inline") continue;
+		const inlineContent = typeof inlineToken.content === "string" ? inlineToken.content : (inlineToken.children || []).map((t) => t.content || "").join("");
+		if (!QUOTE_TEST_RE.test(inlineContent) || !inlineToken.children) continue;
+		process_inlines(inlineToken.children, state);
+	}
+}
+
+//#endregion
+//#region src/rules/core/text_join.ts
+function text_join(state) {
+	const blockTokens = state.tokens || [];
+	const length = blockTokens.length;
+	for (let j = 0; j < length; j++) {
+		const blockToken = blockTokens[j];
+		if (blockToken.type !== "inline" || !Array.isArray(blockToken.children)) continue;
+		const tokens = blockToken.children;
+		const max = tokens.length;
+		for (let curr$1 = 0; curr$1 < max; curr$1++) if (tokens[curr$1].type === "text_special") tokens[curr$1].type = "text";
+		let last = 0;
+		let curr = 0;
+		for (; curr < max; curr++) if (tokens[curr].type === "text" && curr + 1 < max && tokens[curr + 1].type === "text") tokens[curr + 1].content = tokens[curr].content + tokens[curr + 1].content;
+		else {
+			if (curr !== last) tokens[last] = tokens[curr];
+			last++;
+		}
+		if (curr !== last) tokens.length = last;
+	}
+}
+
+//#endregion
+//#region src/parse/link_utils.ts
+const BAD_PROTO_RE = /^(?:vbscript|javascript|file|data):/;
+const GOOD_DATA_RE = /^data:image\/(?:gif|png|jpeg|webp);/;
+const RECODE_HOSTNAME_FOR = [
+	"http:",
+	"https:",
+	"mailto:"
+];
+/**
+* Validate URL to prevent XSS attacks.
+* This validator can prohibit more than really needed to prevent XSS.
+* It's a tradeoff to keep code simple and to be secure by default.
+*/
+function validateLink(url) {
+	const str = url.trim().toLowerCase();
+	return BAD_PROTO_RE.test(str) ? GOOD_DATA_RE.test(str) : true;
+}
+/**
+* Normalize link URL by encoding hostname to ASCII (punycode)
+*/
+function normalizeLink(url) {
+	const parsed = mdurl.parse(url, true);
+	if (parsed.hostname) {
+		if (!parsed.protocol || RECODE_HOSTNAME_FOR.includes(parsed.protocol)) try {
+			parsed.hostname = punycode.toASCII(parsed.hostname);
+		} catch {}
+	}
+	return mdurl.encode(mdurl.format(parsed));
+}
+/**
+* Normalize link text by decoding hostname from punycode to Unicode
+*/
+function normalizeLinkText(url) {
+	const parsed = mdurl.parse(url, true);
+	if (parsed.hostname) {
+		if (!parsed.protocol || RECODE_HOSTNAME_FOR.includes(parsed.protocol)) try {
+			parsed.hostname = punycode.toUnicode(parsed.hostname);
+		} catch {}
+	}
+	return mdurl.decode(mdurl.format(parsed), `${mdurl.decode.defaultChars}%`);
+}
+
+//#endregion
+//#region src/rules/block/blockquote.ts
+function isSpace$7(code$1) {
+	switch (code$1) {
+		case 9:
+		case 32: return true;
+	}
+	return false;
+}
+function blockquote(state, startLine, endLine, silent) {
+	const src = state.src;
+	const bMarks = state.bMarks;
+	const eMarks = state.eMarks;
+	const tShift = state.tShift;
+	const sCount = state.sCount;
+	const bsCount = state.bsCount;
+	let pos = bMarks[startLine] + tShift[startLine];
+	let max = eMarks[startLine];
+	const oldLineMax = state.lineMax;
+	if (sCount[startLine] - state.blkIndent >= 4) return false;
+	if (src.charCodeAt(pos) !== 62) return false;
+	if (silent) return true;
+	const oldBMarks = [];
+	const oldBSCount = [];
+	const oldSCount = [];
+	const oldTShift = [];
+	const terminatorRules = state.md.block.ruler.getRulesForState(state, "blockquote");
+	const oldParentType = state.parentType;
+	state.parentType = "blockquote";
+	let lastLineEmpty = false;
+	let nextLine;
+	for (nextLine = startLine; nextLine < endLine; nextLine++) {
+		const isOutdented = sCount[nextLine] < state.blkIndent;
+		pos = bMarks[nextLine] + tShift[nextLine];
+		max = eMarks[nextLine];
+		if (pos >= max) break;
+		if (src.charCodeAt(pos++) === 62 && !isOutdented) {
+			let initial = sCount[nextLine] + 1;
+			let spaceAfterMarker;
+			let adjustTab;
+			if (src.charCodeAt(pos) === 32) {
+				pos++;
+				initial++;
+				adjustTab = false;
+				spaceAfterMarker = true;
+			} else if (src.charCodeAt(pos) === 9) {
+				spaceAfterMarker = true;
+				if ((bsCount[nextLine] + initial) % 4 === 3) {
+					pos++;
+					initial++;
+					adjustTab = false;
+				} else adjustTab = true;
+			} else spaceAfterMarker = false;
+			let offset = initial;
+			oldBMarks.push(bMarks[nextLine]);
+			bMarks[nextLine] = pos;
+			while (pos < max) {
+				const ch = src.charCodeAt(pos);
+				if (isSpace$7(ch)) if (ch === 9) offset += 4 - (offset + bsCount[nextLine] + (adjustTab ? 1 : 0)) % 4;
+				else offset++;
+				else break;
+				pos++;
+			}
+			lastLineEmpty = pos >= max;
+			oldBSCount.push(bsCount[nextLine]);
+			bsCount[nextLine] = sCount[nextLine] + 1 + (spaceAfterMarker ? 1 : 0);
+			oldSCount.push(sCount[nextLine]);
+			sCount[nextLine] = offset - initial;
+			oldTShift.push(tShift[nextLine]);
+			tShift[nextLine] = pos - bMarks[nextLine];
+			continue;
+		}
+		if (lastLineEmpty) break;
+		let terminate = false;
+		for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine, endLine, true)) {
+			terminate = true;
+			break;
+		}
+		if (terminate) {
+			state.lineMax = nextLine;
+			if (state.blkIndent !== 0) {
+				oldBMarks.push(bMarks[nextLine]);
+				oldBSCount.push(bsCount[nextLine]);
+				oldTShift.push(tShift[nextLine]);
+				oldSCount.push(sCount[nextLine]);
+				sCount[nextLine] -= state.blkIndent;
+			}
+			break;
+		}
+		oldBMarks.push(bMarks[nextLine]);
+		oldBSCount.push(bsCount[nextLine]);
+		oldTShift.push(tShift[nextLine]);
+		oldSCount.push(sCount[nextLine]);
+		sCount[nextLine] = -1;
+	}
+	const oldIndent = state.blkIndent;
+	state.blkIndent = 0;
+	const token_o = state.push("blockquote_open", "blockquote", 1);
+	token_o.markup = ">";
+	const lines = [startLine, 0];
+	token_o.map = lines;
+	state.md.block.tokenize(state, startLine, nextLine);
+	const token_c = state.push("blockquote_close", "blockquote", -1);
+	token_c.markup = ">";
+	state.lineMax = oldLineMax;
+	state.parentType = oldParentType;
+	lines[1] = state.line;
+	for (let i = 0; i < oldTShift.length; i++) {
+		bMarks[i + startLine] = oldBMarks[i];
+		tShift[i + startLine] = oldTShift[i];
+		sCount[i + startLine] = oldSCount[i];
+		bsCount[i + startLine] = oldBSCount[i];
+	}
+	state.blkIndent = oldIndent;
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/code.ts
+function code(state, startLine, endLine) {
+	if (state.sCount[startLine] - state.blkIndent < 4) return false;
+	let nextLine = startLine + 1;
+	let last = nextLine;
+	while (nextLine < endLine) {
+		if (state.isEmpty(nextLine)) {
+			nextLine++;
+			continue;
+		}
+		if (state.sCount[nextLine] - state.blkIndent >= 4) {
+			nextLine++;
+			last = nextLine;
+			continue;
+		}
+		break;
+	}
+	state.line = last;
+	const token = state.push("code_block", "code", 0);
+	token.content = `${state.getLines(startLine, last, 4 + state.blkIndent, false)}\n`;
+	token.map = [startLine, state.line];
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/fence.ts
+function fence(state, startLine, endLine, silent) {
+	let pos = state.bMarks[startLine] + state.tShift[startLine];
+	let max = state.eMarks[startLine];
+	if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+	if (pos + 3 > max) return false;
+	const marker = state.src.charCodeAt(pos);
+	if (marker !== 126 && marker !== 96) return false;
+	let mem = pos;
+	pos = state.skipChars(pos, marker);
+	let len = pos - mem;
+	if (len < 3) return false;
+	const markup = state.src.slice(mem, pos);
+	const params = state.src.slice(pos, max);
+	if (marker === 96) {
+		if (params.includes(String.fromCharCode(marker))) return false;
+	}
+	if (silent) return true;
+	let nextLine = startLine;
+	let haveEndMarker = false;
+	for (;;) {
+		nextLine++;
+		if (nextLine >= endLine) break;
+		pos = mem = state.bMarks[nextLine] + state.tShift[nextLine];
+		max = state.eMarks[nextLine];
+		if (pos < max && state.sCount[nextLine] < state.blkIndent) break;
+		if (state.src.charCodeAt(pos) !== marker) continue;
+		if (state.sCount[nextLine] - state.blkIndent >= 4) continue;
+		pos = state.skipChars(pos, marker);
+		if (pos - mem < len) continue;
+		pos = state.skipSpaces(pos);
+		if (pos < max) continue;
+		haveEndMarker = true;
+		break;
+	}
+	len = state.sCount[startLine];
+	state.line = nextLine + (haveEndMarker ? 1 : 0);
+	const token = state.push("fence", "code", 0);
+	token.info = params;
+	token.content = state.getLines(startLine + 1, nextLine, len, true);
+	token.markup = markup;
+	token.map = [startLine, state.line];
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/heading.ts
+const HEADING_TAGS$1 = [
+	"",
+	"h1",
+	"h2",
+	"h3",
+	"h4",
+	"h5",
+	"h6"
+];
+const HEADING_MARKUP = [
+	"",
+	"#",
+	"##",
+	"###",
+	"####",
+	"#####",
+	"######"
+];
+function isSpace$6(code$1) {
+	switch (code$1) {
+		case 9:
+		case 32: return true;
+	}
+	return false;
+}
+function heading(state, startLine, endLine, silent) {
+	const src = state.src;
+	const bMarks = state.bMarks;
+	const tShift = state.tShift;
+	const eMarks = state.eMarks;
+	let pos = bMarks[startLine] + tShift[startLine];
+	let max = eMarks[startLine];
+	if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+	let ch = src.charCodeAt(pos);
+	if (ch !== 35 || pos >= max) return false;
+	let level = 1;
+	ch = src.charCodeAt(++pos);
+	while (ch === 35 && pos < max && level <= 6) {
+		level++;
+		ch = src.charCodeAt(++pos);
+	}
+	if (level > 6 || pos < max && !isSpace$6(ch)) return false;
+	if (silent) return true;
+	max = state.skipSpacesBack(max, pos);
+	const tmp = state.skipCharsBack(max, 35, pos);
+	if (tmp > pos && isSpace$6(src.charCodeAt(tmp - 1))) max = tmp;
+	state.line = startLine + 1;
+	const token_o = state.push("heading_open", HEADING_TAGS$1[level], 1);
+	token_o.markup = HEADING_MARKUP[level];
+	token_o.map = [startLine, state.line];
+	const token_i = state.push("inline", "", 0);
+	token_i.content = src.slice(pos, max).trim();
+	token_i.map = [startLine, state.line];
+	token_i.children = [];
+	const token_c = state.push("heading_close", HEADING_TAGS$1[level], -1);
+	token_c.markup = HEADING_MARKUP[level];
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/hr.ts
+function isSpace$5(code$1) {
+	switch (code$1) {
+		case 9:
+		case 32: return true;
+	}
+	return false;
+}
+function hr(state, startLine, endLine, silent) {
+	const max = state.eMarks[startLine];
+	if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+	let pos = state.bMarks[startLine] + state.tShift[startLine];
+	const marker = state.src.charCodeAt(pos++);
+	if (marker !== 42 && marker !== 45 && marker !== 95) return false;
+	let cnt = 1;
+	while (pos < max) {
+		const ch = state.src.charCodeAt(pos++);
+		if (ch !== marker && !isSpace$5(ch)) return false;
+		if (ch === marker) cnt++;
+	}
+	if (cnt < 3) return false;
+	if (silent) return true;
+	state.line = startLine + 1;
+	const token = state.push("hr", "hr", 0);
+	token.map = [startLine, state.line];
+	token.markup = String.fromCharCode(marker).repeat(cnt);
+	return true;
+}
+
+//#endregion
+//#region src/common/html_blocks.ts
+/**
+* List of valid html blocks names, according to commonmark spec
+* https://spec.commonmark.org/0.30/#html-blocks
+*/
+const HTML_BLOCKS = [
+	"address",
+	"article",
+	"aside",
+	"base",
+	"basefont",
+	"blockquote",
+	"body",
+	"caption",
+	"center",
+	"col",
+	"colgroup",
+	"dd",
+	"details",
+	"dialog",
+	"dir",
+	"div",
+	"dl",
+	"dt",
+	"fieldset",
+	"figcaption",
+	"figure",
+	"footer",
+	"form",
+	"frame",
+	"frameset",
+	"h1",
+	"h2",
+	"h3",
+	"h4",
+	"h5",
+	"h6",
+	"head",
+	"header",
+	"hr",
+	"html",
+	"iframe",
+	"legend",
+	"li",
+	"link",
+	"main",
+	"menu",
+	"menuitem",
+	"nav",
+	"noframes",
+	"ol",
+	"optgroup",
+	"option",
+	"p",
+	"param",
+	"search",
+	"section",
+	"summary",
+	"table",
+	"tbody",
+	"td",
+	"tfoot",
+	"th",
+	"thead",
+	"title",
+	"tr",
+	"track",
+	"ul"
+];
+var html_blocks_default = HTML_BLOCKS;
+
+//#endregion
+//#region src/rules/block/html_block.ts
+const HTML_SEQUENCES = [
+	[
+		/^<(script|pre|style|textarea)(?=(\s|>|$))/i,
+		/<\/(script|pre|style|textarea)>/i,
+		true
+	],
+	[
+		/^<!--/,
+		/-->/,
+		true
+	],
+	[
+		/^<\?/,
+		/\?>/,
+		true
+	],
+	[
+		/^<![A-Z]/,
+		/>/,
+		true
+	],
+	[
+		/^<!\[CDATA\[/,
+		/\]\]>/,
+		true
+	],
+	[
+		new RegExp(`^</?(${html_blocks_default.join("|")})(?=(\\s|/?>|$))`, "i"),
+		/^$/,
+		true
+	],
+	[
+		/* @__PURE__ */ new RegExp(`${HTML_OPEN_CLOSE_TAG_RE.source}\\s*$`),
+		/^$/,
+		false
+	]
+];
+function html_block(state, startLine, endLine, silent) {
+	let pos = state.bMarks[startLine] + state.tShift[startLine];
+	let max = state.eMarks[startLine];
+	if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+	if (!state.md.options.html) return false;
+	if (state.src.charCodeAt(pos) !== 60) return false;
+	let lineText = state.src.slice(pos, max);
+	let i = 0;
+	for (; i < HTML_SEQUENCES.length; i++) if (HTML_SEQUENCES[i][0].test(lineText)) break;
+	if (i === HTML_SEQUENCES.length) return false;
+	if (silent) return HTML_SEQUENCES[i][2];
+	let nextLine = startLine + 1;
+	if (!HTML_SEQUENCES[i][1].test(lineText)) for (; nextLine < endLine; nextLine++) {
+		if (state.sCount[nextLine] < state.blkIndent) break;
+		pos = state.bMarks[nextLine] + state.tShift[nextLine];
+		max = state.eMarks[nextLine];
+		lineText = state.src.slice(pos, max);
+		if (HTML_SEQUENCES[i][1].test(lineText)) {
+			if (lineText.length !== 0) nextLine++;
+			break;
+		}
+	}
+	state.line = nextLine;
+	const token = state.push("html_block", "", 0);
+	token.map = [startLine, nextLine];
+	token.content = state.getLines(startLine, nextLine, state.blkIndent, true);
+	return true;
+}
+
+//#endregion
+//#region src/parse/parser_block/state_block.ts
+function isSpace$4(code$1) {
+	switch (code$1) {
+		case 9:
+		case 32: return true;
+	}
+	return false;
+}
+const LineFlag = {
+	Pipe: 1,
+	ParagraphTerminator: 2
+};
+const PARAGRAPH_TERMINATOR_TABLE = new Uint8Array(256);
+for (const code$1 of [
+	35,
+	42,
+	43,
+	45,
+	60,
+	62,
+	95,
+	96,
+	124,
+	126,
+	48,
+	49,
+	50,
+	51,
+	52,
+	53,
+	54,
+	55,
+	56,
+	57
+]) PARAGRAPH_TERMINATOR_TABLE[code$1] = 1;
+var StateBlock = class {
+	src;
+	md;
+	env;
+	tokens;
+	bMarks = [];
+	eMarks = [];
+	tShift = [];
+	sCount = [];
+	bsCount = [];
+	lineFlags = [];
+	blkIndent = 0;
+	line = 0;
+	lineMax = 0;
+	tight = false;
+	ddIndent = -1;
+	listIndent = -1;
+	parentType = "root";
+	level = 0;
+	constructor(src, md, env, tokens) {
+		this.src = src;
+		this.md = md;
+		this.env = env;
+		this.tokens = tokens;
+		const s = this.src;
+		const len = s.length;
+		const bMarks = this.bMarks;
+		const eMarks = this.eMarks;
+		const tShift = this.tShift;
+		const sCount = this.sCount;
+		const bsCount = this.bsCount;
+		const lineFlags = this.lineFlags;
+		let start = 0;
+		let pipePos = s.indexOf("|");
+		while (start < len) {
+			let end = start;
+			while (end < len && end - start < 4 && s.charCodeAt(end) !== 10) end++;
+			if (end - start === 4 && end < len) {
+				const nl = s.indexOf("\n", end);
+				end = nl === -1 ? len : nl;
+			}
+			let indent = 0;
+			let offset = 0;
+			let pos = start;
+			while (pos < end) {
+				const ch = s.charCodeAt(pos);
+				if (ch === 32) {
+					indent++;
+					offset++;
+					pos++;
+					continue;
+				}
+				if (ch === 9) {
+					indent++;
+					offset += 4 - offset % 4;
+					pos++;
+					continue;
+				}
+				break;
+			}
+			let flags = 0;
+			if (pos < end) {
+				if (PARAGRAPH_TERMINATOR_TABLE[s.charCodeAt(pos)] === 1) flags |= LineFlag.ParagraphTerminator;
+				if (pipePos < start) pipePos = s.indexOf("|", start);
+				if (pipePos !== -1 && pipePos < end) flags |= LineFlag.Pipe | LineFlag.ParagraphTerminator;
+				if (pipePos === -1) pipePos = len;
+			}
+			bMarks.push(start);
+			eMarks.push(end);
+			tShift.push(indent);
+			sCount.push(offset);
+			bsCount.push(0);
+			lineFlags.push(flags);
+			start = end + 1;
+		}
+		bMarks.push(len);
+		eMarks.push(len);
+		tShift.push(0);
+		sCount.push(0);
+		bsCount.push(0);
+		lineFlags.push(0);
+		this.lineMax = bMarks.length - 1;
+	}
+	push(type, tag, nesting) {
+		if (nesting === 0) {
+			const token$1 = new Token(type, tag, 0);
+			token$1.block = true;
+			token$1.level = this.level;
+			this.tokens.push(token$1);
+			return token$1;
+		}
+		const token = new Token(type, tag, nesting);
+		token.block = true;
+		if (nesting < 0) this.level--;
+		token.level = this.level;
+		if (nesting > 0) this.level++;
+		this.tokens.push(token);
+		return token;
+	}
+	isEmpty(line) {
+		return this.bMarks[line] + this.tShift[line] >= this.eMarks[line];
+	}
+	skipEmptyLines(from) {
+		const bMarks = this.bMarks;
+		const tShift = this.tShift;
+		const eMarks = this.eMarks;
+		for (let max = this.lineMax; from < max; from++) if (bMarks[from] + tShift[from] < eMarks[from]) break;
+		return from;
+	}
+	skipSpaces(pos) {
+		const src = this.src;
+		for (let max = src.length; pos < max; pos++) {
+			const ch = src.charCodeAt(pos);
+			if (ch !== 9 && ch !== 32) break;
+		}
+		return pos;
+	}
+	skipSpacesBack(pos, min) {
+		if (pos <= min) return pos;
+		const src = this.src;
+		while (pos > min) {
+			const ch = src.charCodeAt(--pos);
+			if (ch !== 9 && ch !== 32) return pos + 1;
+		}
+		return pos;
+	}
+	skipChars(pos, code$1) {
+		const src = this.src;
+		for (let max = src.length; pos < max; pos++) if (src.charCodeAt(pos) !== code$1) break;
+		return pos;
+	}
+	skipCharsBack(pos, code$1, min) {
+		if (pos <= min) return pos;
+		const src = this.src;
+		while (pos > min) if (code$1 !== src.charCodeAt(--pos)) return pos + 1;
+		return pos;
+	}
+	getLines(begin, end, indent, keepLastLF) {
+		if (begin >= end) return "";
+		if (begin + 1 === end) {
+			const line = begin;
+			const lineStart = this.bMarks[line];
+			let first = lineStart;
+			const last = keepLastLF ? this.eMarks[line] + 1 : this.eMarks[line];
+			let lineIndent = 0;
+			const src$1 = this.src;
+			const bsCount$1 = this.bsCount;
+			const tShift$1 = this.tShift;
+			while (first < last && lineIndent < indent) {
+				const ch = src$1.charCodeAt(first);
+				if (ch === 9 || ch === 32) if (ch === 9) lineIndent += 4 - (lineIndent + bsCount$1[line]) % 4;
+				else lineIndent++;
+				else if (first - lineStart < tShift$1[line]) lineIndent++;
+				else break;
+				first++;
+			}
+			if (lineIndent > indent) return " ".repeat(lineIndent - indent) + src$1.slice(first, last);
+			return src$1.slice(first, last);
+		}
+		const queue = new Array(end - begin);
+		const src = this.src;
+		const bMarks = this.bMarks;
+		const eMarks = this.eMarks;
+		const bsCount = this.bsCount;
+		const tShift = this.tShift;
+		for (let i = 0, line = begin; line < end; line++, i++) {
+			let lineIndent = 0;
+			const lineStart = bMarks[line];
+			let first = lineStart;
+			let last;
+			if (line + 1 < end || keepLastLF) last = eMarks[line] + 1;
+			else last = eMarks[line];
+			while (first < last && lineIndent < indent) {
+				const ch = src.charCodeAt(first);
+				if (isSpace$4(ch)) if (ch === 9) lineIndent += 4 - (lineIndent + bsCount[line]) % 4;
+				else lineIndent++;
+				else if (first - lineStart < tShift[line]) lineIndent++;
+				else break;
+				first++;
+			}
+			if (lineIndent > indent) queue[i] = " ".repeat(lineIndent - indent) + src.slice(first, last);
+			else queue[i] = src.slice(first, last);
+		}
+		return queue.join("");
+	}
+};
+StateBlock.prototype.Token = Token;
+
+//#endregion
+//#region src/rules/block/paragraph_terminator_fast.ts
+function hasPipeOnLine(src, start, max) {
+	for (let pos = start; pos < max; pos++) if (src.charCodeAt(pos) === 124) return true;
+	return false;
+}
+function canUseParagraphTerminatorFastPath(state) {
+	const ruler = state?.md?.block?.ruler;
+	if (!ruler) return false;
+	return ruler.version === ruler.__mdtsDefaultVersion;
+}
+function couldTerminateParagraph(state, line, src, start, max) {
+	if (state.lineFlags && (state.lineFlags[line] & LineFlag.ParagraphTerminator) === 0) return false;
+	if (start >= max) return false;
+	const marker = src.charCodeAt(start);
+	switch (marker) {
+		case 35:
+		case 42:
+		case 43:
+		case 45:
+		case 60:
+		case 62:
+		case 95:
+		case 96:
+		case 126: return true;
+	}
+	if (marker >= 48 && marker <= 57) return true;
+	return hasPipeOnLine(src, start, max);
+}
+
+//#endregion
+//#region src/rules/block/lheading.ts
+const HEADING_TAGS = [
+	"",
+	"h1",
+	"h2"
+];
+function lheading(state, startLine, endLine) {
+	const terminatorRules = state.md.block.ruler.getRulesForState(state, "paragraph");
+	const src = state.src;
+	const bMarks = state.bMarks;
+	const tShift = state.tShift;
+	const eMarks = state.eMarks;
+	const sCount = state.sCount;
+	const blkIndent = state.blkIndent;
+	const canUseFastTerminatorHint = canUseParagraphTerminatorFastPath(state);
+	if (sCount[startLine] - blkIndent >= 4) return false;
+	const oldParentType = state.parentType;
+	state.parentType = "paragraph";
+	let level = 0;
+	let marker;
+	let nextLine = startLine + 1;
+	for (; nextLine < endLine; nextLine++) {
+		const lineStart = bMarks[nextLine] + tShift[nextLine];
+		const max = eMarks[nextLine];
+		if (lineStart >= max) break;
+		if (sCount[nextLine] - blkIndent > 3) continue;
+		if (sCount[nextLine] >= blkIndent) {
+			marker = src.charCodeAt(lineStart);
+			if (marker === 45 || marker === 61) {
+				let pos = lineStart + 1;
+				let markerEnd = pos;
+				while (pos < max && src.charCodeAt(pos) === marker) pos++;
+				markerEnd = pos;
+				while (pos < max) {
+					const ch = src.charCodeAt(pos);
+					if (ch !== 9 && ch !== 32) break;
+					pos++;
+				}
+				if (pos >= max) {
+					level = marker === 61 ? 1 : 2;
+					break;
+				}
+				if (markerEnd - lineStart > 1) continue;
+			}
+		}
+		if (sCount[nextLine] < 0) continue;
+		if (canUseFastTerminatorHint && !couldTerminateParagraph(state, nextLine, src, lineStart, max)) continue;
+		let terminate = false;
+		for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine, endLine, true)) {
+			terminate = true;
+			break;
+		}
+		if (terminate) break;
+	}
+	if (!level) return false;
+	let content;
+	if (nextLine === startLine + 1) {
+		const lineStart = bMarks[startLine] + tShift[startLine];
+		let lineEnd = eMarks[startLine];
+		while (lineEnd > lineStart) {
+			const ch = src.charCodeAt(lineEnd - 1);
+			if (ch !== 9 && ch !== 32) break;
+			lineEnd--;
+		}
+		content = src.slice(lineStart, lineEnd);
+	} else content = state.getLines(startLine, nextLine, blkIndent, false).trim();
+	state.line = nextLine + 1;
+	const markup = marker === 61 ? "=" : "-";
+	const token_o = state.push("heading_open", HEADING_TAGS[level], 1);
+	token_o.markup = markup;
+	token_o.map = [startLine, state.line];
+	const token_i = state.push("inline", "", 0);
+	token_i.content = content;
+	token_i.map = [startLine, state.line - 1];
+	token_i.children = [];
+	const token_c = state.push("heading_close", HEADING_TAGS[level], -1);
+	token_c.markup = markup;
+	state.parentType = oldParentType;
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/list.ts
+function isSpace$3(code$1) {
+	switch (code$1) {
+		case 9:
+		case 32: return true;
+	}
+	return false;
+}
+function skipBulletListMarker(state, startLine) {
+	const eMarks = state.eMarks;
+	const bMarks = state.bMarks;
+	const tShift = state.tShift;
+	const src = state.src;
+	const max = eMarks[startLine];
+	let pos = bMarks[startLine] + tShift[startLine];
+	const marker = src.charCodeAt(pos++);
+	if (marker !== 42 && marker !== 45 && marker !== 43) return -1;
+	if (pos < max) {
+		if (!isSpace$3(src.charCodeAt(pos))) return -1;
+	}
+	return pos;
+}
+function skipOrderedListMarker(state, startLine) {
+	const bMarks = state.bMarks;
+	const tShift = state.tShift;
+	const eMarks = state.eMarks;
+	const src = state.src;
+	const start = bMarks[startLine] + tShift[startLine];
+	const max = eMarks[startLine];
+	let pos = start;
+	if (pos + 1 >= max) return -1;
+	let ch = src.charCodeAt(pos++);
+	if (ch < 48 || ch > 57) return -1;
+	for (;;) {
+		if (pos >= max) return -1;
+		ch = src.charCodeAt(pos++);
+		if (ch >= 48 && ch <= 57) {
+			if (pos - start >= 10) return -1;
+			continue;
+		}
+		if (ch === 41 || ch === 46) break;
+		return -1;
+	}
+	if (pos < max) {
+		ch = src.charCodeAt(pos);
+		if (!isSpace$3(ch)) return -1;
+	}
+	return pos;
+}
+function parseOrderedListMarkerValue(state, startLine, markerEnd) {
+	const bMarks = state.bMarks;
+	const tShift = state.tShift;
+	const src = state.src;
+	const start = bMarks[startLine] + tShift[startLine];
+	let value = 0;
+	for (let pos = start; pos < markerEnd - 1; pos++) value = value * 10 + src.charCodeAt(pos) - 48;
+	return value;
+}
+const SINGLE_DIGIT_MARKERS = [
+	"0",
+	"1",
+	"2",
+	"3",
+	"4",
+	"5",
+	"6",
+	"7",
+	"8",
+	"9"
+];
+function markTightParagraphs(state, idx) {
+	const level = state.level + 2;
+	const tokens = state.tokens;
+	for (let i = idx + 2, l = tokens.length - 2; i < l; i++) {
+		const token = tokens[i];
+		if (token.level !== level) continue;
+		if (token.type === "paragraph_open") {
+			token.hidden = true;
+			tokens[i + 2].hidden = true;
+			i += 2;
+			continue;
+		}
+		if (token.nesting === 1) {
+			let nesting = 1;
+			while (nesting > 0 && ++i < l) nesting += tokens[i].nesting;
+		}
+	}
+}
+function list(state, startLine, endLine, silent) {
+	let max;
+	let pos;
+	let start = 0;
+	let nextLine = startLine;
+	let tight = true;
+	if (state.sCount[nextLine] - state.blkIndent >= 4) return false;
+	if (state.listIndent >= 0 && state.sCount[nextLine] - state.listIndent >= 4 && state.sCount[nextLine] < state.blkIndent) return false;
+	let isTerminatingParagraph = false;
+	if (silent && state.parentType === "paragraph") {
+		if (state.sCount[nextLine] >= state.blkIndent) isTerminatingParagraph = true;
+	}
+	let isOrdered;
+	let markerValue;
+	let posAfterMarker;
+	const src = state.src;
+	const bMarks = state.bMarks;
+	const tShift = state.tShift;
+	const eMarks = state.eMarks;
+	const sCount = state.sCount;
+	const bsCount = state.bsCount;
+	const lineStart = bMarks[nextLine] + tShift[nextLine];
+	if (lineStart >= eMarks[nextLine]) return false;
+	const marker = src.charCodeAt(lineStart);
+	if (marker >= 48 && marker <= 57) {
+		posAfterMarker = skipOrderedListMarker(state, nextLine);
+		if (posAfterMarker < 0) return false;
+		isOrdered = true;
+		start = lineStart;
+		markerValue = parseOrderedListMarkerValue(state, nextLine, posAfterMarker);
+		if (isTerminatingParagraph && markerValue !== 1) return false;
+	} else if (marker === 42 || marker === 45 || marker === 43) {
+		posAfterMarker = skipBulletListMarker(state, nextLine);
+		if (posAfterMarker < 0) return false;
+		isOrdered = false;
+	} else return false;
+	if (isTerminatingParagraph) {
+		if (state.skipSpaces(posAfterMarker) >= eMarks[nextLine]) return false;
+	}
+	if (silent) return true;
+	const markerCharCode = src.charCodeAt(posAfterMarker - 1);
+	const markerMarkup = String.fromCharCode(markerCharCode);
+	if (isOrdered) {
+		const token = state.push("ordered_list_open", "ol", 1);
+		if (markerValue !== void 0 && markerValue !== 1) token.attrs = [["start", String(markerValue)]];
+	} else state.push("bullet_list_open", "ul", 1);
+	const listLines = [nextLine, 0];
+	state.tokens[state.tokens.length - 1].map = listLines;
+	state.tokens[state.tokens.length - 1].markup = markerMarkup;
+	let prevEmptyEnd = false;
+	const listTokIdx = state.tokens.length - 1;
+	const terminatorRules = state.md.block.ruler.getRulesForState(state, "list");
+	const oldParentType = state.parentType;
+	state.parentType = "list";
+	while (nextLine < endLine) {
+		pos = posAfterMarker;
+		max = eMarks[nextLine];
+		const initial = sCount[nextLine] + posAfterMarker - (bMarks[nextLine] + tShift[nextLine]);
+		let offset = initial;
+		while (pos < max) {
+			const ch = src.charCodeAt(pos);
+			if (ch === 9) offset += 4 - (offset + bsCount[nextLine]) % 4;
+			else if (ch === 32) offset++;
+			else break;
+			pos++;
+		}
+		const contentStart = pos;
+		let indentAfterMarker;
+		if (contentStart >= max) indentAfterMarker = 1;
+		else indentAfterMarker = offset - initial;
+		if (indentAfterMarker > 4) indentAfterMarker = 1;
+		const indent = initial + indentAfterMarker;
+		const token = state.push("list_item_open", "li", 1);
+		token.markup = markerMarkup;
+		const itemLines = [nextLine, 0];
+		token.map = itemLines;
+		if (isOrdered) token.info = posAfterMarker - start - 1 === 1 ? SINGLE_DIGIT_MARKERS[src.charCodeAt(start) - 48] : src.slice(start, posAfterMarker - 1);
+		const oldTight = state.tight;
+		const oldTShift = state.tShift[nextLine];
+		const oldSCount = state.sCount[nextLine];
+		const oldListIndent = state.listIndent;
+		state.listIndent = state.blkIndent;
+		state.blkIndent = indent;
+		state.tight = true;
+		state.tShift[nextLine] = contentStart - bMarks[nextLine];
+		state.sCount[nextLine] = offset;
+		if (contentStart >= max && state.isEmpty(nextLine + 1)) state.line = Math.min(state.line + 2, endLine);
+		else state.md.block.tokenize(state, nextLine, endLine, true);
+		if (!state.tight || prevEmptyEnd) tight = false;
+		prevEmptyEnd = state.line - nextLine > 1 && state.isEmpty(state.line - 1);
+		state.blkIndent = state.listIndent;
+		state.listIndent = oldListIndent;
+		state.tShift[nextLine] = oldTShift;
+		state.sCount[nextLine] = oldSCount;
+		state.tight = oldTight;
+		state.push("list_item_close", "li", -1).markup = markerMarkup;
+		nextLine = state.line;
+		itemLines[1] = nextLine;
+		if (nextLine >= endLine) break;
+		if (state.sCount[nextLine] < state.blkIndent) break;
+		if (state.sCount[nextLine] - state.blkIndent >= 4) break;
+		let terminate = false;
+		for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine, endLine, true)) {
+			terminate = true;
+			break;
+		}
+		if (terminate) break;
+		if (isOrdered) {
+			posAfterMarker = skipOrderedListMarker(state, nextLine);
+			if (posAfterMarker < 0) break;
+			start = bMarks[nextLine] + tShift[nextLine];
+		} else {
+			posAfterMarker = skipBulletListMarker(state, nextLine);
+			if (posAfterMarker < 0) break;
+		}
+		if (markerCharCode !== src.charCodeAt(posAfterMarker - 1)) break;
+	}
+	if (isOrdered) state.push("ordered_list_close", "ol", -1).markup = markerMarkup;
+	else state.push("bullet_list_close", "ul", -1).markup = markerMarkup;
+	listLines[1] = nextLine;
+	state.line = nextLine;
+	state.parentType = oldParentType;
+	if (tight) markTightParagraphs(state, listTokIdx);
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/paragraph.ts
+function isSpace$2(code$1) {
+	return code$1 === 9 || code$1 === 32;
+}
+function paragraph(state, startLine, endLine) {
+	const terminatorRules = state.md.block.ruler.getRulesForState(state, "paragraph");
+	const oldParentType = state.parentType;
+	const src = state.src;
+	const bMarks = state.bMarks;
+	const tShift = state.tShift;
+	const eMarks = state.eMarks;
+	const sCount = state.sCount;
+	const blkIndent = state.blkIndent;
+	const canUseFastTerminatorHint = canUseParagraphTerminatorFastPath(state);
+	let nextLine = startLine + 1;
+	state.parentType = "paragraph";
+	for (; nextLine < endLine && !state.isEmpty(nextLine); nextLine++) {
+		if (sCount[nextLine] - blkIndent > 3) continue;
+		if (sCount[nextLine] < 0) continue;
+		if (oldParentType === "list" && sCount[nextLine] >= blkIndent) {
+			const start$1 = bMarks[nextLine] + tShift[nextLine];
+			const max$1 = eMarks[nextLine];
+			if (start$1 < max$1) {
+				const marker = src.charCodeAt(start$1);
+				if (marker === 42 || marker === 45 || marker === 43) {
+					if (start$1 + 1 >= max$1 || isSpace$2(src.charCodeAt(start$1 + 1))) break;
+				} else if (marker >= 48 && marker <= 57 && start$1 + 1 < max$1) {
+					let pos = start$1 + 1;
+					for (;;) {
+						if (pos >= max$1) {
+							pos = -1;
+							break;
+						}
+						const ch = src.charCodeAt(pos++);
+						if (ch >= 48 && ch <= 57) {
+							if (pos - start$1 >= 10) {
+								pos = -1;
+								break;
+							}
+							continue;
+						}
+						if ((ch === 41 || ch === 46) && (pos >= max$1 || isSpace$2(src.charCodeAt(pos)))) break;
+						pos = -1;
+						break;
+					}
+					if (pos >= 0) break;
+				}
+			}
+		}
+		const start = bMarks[nextLine] + tShift[nextLine];
+		const max = eMarks[nextLine];
+		if (canUseFastTerminatorHint && !couldTerminateParagraph(state, nextLine, src, start, max)) continue;
+		let terminate = false;
+		for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine, endLine, true)) {
+			terminate = true;
+			break;
+		}
+		if (terminate) break;
+	}
+	const content = state.getLines(startLine, nextLine, blkIndent, false).trim();
+	state.line = nextLine;
+	const token_o = state.push("paragraph_open", "p", 1);
+	token_o.map = [startLine, state.line];
+	const token_i = state.push("inline", "", 0);
+	token_i.content = content;
+	token_i.map = [startLine, state.line];
+	token_i.children = [];
+	state.push("paragraph_close", "p", -1);
+	state.parentType = oldParentType;
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/reference.ts
+function isSpace$1(code$1) {
+	switch (code$1) {
+		case 9:
+		case 32: return true;
+	}
+	return false;
+}
+function reference(state, startLine, _endLine, silent) {
+	let pos = state.bMarks[startLine] + state.tShift[startLine];
+	let max = state.eMarks[startLine];
+	let nextLine = startLine + 1;
+	const terminatorRules = state.md.block.ruler.getRulesForState(state, "reference");
+	if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+	if (state.src.charCodeAt(pos) !== 91) return false;
+	function getNextLine(nextLine$1) {
+		const endLine = state.lineMax;
+		if (nextLine$1 >= endLine || state.isEmpty(nextLine$1)) return null;
+		let isContinuation = false;
+		if (state.sCount[nextLine$1] - state.blkIndent > 3) isContinuation = true;
+		if (state.sCount[nextLine$1] < 0) isContinuation = true;
+		if (!isContinuation) {
+			const oldParentType = state.parentType;
+			state.parentType = "reference";
+			let terminate = false;
+			for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine$1, endLine, true)) {
+				terminate = true;
+				break;
+			}
+			state.parentType = oldParentType;
+			if (terminate) return null;
+		}
+		const pos$1 = state.bMarks[nextLine$1] + state.tShift[nextLine$1];
+		const max$1 = state.eMarks[nextLine$1];
+		return state.src.slice(pos$1, max$1 + 1);
+	}
+	let str = state.src.slice(pos, max + 1);
+	max = str.length;
+	let labelEnd = -1;
+	for (pos = 1; pos < max; pos++) {
+		const ch = str.charCodeAt(pos);
+		if (ch === 91) return false;
+		else if (ch === 93) {
+			labelEnd = pos;
+			break;
+		} else if (ch === 10) {
+			const lineContent = getNextLine(nextLine);
+			if (lineContent !== null) {
+				str += lineContent;
+				max = str.length;
+				nextLine++;
+			}
+		} else if (ch === 92) {
+			pos++;
+			if (pos < max && str.charCodeAt(pos) === 10) {
+				const lineContent = getNextLine(nextLine);
+				if (lineContent !== null) {
+					str += lineContent;
+					max = str.length;
+					nextLine++;
+				}
+			}
+		}
+	}
+	if (labelEnd < 0 || str.charCodeAt(labelEnd + 1) !== 58) return false;
+	for (pos = labelEnd + 2; pos < max; pos++) {
+		const ch = str.charCodeAt(pos);
+		if (ch === 10) {
+			const lineContent = getNextLine(nextLine);
+			if (lineContent !== null) {
+				str += lineContent;
+				max = str.length;
+				nextLine++;
+			}
+		} else if (isSpace$1(ch)) {} else break;
+	}
+	const destRes = state.md.helpers.parseLinkDestination(str, pos, max);
+	if (!destRes.ok) return false;
+	const href = state.md.normalizeLink(destRes.str);
+	if (!state.md.validateLink(href)) return false;
+	pos = destRes.pos;
+	const destEndPos = pos;
+	const destEndLineNo = nextLine;
+	const start = pos;
+	for (; pos < max; pos++) {
+		const ch = str.charCodeAt(pos);
+		if (ch === 10) {
+			const lineContent = getNextLine(nextLine);
+			if (lineContent !== null) {
+				str += lineContent;
+				max = str.length;
+				nextLine++;
+			}
+		} else if (isSpace$1(ch)) {} else break;
+	}
+	let titleRes = state.md.helpers.parseLinkTitle(str, pos, max);
+	while (titleRes.can_continue) {
+		const lineContent = getNextLine(nextLine);
+		if (lineContent === null) break;
+		str += lineContent;
+		pos = max;
+		max = str.length;
+		nextLine++;
+		titleRes = state.md.helpers.parseLinkTitle(str, pos, max, titleRes);
+	}
+	let title;
+	if (pos < max && start !== pos && titleRes.ok) {
+		title = titleRes.str;
+		pos = titleRes.pos;
+	} else {
+		title = "";
+		pos = destEndPos;
+		nextLine = destEndLineNo;
+	}
+	while (pos < max) {
+		if (!isSpace$1(str.charCodeAt(pos))) break;
+		pos++;
+	}
+	if (pos < max && str.charCodeAt(pos) !== 10) {
+		if (title) {
+			title = "";
+			pos = destEndPos;
+			nextLine = destEndLineNo;
+			while (pos < max) {
+				if (!isSpace$1(str.charCodeAt(pos))) break;
+				pos++;
+			}
+		}
+	}
+	if (pos < max && str.charCodeAt(pos) !== 10) return false;
+	const label = normalizeReference(str.slice(1, labelEnd));
+	if (!label) return false;
+	if (silent) return true;
+	if (typeof state.env.references === "undefined") state.env.references = {};
+	if (typeof state.env.references[label] === "undefined") state.env.references[label] = {
+		title,
+		href
+	};
+	state.line = nextLine;
+	return true;
+}
+
+//#endregion
+//#region src/rules/block/table.ts
+function isSpace(code$1) {
+	switch (code$1) {
+		case 9:
+		case 32: return true;
+	}
+	return false;
+}
+const MAX_AUTOCOMPLETED_CELLS = 65536;
+function getLine(state, line) {
+	const pos = state.bMarks[line] + state.tShift[line];
+	const max = state.eMarks[line];
+	return state.src.slice(pos, max);
+}
+function lineContainsPipe(state, line) {
+	if (state.lineFlags) return (state.lineFlags[line] & LineFlag.Pipe) !== 0;
+	for (let pos = state.bMarks[line] + state.tShift[line], max = state.eMarks[line]; pos < max; pos++) if (state.src.charCodeAt(pos) === 124) return true;
+	return false;
+}
+function escapedSplit(str) {
+	if (!str.includes("\\")) return str.split("|");
+	const result = [];
+	const max = str.length;
+	let pos = 0;
+	let ch = str.charCodeAt(pos);
+	let isEscaped = false;
+	let lastPos = 0;
+	let current = "";
+	while (pos < max) {
+		if (ch === 124) if (!isEscaped) {
+			result.push(current + str.substring(lastPos, pos));
+			current = "";
+			lastPos = pos + 1;
+		} else {
+			current += str.substring(lastPos, pos - 1);
+			lastPos = pos;
+		}
+		isEscaped = ch === 92;
+		pos++;
+		ch = str.charCodeAt(pos);
+	}
+	result.push(current + str.substring(lastPos));
+	return result;
+}
+function table(state, startLine, endLine, silent) {
+	if (startLine + 2 > endLine) return false;
+	let nextLine = startLine + 1;
+	if (state.sCount[nextLine] < state.blkIndent) return false;
+	if (state.sCount[nextLine] - state.blkIndent >= 4) return false;
+	let pos = state.bMarks[nextLine] + state.tShift[nextLine];
+	if (pos >= state.eMarks[nextLine]) return false;
+	const firstCh = state.src.charCodeAt(pos++);
+	if (firstCh !== 124 && firstCh !== 45 && firstCh !== 58) return false;
+	if (pos >= state.eMarks[nextLine]) return false;
+	const secondCh = state.src.charCodeAt(pos++);
+	if (secondCh !== 124 && secondCh !== 45 && secondCh !== 58 && !isSpace(secondCh)) return false;
+	if (firstCh === 45 && isSpace(secondCh)) return false;
+	if (!lineContainsPipe(state, startLine)) return false;
+	while (pos < state.eMarks[nextLine]) {
+		const ch = state.src.charCodeAt(pos);
+		if (ch !== 124 && ch !== 45 && ch !== 58 && !isSpace(ch)) return false;
+		pos++;
+	}
+	let lineText = getLine(state, startLine + 1);
+	let columns = lineText.split("|");
+	const aligns = [];
+	for (let i = 0; i < columns.length; i++) {
+		const t = columns[i].trim();
+		if (!t) if (i === 0 || i === columns.length - 1) continue;
+		else return false;
+		if (!/^:?-+:?$/.test(t)) return false;
+		if (t.charCodeAt(t.length - 1) === 58) aligns.push(t.charCodeAt(0) === 58 ? "center" : "right");
+		else if (t.charCodeAt(0) === 58) aligns.push("left");
+		else aligns.push("");
+	}
+	lineText = getLine(state, startLine).trim();
+	if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+	columns = escapedSplit(lineText);
+	if (columns.length && columns[0] === "") columns.shift();
+	if (columns.length && columns[columns.length - 1] === "") columns.pop();
+	const columnCount = columns.length;
+	if (columnCount === 0 || columnCount !== aligns.length) return false;
+	if (silent) return true;
+	const oldParentType = state.parentType;
+	state.parentType = "table";
+	const terminatorRules = state.md.block.ruler.getRulesForState(state, "blockquote");
+	const token_to = state.push("table_open", "table", 1);
+	const tableLines = [startLine, 0];
+	token_to.map = tableLines;
+	const token_tho = state.push("thead_open", "thead", 1);
+	token_tho.map = [startLine, startLine + 1];
+	const token_htro = state.push("tr_open", "tr", 1);
+	token_htro.map = [startLine, startLine + 1];
+	for (let i = 0; i < columns.length; i++) {
+		const token_ho = state.push("th_open", "th", 1);
+		if (aligns[i]) token_ho.attrs = [["style", `text-align:${aligns[i]}`]];
+		const token_il = state.push("inline", "", 0);
+		token_il.content = columns[i].trim();
+		token_il.children = [];
+		state.push("th_close", "th", -1);
+	}
+	state.push("tr_close", "tr", -1);
+	state.push("thead_close", "thead", -1);
+	let tbodyLines;
+	let autocompletedCells = 0;
+	for (nextLine = startLine + 2; nextLine < endLine; nextLine++) {
+		if (state.sCount[nextLine] < state.blkIndent) break;
+		let terminate = false;
+		for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine, endLine, true)) {
+			terminate = true;
+			break;
+		}
+		if (terminate) break;
+		lineText = getLine(state, nextLine).trim();
+		if (!lineText) break;
+		if (state.sCount[nextLine] - state.blkIndent >= 4) break;
+		columns = escapedSplit(lineText);
+		if (columns.length && columns[0] === "") columns.shift();
+		if (columns.length && columns[columns.length - 1] === "") columns.pop();
+		autocompletedCells += columnCount - columns.length;
+		if (autocompletedCells > MAX_AUTOCOMPLETED_CELLS) break;
+		if (nextLine === startLine + 2) {
+			const token_tbo = state.push("tbody_open", "tbody", 1);
+			token_tbo.map = tbodyLines = [startLine + 2, 0];
+		}
+		const token_tro = state.push("tr_open", "tr", 1);
+		token_tro.map = [nextLine, nextLine + 1];
+		for (let i = 0; i < columnCount; i++) {
+			const token_tdo = state.push("td_open", "td", 1);
+			if (aligns[i]) token_tdo.attrs = [["style", `text-align:${aligns[i]}`]];
+			const token_il = state.push("inline", "", 0);
+			token_il.content = columns[i] ? columns[i].trim() : "";
+			token_il.children = [];
+			state.push("td_close", "td", -1);
+		}
+		state.push("tr_close", "tr", -1);
+	}
+	if (tbodyLines) {
+		state.push("tbody_close", "tbody", -1);
+		tbodyLines[1] = nextLine;
+	}
+	state.push("table_close", "table", -1);
+	tableLines[1] = nextLine;
+	state.parentType = oldParentType;
+	state.line = nextLine;
+	return true;
+}
+
+//#endregion
+//#region src/parse/parser_block/ruler.ts
+var BlockRuler = class {
+	_rules = [];
+	cache = null;
+	namedCache = null;
+	version = 0;
+	invalidateCache() {
+		this.cache = null;
+		this.namedCache = null;
+		this.version++;
+	}
+	push(name, fn, options) {
+		this._rules.push({
+			name,
+			enabled: true,
+			fn,
+			alt: options?.alt || []
+		});
+		this.invalidateCache();
+	}
+	before(beforeName, name, fn, options) {
+		const i = this._rules.findIndex((r) => r.name === beforeName);
+		if (i < 0) throw new Error(`Parser rule not found: ${beforeName}`);
+		const exists = this._rules.findIndex((r) => r.name === name);
+		if (exists >= 0) this._rules.splice(exists, 1);
+		this._rules.splice(i, 0, {
+			name,
+			enabled: true,
+			fn,
+			alt: options?.alt || []
+		});
+		this.invalidateCache();
+	}
+	after(afterName, name, fn, options) {
+		const i = this._rules.findIndex((r) => r.name === afterName);
+		if (i < 0) throw new Error(`Parser rule not found: ${afterName}`);
+		const exists = this._rules.findIndex((r) => r.name === name);
+		if (exists >= 0) this._rules.splice(exists, 1);
+		this._rules.splice(i + 1, 0, {
+			name,
+			enabled: true,
+			fn,
+			alt: options?.alt || []
+		});
+		this.invalidateCache();
+	}
+	getRules(chainName) {
+		const chain = chainName || "";
+		if (!this.cache) this.compileCache();
+		return this.cache[chain] ?? [];
+	}
+	getNamedRules(chainName) {
+		const chain = chainName || "";
+		if (!this.namedCache) this.compileCache();
+		return this.namedCache[chain] ?? [];
+	}
+	getRulesForState(state, chainName) {
+		const env = state?.env;
+		if (!(!!env && (Object.prototype.hasOwnProperty.call(env, "__mdtsRuleProfile") || Object.prototype.hasOwnProperty.call(env, "__mdtsProfileRules")))) return this.getRules(chainName);
+		return this.getNamedRules(chainName).map(({ name, fn }) => {
+			return (currentState, startLine, endLine, silent) => {
+				const startedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				const ok = fn(currentState, startLine, endLine, silent);
+				const endedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				recordRuleInvocation(currentState?.env, "block", name, endedAt - startedAt, ok, !!silent);
+				return ok;
+			};
+		});
+	}
+	at(name, fn, options) {
+		const index = this._rules.findIndex((r) => r.name === name);
+		if (index === -1) throw new Error(`Parser rule not found: ${name}`);
+		this._rules[index].fn = fn;
+		if (options?.alt) this._rules[index].alt = options.alt;
+		this.invalidateCache();
+	}
+	enable(names, ignoreInvalid) {
+		const nameList = Array.isArray(names) ? names : [names];
+		const found = [];
+		let changed = false;
+		nameList.forEach((name) => {
+			const idx = this._rules.findIndex((r) => r.name === name);
+			if (idx === -1) {
+				if (ignoreInvalid) return;
+				throw new Error(`Rules manager: invalid rule name ${name}`);
+			}
+			found.push(name);
+			if (!this._rules[idx].enabled) {
+				this._rules[idx].enabled = true;
+				changed = true;
+			}
+		});
+		if (changed) this.invalidateCache();
+		return found;
+	}
+	disable(names, ignoreInvalid) {
+		const nameList = Array.isArray(names) ? names : [names];
+		const found = [];
+		let changed = false;
+		nameList.forEach((name) => {
+			const idx = this._rules.findIndex((r) => r.name === name);
+			if (idx === -1) {
+				if (ignoreInvalid) return;
+				throw new Error(`Rules manager: invalid rule name ${name}`);
+			}
+			found.push(name);
+			if (this._rules[idx].enabled) {
+				this._rules[idx].enabled = false;
+				changed = true;
+			}
+		});
+		if (changed) this.invalidateCache();
+		return found;
+	}
+	enableOnly(names) {
+		const allow = new Set(names);
+		let changed = false;
+		for (const r of this._rules) {
+			const next = allow.has(r.name);
+			if (r.enabled !== next) {
+				r.enabled = next;
+				changed = true;
+			}
+		}
+		if (changed) this.invalidateCache();
+	}
+	compileCache() {
+		const chains = new Set([""]);
+		for (const rule of this._rules) {
+			if (!rule.enabled) continue;
+			for (const alt of rule.alt) chains.add(alt);
+		}
+		const cache = Object.create(null);
+		const namedCache = Object.create(null);
+		for (const chain of chains) {
+			const bucket = [];
+			const namedBucket = [];
+			for (const rule of this._rules) {
+				if (!rule.enabled) continue;
+				if (chain !== "" && !rule.alt.includes(chain)) continue;
+				bucket.push(rule.fn);
+				namedBucket.push({
+					name: rule.name,
+					fn: rule.fn
+				});
+			}
+			cache[chain] = bucket;
+			namedCache[chain] = namedBucket;
+		}
+		this.cache = cache;
+		this.namedCache = namedCache;
+	}
+};
+
+//#endregion
+//#region src/parse/parser_block.ts
+const _rules = [
+	[
+		"table",
+		table,
+		["paragraph", "reference"]
+	],
+	["code", code],
+	[
+		"fence",
+		fence,
+		[
+			"paragraph",
+			"reference",
+			"blockquote",
+			"list"
+		]
+	],
+	[
+		"blockquote",
+		blockquote,
+		[
+			"paragraph",
+			"reference",
+			"blockquote",
+			"list"
+		]
+	],
+	[
+		"hr",
+		hr,
+		[
+			"paragraph",
+			"reference",
+			"blockquote",
+			"list"
+		]
+	],
+	[
+		"list",
+		list,
+		[
+			"paragraph",
+			"reference",
+			"blockquote"
+		]
+	],
+	["reference", reference],
+	[
+		"html_block",
+		html_block,
+		[
+			"paragraph",
+			"reference",
+			"blockquote"
+		]
+	],
+	[
+		"heading",
+		heading,
+		[
+			"paragraph",
+			"reference",
+			"blockquote"
+		]
+	],
+	["lheading", lheading],
+	["paragraph", paragraph]
+];
+var ParserBlock = class {
+	ruler;
+	cachedRulesVersion = -1;
+	cachedRules = [];
+	constructor() {
+		this.ruler = new BlockRuler();
+		for (let i = 0; i < _rules.length; i++) this.ruler.push(_rules[i][0], _rules[i][1], { alt: (_rules[i][2] || []).slice() });
+		this.ruler.__mdtsDefaultVersion = this.ruler.version;
+	}
+	/**
+	* Generate tokens for input range
+	*/
+	tokenize(state, startLine, endLine) {
+		const rules = this.getRules();
+		const len = rules.length;
+		const maxNesting = state.md.options.maxNesting;
+		const bMarks = state.bMarks;
+		const tShift = state.tShift;
+		const eMarks = state.eMarks;
+		const sCount = state.sCount;
+		let line = startLine;
+		let hasEmptyLines = false;
+		if (!(!!state.env && (Object.prototype.hasOwnProperty.call(state.env, "__mdtsRuleProfile") || Object.prototype.hasOwnProperty.call(state.env, "__mdtsProfileRules")))) {
+			while (line < endLine) {
+				while (line < endLine && bMarks[line] + tShift[line] >= eMarks[line]) line++;
+				state.line = line;
+				if (line >= endLine) break;
+				if (sCount[line] < state.blkIndent) break;
+				if (state.level >= maxNesting) {
+					state.line = endLine;
+					break;
+				}
+				const prevLine = state.line;
+				let ok = false;
+				for (let i = 0; i < len; i++) {
+					ok = rules[i](state, line, endLine, false);
+					if (ok) {
+						if (prevLine >= state.line) throw new Error("block rule didn't increment state.line");
+						break;
+					}
+				}
+				if (!ok) throw new Error("none of the block rules matched");
+				state.tight = !hasEmptyLines;
+				if (bMarks[state.line - 1] + tShift[state.line - 1] >= eMarks[state.line - 1]) hasEmptyLines = true;
+				line = state.line;
+				if (line < endLine && bMarks[line] + tShift[line] >= eMarks[line]) {
+					hasEmptyLines = true;
+					line++;
+					state.line = line;
+				}
+			}
+			return;
+		}
+		const namedRules = this.ruler.getNamedRules("");
+		while (line < endLine) {
+			while (line < endLine && bMarks[line] + tShift[line] >= eMarks[line]) line++;
+			state.line = line;
+			if (line >= endLine) break;
+			if (sCount[line] < state.blkIndent) break;
+			if (state.level >= maxNesting) {
+				state.line = endLine;
+				break;
+			}
+			const prevLine = state.line;
+			let ok = false;
+			for (let i = 0; i < len; i++) {
+				const startedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				ok = namedRules[i].fn(state, line, endLine, false);
+				const endedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+				recordRuleInvocation(state.env, "block", namedRules[i].name, endedAt - startedAt, ok, false);
+				if (ok) {
+					if (prevLine >= state.line) throw new Error("block rule didn't increment state.line");
+					break;
+				}
+			}
+			if (!ok) throw new Error("none of the block rules matched");
+			state.tight = !hasEmptyLines;
+			if (bMarks[state.line - 1] + tShift[state.line - 1] >= eMarks[state.line - 1]) hasEmptyLines = true;
+			line = state.line;
+			if (line < endLine && bMarks[line] + tShift[line] >= eMarks[line]) {
+				hasEmptyLines = true;
+				line++;
+				state.line = line;
+			}
+		}
+	}
+	/**
+	* ParserBlock.parse(src, md, env, outTokens)
+	*
+	* Process input string and push block tokens into `outTokens`
+	*/
+	parse(src, md, env, outTokens) {
+		if (!src || src.length === 0) return;
+		const state = new StateBlock(src, md, env, outTokens);
+		this.tokenize(state, state.line, state.lineMax);
+	}
+	getRules() {
+		if (this.cachedRulesVersion !== this.ruler.version) {
+			this.cachedRules = this.ruler.getRules("");
+			this.cachedRulesVersion = this.ruler.version;
+		}
+		return this.cachedRules;
+	}
+};
+
+//#endregion
+//#region src/parse/state.ts
+var State = class {
+	src;
+	env;
+	tokens;
+	inlineMode;
+	md;
+	constructor(src, md, env = {}) {
+		this.src = typeof src === "string" ? src || "" : src;
+		this.env = env;
+		this.tokens = [];
+		this.inlineMode = false;
+		this.md = md;
+	}
+};
+State.prototype.Token = Token;
+
+//#endregion
+//#region src/parse/parser_core.ts
+const CORE_RULES = [
+	["normalize", normalize],
+	["block", block],
+	["inline", inline],
+	["linkify", linkify],
+	["replacements", replacements],
+	["smartquotes", smartquotes],
+	["text_join", text_join]
+];
+const DEFAULT_OPTIONS_TEMPLATE = {
+	html: false,
+	xhtmlOut: false,
+	breaks: false,
+	langPrefix: "language-",
+	linkify: false,
+	typographer: false,
+	quotes: "“”‘’",
+	maxNesting: 100
+};
+const DEFAULT_HELPERS = {
+	parseLinkLabel,
+	parseLinkDestination,
+	parseLinkTitle
+};
+function cloneDefaultOptions() {
+	return { ...DEFAULT_OPTIONS_TEMPLATE };
+}
+function cloneDefaultHelpers() {
+	return { ...DEFAULT_HELPERS };
+}
+var ParserCore = class {
+	fallbackParser;
+	lastState = null;
+	block;
+	inline;
+	ruler;
+	linkifyInstance = null;
+	cachedCoreRulesVersion = -1;
+	cachedCoreRules = [];
+	cachedCoreNamedRulesVersion = -1;
+	cachedCoreNamedRules = [];
+	constructor() {
+		this.block = new ParserBlock();
+		this.inline = new ParserInline();
+		this.ruler = new CoreRuler();
+		for (let i = 0; i < CORE_RULES.length; i++) {
+			const [name, rule] = CORE_RULES[i];
+			this.ruler.push(name, rule);
+		}
+		this.fallbackParser = {
+			block: this.block,
+			inline: this.inline,
+			core: this,
+			options: cloneDefaultOptions(),
+			helpers: cloneDefaultHelpers(),
+			normalizeLink,
+			normalizeLinkText,
+			validateLink,
+			linkify: null
+		};
+	}
+	resolveParser(md) {
+		if (md) return md;
+		if (!this.linkifyInstance) this.linkifyInstance = new LinkifyIt({ fuzzyLink: true });
+		if (this.fallbackParser.block !== this.block) this.fallbackParser.block = this.block;
+		if (this.fallbackParser.inline !== this.inline) this.fallbackParser.inline = this.inline;
+		this.fallbackParser.core = this;
+		this.fallbackParser.linkify = this.linkifyInstance;
+		return this.fallbackParser;
+	}
+	createState(src, env = {}, md) {
+		return new State(src, this.resolveParser(md), env);
+	}
+	getCoreRules() {
+		if (this.cachedCoreRulesVersion !== this.ruler.version) {
+			this.cachedCoreRules = this.ruler.getRules("");
+			this.cachedCoreRulesVersion = this.ruler.version;
+		}
+		return this.cachedCoreRules;
+	}
+	getCoreNamedRules() {
+		if (this.cachedCoreNamedRulesVersion !== this.ruler.version) {
+			this.cachedCoreNamedRules = this.ruler.getNamedRules("");
+			this.cachedCoreNamedRulesVersion = this.ruler.version;
+		}
+		return this.cachedCoreNamedRules;
+	}
+	process(state) {
+		if (!(!!state.env && (Object.prototype.hasOwnProperty.call(state.env, "__mdtsRuleProfile") || Object.prototype.hasOwnProperty.call(state.env, "__mdtsProfileRules")))) {
+			const rules = this.getCoreRules();
+			for (let i = 0; i < rules.length; i++) rules[i](state);
+			return;
+		}
+		const namedRules = this.getCoreNamedRules();
+		for (let i = 0; i < namedRules.length; i++) {
+			const startedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+			namedRules[i].fn(state);
+			const endedAt = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+			recordRuleInvocation(state.env, "core", namedRules[i].name, endedAt - startedAt, true, false);
+		}
+		finalizeRuleProfile(state.env);
+	}
+	parseSource(src, env = {}, md) {
+		if (typeof src !== "string" && hasNormalizationChars(src)) return this.parse(sourceToString(src), env, md);
+		const state = this.createState(src, env, md);
+		this.process(state);
+		this.lastState = state;
+		return state;
+	}
+	parse(src, env = {}, md) {
+		if (typeof src !== "string") throw new TypeError("Input data should be a String");
+		return this.parseSource(src, env, md);
+	}
+	getTokens() {
+		return this.lastState ? this.lastState.tokens : [];
+	}
+};
+
+//#endregion
+//#region src/parse/index.ts
+/**
+* High-level parse function returning token array. This is a small shim
+* around `ParserCore` to make a tree-shakable public API.
+*/
+let sharedCore = null;
+function getSharedCore() {
+	if (!sharedCore) sharedCore = new ParserCore();
+	return sharedCore;
+}
+function parse(src, env = {}) {
+	beginParseDiagnostics(env);
+	const core = getSharedCore();
+	return runWithKnownGlobalMarkdownState(env, detectGlobalMarkdownState(src), () => {
+		return core.parse(src, env).tokens;
+	});
+}
+/**
+* Parse inline-only content. For now this uses the same core parser
+* (scaffold) — it may be adjusted to set inline mode in a future step.
+*/
+function parseInline(src, env = {}) {
+	beginParseDiagnostics(env);
+	const core = getSharedCore();
+	if (getKnownGlobalMarkdownState(env)) resetKnownGlobalMarkdownState(env);
+	const state = core.createState(src, env);
+	state.inlineMode = true;
+	core.process(state);
+	return state.tokens;
+}
+
+//#endregion
+export { normalizeLink as a, ParserInline as c, ParserBlock as i, helpers_exports as l, parseInline as n, normalizeLinkText as o, ParserCore as r, validateLink as s, parse as t };

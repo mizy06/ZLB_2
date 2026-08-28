@@ -1,0 +1,3 @@
+import type { StockFastDiagnostics } from '../parse/strategy_diagnostics.js';
+export declare function renderStockFast(src: string): string | null;
+export declare function renderStockFastWithDiagnostics(src: string, diagnostics: StockFastDiagnostics): string | null;

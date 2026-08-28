@@ -1,0 +1,640 @@
+//#region src/factory.d.ts
+interface FactoryOptions extends Record<string, unknown> {
+  markdownItOptions?: Record<string, unknown>;
+  enableMath?: boolean;
+  enableContainers?: boolean;
+  mathOptions?: {
+    commands?: string[];
+    escapeExclamation?: boolean;
+  };
+  /**
+   * Custom HTML-like tag names that should participate in streaming mid-state
+   * suppression and be emitted as custom nodes (e.g. ['thinking']).
+   */
+  customHtmlTags?: readonly string[];
+  /**
+   * Whether to enable the fix for indented code blocks that should be paragraphs.
+   * Default: true
+   */
+  enableFixIndentedCodeBlock?: boolean;
+}
+//#endregion
+//#region src/markdown-it-types.d.ts
+interface MarkdownItOptions extends Record<string, unknown> {
+  [key: string]: unknown;
+  html?: boolean;
+  xhtmlOut?: boolean;
+  breaks?: boolean;
+  langPrefix?: string;
+  linkify?: boolean;
+  typographer?: boolean;
+  quotes?: string | string[];
+  highlight?: ((str: string, lang: string, attrs: string) => string | Promise<string>) | null;
+  validateLink?: (url: string) => boolean;
+}
+interface Token {
+  type: string;
+  tag: string;
+  attrs: [string, string][] | null;
+  map: [number, number] | null;
+  nesting: number;
+  level: number;
+  children: Token[] | null;
+  content: string;
+  markup: string;
+  info: string;
+  meta: Record<string, unknown> | null;
+  block: boolean;
+  hidden: boolean;
+  attrIndex: (name: string) => number;
+  attrPush: (attrData: [string, string]) => void;
+  attrSet: (name: string, value: string) => void;
+  attrGet: (name: string) => string | null;
+  attrJoin: (name: string, value: string) => void;
+}
+interface RuleOptions {
+  alt?: string[];
+}
+type RuleHandler = (...args: any[]) => unknown;
+interface RuleManager {
+  before: (name: string, ruleName: string, fn: RuleHandler, options?: RuleOptions) => void;
+  after: (name: string, ruleName: string, fn: RuleHandler, options?: RuleOptions) => void;
+  at: (ruleName: string, fn: RuleHandler, options?: RuleOptions) => void;
+  push: (ruleName: string, fn: RuleHandler, options?: RuleOptions) => void;
+  enable: (list: string | string[], ignoreInvalid?: boolean) => void;
+  disable: (list: string | string[], ignoreInvalid?: boolean) => void;
+  getRules: (chainName?: string) => RuleHandler[];
+}
+interface ParserBlock {
+  ruler: RuleManager;
+  parse: (src: string, md: MarkdownIt, env: Record<string, unknown>, outTokens: Token[]) => void;
+}
+interface ParserInline {
+  ruler: RuleManager;
+  ruler2: RuleManager;
+}
+interface RendererRuleRecord {
+  [type: string]: ((tokens: Token[], idx: number, options?: unknown, env?: unknown, self?: unknown) => unknown) | undefined;
+}
+interface Renderer {
+  rules: RendererRuleRecord;
+  render: (tokens: Token[], options?: unknown, env?: unknown) => string;
+  renderToken: (tokens: Token[], idx: number, options?: unknown) => string;
+}
+interface MarkdownIt {
+  core: {
+    ruler: RuleManager;
+  };
+  block: ParserBlock;
+  inline: ParserInline;
+  renderer: Renderer;
+  options: MarkdownItOptions;
+  utils: {
+    escapeHtml: (value: string) => string;
+    [key: string]: unknown;
+  };
+  linkify?: unknown;
+  helpers?: Record<string, unknown>;
+  set: (options: MarkdownItOptions) => this;
+  configure: (preset: string | {
+    options?: MarkdownItOptions;
+    components?: unknown;
+  }) => this;
+  enable: (list: string | string[], ignoreInvalid?: boolean) => this;
+  disable: (list: string | string[], ignoreInvalid?: boolean) => this;
+  use: <TParams extends unknown[] = any[]>(plugin: CompatibleMarkdownItPlugin<TParams>, ...params: TParams) => this;
+  parse: (src: string, env?: Record<string, unknown>) => Token[];
+  stream?: {
+    enabled?: boolean;
+    parse?: (src: string, env?: Record<string, unknown>) => Token[];
+    reset?: () => void;
+    peek?: () => Token[];
+    stats?: () => unknown;
+    resetStats?: () => void;
+  };
+  parseInline: (src: string, env?: Record<string, unknown>) => Token[];
+  render: (src: string, env?: Record<string, unknown>) => string;
+  renderInline: (src: string, env?: Record<string, unknown>) => string;
+}
+type MarkdownItPlugin<TParams extends unknown[] = any[]> = (md: MarkdownIt, ...params: TParams) => unknown;
+type CompatibleMarkdownItPlugin<TParams extends unknown[] = any[]> = MarkdownItPlugin<TParams> | ((md: any, ...params: TParams) => unknown);
+//#endregion
+//#region src/types.d.ts
+interface BaseNode {
+  type: string;
+  raw: string;
+  loading?: boolean;
+  code?: string;
+  diff?: boolean;
+  /**
+   * 0-based source line range from markdown-it token.map.
+   * The end line is exclusive.
+   */
+  sourceMap?: MarkdownNodeSourceMap;
+}
+interface MarkdownNodeSourceMap {
+  startLine: number;
+  endLine: number;
+}
+/**
+ * A catch‑all node type for user extensions.
+ * Must still satisfy the renderer contract (`type` + `raw`), but may carry
+ * arbitrary extra fields.
+ */
+type UnknownNode = BaseNode & Record<string, unknown>;
+interface TextNode extends BaseNode {
+  type: 'text';
+  content: string;
+  center?: boolean;
+}
+interface HeadingNode extends BaseNode {
+  type: 'heading';
+  level: number;
+  text: string;
+  attrs?: Record<string, string | boolean>;
+  children: ParsedNode[];
+}
+interface ParagraphNode extends BaseNode {
+  type: 'paragraph';
+  children: ParsedNode[];
+  maybeCheckbox?: boolean;
+}
+interface InlineNode extends BaseNode {
+  type: 'inline';
+  children: ParsedNode[];
+  content?: string;
+}
+interface ListNode extends BaseNode {
+  type: 'list';
+  ordered: boolean;
+  start?: number;
+  items: ListItemNode[];
+}
+interface ListItemNode extends BaseNode {
+  type: 'list_item';
+  children: ParsedNode[];
+}
+interface CodeBlockNode extends BaseNode {
+  type: 'code_block';
+  language: string;
+  code: string;
+  startLine?: number;
+  endLine?: number;
+  loading?: boolean;
+  diff?: boolean;
+  originalCode?: string;
+  updatedCode?: string;
+  raw: string;
+}
+interface HtmlBlockNode extends BaseNode {
+  type: 'html_block';
+  attrs?: [string, string][] | null;
+  tag: string;
+  content: string;
+  children?: ParsedNode[];
+}
+interface HtmlInlineNode extends BaseNode {
+  type: 'html_inline';
+  tag?: string;
+  content: string;
+  children: ParsedNode[];
+  /**
+   * True when the parser auto-appended a closing tag for streaming stability.
+   * The original source is still incomplete (no explicit close typed yet).
+   */
+  autoClosed?: boolean;
+}
+type CustomComponentAttrs = [string, string][] | Record<string, string | boolean> | Array<{
+  name: string;
+  value: string | boolean;
+}> | null;
+/**
+ * A generic node shape for custom HTML-like components.
+ * When a tag name is included in `customHtmlTags`, the parser emits a node
+ * whose `type` equals that tag name and carries the raw HTML `content`
+ * plus extracted `attrs` from user transforms.
+ */
+interface CustomComponentNode extends BaseNode {
+  /** The custom tag name (same as `tag`) */
+  type: string;
+  tag: string;
+  content: string;
+  attrs?: CustomComponentAttrs;
+  children?: ParsedNode[];
+  autoClosed?: boolean;
+}
+interface InlineCodeNode extends BaseNode {
+  type: 'inline_code';
+  code: string;
+}
+interface LinkNode extends BaseNode {
+  type: 'link';
+  href: string;
+  title: string | null;
+  text: string;
+  attrs?: [string, string][];
+  children: ParsedNode[];
+}
+interface ImageNode extends BaseNode {
+  type: 'image';
+  src: string;
+  alt: string;
+  title: string | null;
+}
+interface ThematicBreakNode extends BaseNode {
+  type: 'thematic_break';
+}
+interface MermaidBlockNode {
+  node: {
+    type: 'code_block';
+    language: string;
+    code: string;
+    loading?: boolean;
+  };
+}
+type MarkdownRender = {
+  content: string;
+  nodes?: undefined;
+} | {
+  content?: undefined;
+  nodes: BaseNode[];
+};
+interface BlockquoteNode extends BaseNode {
+  type: 'blockquote';
+  children: ParsedNode[];
+}
+interface TableNode extends BaseNode {
+  type: 'table';
+  header: TableRowNode;
+  rows: TableRowNode[];
+}
+interface TableRowNode extends BaseNode {
+  type: 'table_row';
+  cells: TableCellNode[];
+}
+interface TableCellNode extends BaseNode {
+  type: 'table_cell';
+  header: boolean;
+  children: ParsedNode[];
+  align?: 'left' | 'right' | 'center';
+}
+interface DefinitionListNode extends BaseNode {
+  type: 'definition_list';
+  items: DefinitionItemNode[];
+}
+interface DefinitionItemNode extends BaseNode {
+  type: 'definition_item';
+  term: ParsedNode[];
+  definition: ParsedNode[];
+}
+interface FootnoteNode extends BaseNode {
+  type: 'footnote';
+  id: string;
+  children: ParsedNode[];
+}
+interface FootnoteReferenceNode extends BaseNode {
+  type: 'footnote_reference';
+  id: string;
+}
+interface FootnoteAnchorNode extends BaseNode {
+  type: 'footnote_anchor';
+  id: string;
+}
+interface AdmonitionNode extends BaseNode {
+  type: 'admonition';
+  kind: string;
+  title: string;
+  children: ParsedNode[];
+}
+interface VmrContainerNode extends BaseNode {
+  type: 'vmr_container';
+  name: string;
+  /** True while the opening `:::` has been seen but the closing `:::` hasn't (streaming mid-state). */
+  loading?: boolean;
+  attrs?: Record<string, string>;
+  children: ParsedNode[];
+}
+interface StrongNode extends BaseNode {
+  type: 'strong';
+  children: ParsedNode[];
+}
+interface EmphasisNode extends BaseNode {
+  type: 'emphasis';
+  children: ParsedNode[];
+}
+interface StrikethroughNode extends BaseNode {
+  type: 'strikethrough';
+  children: ParsedNode[];
+}
+interface HighlightNode extends BaseNode {
+  type: 'highlight';
+  children: ParsedNode[];
+}
+interface InsertNode extends BaseNode {
+  type: 'insert';
+  children: ParsedNode[];
+}
+interface SubscriptNode extends BaseNode {
+  type: 'subscript';
+  children: ParsedNode[];
+}
+interface SuperscriptNode extends BaseNode {
+  type: 'superscript';
+  children: ParsedNode[];
+}
+interface CheckboxNode extends BaseNode {
+  type: 'checkbox';
+  checked: boolean;
+}
+interface CheckboxInputNode extends BaseNode {
+  type: 'checkbox_input';
+  checked: boolean;
+}
+interface EmojiNode extends BaseNode {
+  type: 'emoji';
+  name: string;
+  markup: string;
+}
+interface HardBreakNode extends BaseNode {
+  type: 'hardbreak';
+}
+interface MathInlineNode extends BaseNode {
+  type: 'math_inline';
+  content: string;
+  markup?: string;
+}
+interface MathBlockNode extends BaseNode {
+  type: 'math_block';
+  content: string;
+  markup?: string;
+}
+interface ReferenceNode extends BaseNode {
+  type: 'reference';
+  id: string;
+}
+type MarkdownTokenMeta = Record<string, unknown>;
+type MarkdownTokenBase = Omit<Token, 'children' | 'meta'> & {
+  children?: MarkdownToken[] | null;
+  loading?: boolean;
+  mark?: string;
+  meta?: MarkdownTokenMeta | null;
+  raw?: string;
+};
+interface MarkdownTokenLite {
+  type: string;
+  tag?: string;
+  content?: string;
+  info?: string;
+  mark?: string;
+  markup?: string;
+  meta?: MarkdownTokenMeta | null;
+  map?: [number, number] | number[] | null;
+  block?: boolean;
+  hidden?: boolean;
+  attrs?: [string, string][] | null;
+  nesting?: number;
+  level?: number;
+  children?: MarkdownToken[] | null;
+  loading?: boolean;
+  raw?: string;
+}
+type MarkdownToken = MarkdownTokenBase | MarkdownTokenLite;
+type ParsedNode = TextNode | HeadingNode | ParagraphNode | ListNode | ListItemNode | CodeBlockNode | InlineCodeNode | LinkNode | ImageNode | ThematicBreakNode | BlockquoteNode | TableNode | TableRowNode | TableCellNode | StrongNode | EmphasisNode | StrikethroughNode | HighlightNode | InsertNode | SubscriptNode | SuperscriptNode | CheckboxNode | CheckboxInputNode | EmojiNode | DefinitionListNode | DefinitionItemNode | FootnoteNode | FootnoteReferenceNode | AdmonitionNode | VmrContainerNode | HardBreakNode | MathInlineNode | MathBlockNode | ReferenceNode | HtmlBlockNode | HtmlInlineNode | CustomComponentNode | UnknownNode;
+interface CustomComponents {
+  text: unknown;
+  paragraph: unknown;
+  heading: unknown;
+  code_block: unknown;
+  list: unknown;
+  blockquote: unknown;
+  table: unknown;
+  definition_list: unknown;
+  footnote: unknown;
+  footnote_reference: unknown;
+  admonition: unknown;
+  hardbreak: unknown;
+  link: unknown;
+  image: unknown;
+  thematic_break: unknown;
+  math_inline: unknown;
+  math_block: unknown;
+  strong: unknown;
+  emphasis: unknown;
+  strikethrough: unknown;
+  highlight: unknown;
+  insert: unknown;
+  subscript: unknown;
+  superscript: unknown;
+  emoji: unknown;
+  checkbox: unknown;
+  inline_code: unknown;
+  html_inline: unknown;
+  reference: unknown;
+  mermaid: unknown;
+  [key: string]: unknown;
+}
+type TransformTokensHook = (tokens: MarkdownToken[]) => MarkdownToken[];
+type PostTransformNodesHook = (nodes: ParsedNode[]) => ParsedNode[];
+interface ParseOptions {
+  preTransformTokens?: TransformTokensHook;
+  postTransformTokens?: TransformTokensHook;
+  postTransformNodes?: PostTransformNodesHook;
+  /**
+   * Defaults to 'auto': use markdown-it-ts' stream parser for non-final
+   * top-level document parses when available. Final parses and fragment parses
+   * use the regular parser unless streamParse is explicitly true.
+   */
+  streamParse?: boolean | 'auto';
+  requireClosingStrong?: boolean;
+  /**
+   * When true, indicates the input buffer is complete (end-of-stream).
+   * This disables "mid-state" streaming behavior (e.g. unclosed math/link/code
+   * tokens staying in a loading state) and keeps trailing markers as literal text.
+   */
+  final?: boolean;
+  /**
+   * Custom HTML-like tag names that should be emitted as custom nodes
+   * instead of `html_inline` when encountered (e.g. ['thinking']).
+   * Used by inline parsing and passed to markdown-it core rules for
+   * mid-state suppression during streaming.
+   */
+  customHtmlTags?: readonly string[];
+  /**
+   * If provided, link nodes are only emitted when this returns true for the href.
+   * When it returns false, the link is rendered as plain text (the link text only).
+   * Typically set from the MarkdownIt instance (e.g. md.options.validateLink or
+   * md.set({ validateLink })) so that unsafe URLs (e.g. javascript:) are not
+   * output as links.
+   */
+  validateLink?: (url: string) => boolean;
+  /**
+   * When true, attach 0-based source line metadata to parsed block/custom nodes
+   * when token maps or parser source offsets are available. Nested container
+   * children may also be annotated.
+   */
+  includeSourceMap?: boolean;
+  debug?: boolean;
+}
+interface InternalParseOptions extends ParseOptions {
+  __customHtmlBlockCursor?: number;
+  __disableStreamParse?: boolean;
+  __insideStrong?: boolean;
+  __markdownIt?: MarkdownIt;
+  __sourceLineMapper?: (line: number) => MarkdownNodeSourceMap;
+  __sourceMarkdown?: string;
+}
+//#endregion
+//#region src/parser/inline-parsers/index.d.ts
+declare function parseInlineTokens(tokens: MarkdownToken[], raw?: string, pPreToken?: MarkdownToken, options?: ParseOptions): ParsedNode[];
+//#endregion
+//#region src/parser/index.d.ts
+declare function parseMarkdownToStructure(markdown: string, md: MarkdownIt, options?: ParseOptions): ParsedNode[];
+declare function processTokens(tokens: MarkdownToken[], options?: ParseOptions): ParsedNode[];
+//#endregion
+//#region src/config.d.ts
+/**
+ * MathOptions control how the math plugin normalizes content before
+ * handing it to KaTeX (or other math renderers).
+ *
+ * - commands: list of command words that should be auto-prefixed with a
+ *   backslash if not already escaped (e.g. 'infty' -> '\\infty'). Use a
+ *   conservative list to avoid false positives in prose.
+ * - escapeExclamation: whether to escape standalone '!' to '\\!' (default true).
+ */
+interface MathOptions {
+  /** List of command words to auto-escape. */
+  commands?: readonly string[];
+  /** Whether to escape standalone '!' (default: true). */
+  escapeExclamation?: boolean;
+  /**
+   * Strict delimiter mode.
+   * - When true, only explicit TeX delimiters are recognized as math:
+   *   inline: `$...$` and `\\(...\\)`; block: `$$...$$` and `\\[...\\]`.
+   *
+   * Important: authors should write explicit TeX delimiters with escaped
+   * backslashes in source (for example, write `\\(...\\)` rather than
+   * an unescaped `\(...\)`). Unescaped `\(...\)` cannot be reliably
+   * distinguished from ordinary parentheses and may not be parsed as math.
+   * - Heuristics and mid-state (unclosed) math detection are disabled.
+   */
+  strictDelimiters?: boolean;
+}
+declare function setDefaultMathOptions(opts: MathOptions | undefined): void;
+//#endregion
+//#region src/customHtmlTags.d.ts
+declare function isHtmlLikeTagName(tag: string): boolean;
+declare function normalizeCustomHtmlTagName(value: unknown): string;
+declare function normalizeCustomHtmlTags(tags?: readonly string[]): string[];
+declare function mergeCustomHtmlTags(...lists: Array<readonly string[] | undefined>): string[];
+declare function resolveCustomHtmlTags(tags?: readonly string[]): {
+  key: string;
+  tags: string[];
+};
+declare function getHtmlTagFromContent(html: unknown): string;
+declare function hasCompleteHtmlTagContent(html: unknown, tag: string): boolean;
+declare function shouldRenderUnknownHtmlTagAsText(html: unknown, tag: string): boolean;
+declare function stripCustomHtmlWrapper(html: unknown, tag: string): string;
+//#endregion
+//#region src/findMatchingClose.d.ts
+declare function findMatchingClose(src: string, startIdx: number, open: string, close: string): number;
+//#endregion
+//#region src/htmlRenderUtils.d.ts
+type HtmlPolicy = 'escape' | 'safe' | 'trusted';
+type HtmlPropValue = string | number | boolean;
+interface HtmlToken {
+  type: 'text' | 'tag_open' | 'tag_close' | 'self_closing';
+  tagName?: string;
+  attrs?: Record<string, string>;
+  content?: string;
+}
+declare const SAFE_ALLOWED_HTML_TAGS: Set<string>;
+declare function isHtmlTagBlocked(tagName: string | undefined, policy?: HtmlPolicy): boolean;
+declare function isHtmlTagHardBlocked(tagName: string | undefined, policy?: HtmlPolicy): boolean;
+declare function isCustomHtmlComponentTag(tagName: string, customComponents: Record<string, unknown>): any;
+declare function sanitizeHtmlAttrs(attrs: Record<string, string>, policy?: HtmlPolicy, tagName?: string): Record<string, string>;
+declare function tokenAttrsToRecord(attrs?: Array<[string, string | null]> | null): Record<string, string>;
+declare function sanitizeHtmlTokenAttrs(attrs?: Array<[string, string | null]> | null, policy?: HtmlPolicy, tagName?: string): [string, string][];
+declare function convertHtmlPropValue(value: string, key: string): HtmlPropValue;
+declare function convertHtmlAttrsToProps(attrs: Record<string, string>): Record<string, HtmlPropValue>;
+declare function tokenizeHtml(html: string): HtmlToken[];
+declare function hasCustomHtmlComponents(content: string, customComponents: Record<string, unknown>): boolean;
+declare function sanitizeHtmlContent(content: string, policy?: HtmlPolicy): string;
+//#endregion
+//#region src/htmlTags.d.ts
+declare const VOID_HTML_TAG_NAMES: readonly ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
+declare const INLINE_HTML_TAG_NAMES: readonly ["a", "abbr", "b", "bdi", "bdo", "button", "cite", "code", "data", "del", "dfn", "em", "font", "i", "ins", "kbd", "label", "mark", "q", "s", "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var"];
+declare const BLOCK_HTML_TAG_NAMES: readonly ["article", "aside", "blockquote", "details", "div", "figcaption", "figure", "footer", "header", "h1", "h2", "h3", "h4", "h5", "h6", "li", "main", "nav", "ol", "p", "pre", "section", "summary", "table", "tbody", "td", "th", "thead", "tr", "ul"];
+declare const SVG_HTML_TAG_NAMES: readonly ["svg", "g", "path"];
+declare const EXTENDED_STANDARD_HTML_TAG_NAMES: readonly ["address", "audio", "body", "canvas", "caption", "colgroup", "datalist", "dd", "dialog", "dl", "dt", "fieldset", "form", "head", "hgroup", "html", "iframe", "legend", "map", "menu", "meter", "noscript", "object", "optgroup", "option", "output", "picture", "progress", "rp", "rt", "ruby", "script", "select", "style", "template", "textarea", "tfoot", "title", "video"];
+declare const DANGEROUS_HTML_ATTR_NAMES: readonly ["onclick", "onerror", "onload", "onmouseover", "onmouseout", "onmousedown", "onmouseup", "onkeydown", "onkeyup", "onfocus", "onblur", "onsubmit", "onreset", "onchange", "onselect", "ondblclick", "ontouchstart", "ontouchend", "ontouchmove", "ontouchcancel", "onwheel", "onscroll", "oncopy", "oncut", "onpaste", "oninput", "oninvalid", "onsearch", "innerhtml", "outerhtml", "textcontent", "innertext", "srcdoc", "ping"];
+declare const URL_HTML_ATTR_NAMES: readonly ["action", "data", "href", "src", "srcset", "poster", "xlink:href", "formaction"];
+declare const BLOCKED_HTML_TAG_NAMES: readonly ["script"];
+declare const NON_STRUCTURING_HTML_TAG_NAMES: readonly ["pre", "iframe", "picture", "script", "style", "table", "tbody", "td", "tfoot", "th", "thead", "textarea", "tr", "title", "video"];
+declare const VOID_HTML_TAGS: Set<string>;
+declare const STANDARD_BLOCK_HTML_TAGS: Set<string>;
+declare const STANDARD_HTML_TAGS: Set<string>;
+declare const EXTENDED_STANDARD_HTML_TAGS: Set<string>;
+declare const DANGEROUS_HTML_ATTRS: Set<string>;
+declare const URL_HTML_ATTRS: Set<string>;
+declare const BLOCKED_HTML_TAGS: Set<string>;
+declare const NON_STRUCTURING_HTML_TAGS: Set<string>;
+declare function stripHtmlControlAndWhitespace(value: string): string;
+interface HtmlUrlContext {
+  tagName?: string;
+  attrName?: string;
+}
+declare function isUnsafeHtmlUrl(value: string, context?: HtmlUrlContext): boolean;
+declare function shouldOpenLinkInNewTab(href: string | null | undefined): boolean;
+declare function sanitizeImageSrc(value: unknown): string;
+//#endregion
+//#region src/mermaidSvgSanitizer.d.ts
+/**
+ * Sanitizes Mermaid SVG with DOMParser and returns a detached SVG element.
+ * Returns null in non-DOM runtimes such as plain Node.js.
+ */
+declare function toSafeSvgElement<TElement = unknown>(svg: string | null | undefined): TElement | null;
+/**
+ * Sanitizes Mermaid SVG with DOMParser.
+ * Returns null in non-DOM runtimes such as plain Node.js.
+ */
+declare function sanitizeMermaidSvg(svg: string | null | undefined): string | null;
+/**
+ * Sanitizes Mermaid SVG with DOMParser.
+ * Returns an empty string in non-DOM runtimes such as plain Node.js.
+ */
+declare function toSafeMermaidSvgMarkup(svg: string | null | undefined): string;
+declare function isBrokenMermaidSvg(svg: string | null | undefined): boolean;
+//#endregion
+//#region src/parser/inline-parsers/fence-parser.d.ts
+declare function parseFenceToken(token: MarkdownToken): CodeBlockNode;
+//#endregion
+//#region src/plugins/containers.d.ts
+declare function applyContainers(md: MarkdownIt): void;
+//#endregion
+//#region src/plugins/isMathLike.d.ts
+declare const TEX_BRACE_COMMANDS: string[];
+declare const ESCAPED_TEX_BRACE_COMMANDS: string;
+declare function isMathLike(s: string): boolean;
+//#endregion
+//#region src/plugins/math.d.ts
+declare const KATEX_COMMANDS: string[];
+declare function normalizeStandaloneBackslashT(s: string, opts?: MathOptions): string;
+declare function applyMath(md: MarkdownIt, mathOpts?: MathOptions): void;
+//#endregion
+//#region src/index.d.ts
+type MarkdownPluginRegistration<TParams extends unknown[] = any[]> = CompatibleMarkdownItPlugin<TParams> | readonly [CompatibleMarkdownItPlugin<TParams>, ...TParams];
+declare function registerMarkdownPlugin(plugin: MarkdownPluginRegistration): void;
+declare function clearRegisteredMarkdownPlugins(): void;
+interface GetMarkdownOptions extends FactoryOptions {
+  plugin?: MarkdownPluginRegistration[];
+  apply?: Array<(md: MarkdownIt) => void>;
+  /**
+   * Custom translation function or translation map for UI texts
+   * @default { 'common.copy': 'Copy' }
+   */
+  i18n?: ((key: string) => string) | Record<string, string>;
+}
+declare function getMarkdown(msgId?: string, options?: GetMarkdownOptions): MarkdownIt;
+//#endregion
+export { AdmonitionNode, BLOCKED_HTML_TAGS, BLOCKED_HTML_TAG_NAMES, BLOCK_HTML_TAG_NAMES, BaseNode, BlockquoteNode, CheckboxInputNode, CheckboxNode, CodeBlockNode, CustomComponentAttrs, CustomComponentNode, CustomComponents, DANGEROUS_HTML_ATTRS, DANGEROUS_HTML_ATTR_NAMES, DefinitionItemNode, DefinitionListNode, ESCAPED_TEX_BRACE_COMMANDS, EXTENDED_STANDARD_HTML_TAGS, EXTENDED_STANDARD_HTML_TAG_NAMES, EmojiNode, EmphasisNode, FootnoteAnchorNode, FootnoteNode, FootnoteReferenceNode, GetMarkdownOptions, HardBreakNode, HeadingNode, HighlightNode, HtmlBlockNode, HtmlInlineNode, HtmlPolicy, HtmlPropValue, HtmlToken, INLINE_HTML_TAG_NAMES, ImageNode, InlineCodeNode, InlineNode, InsertNode, InternalParseOptions, KATEX_COMMANDS, LinkNode, ListItemNode, ListNode, type MarkdownIt, MarkdownNodeSourceMap, MarkdownPluginRegistration, MarkdownRender, MarkdownToken, MarkdownTokenLite, MarkdownTokenMeta, MathBlockNode, MathInlineNode, type MathOptions, MermaidBlockNode, NON_STRUCTURING_HTML_TAGS, NON_STRUCTURING_HTML_TAG_NAMES, ParagraphNode, ParseOptions, ParsedNode, PostTransformNodesHook, ReferenceNode, SAFE_ALLOWED_HTML_TAGS, STANDARD_BLOCK_HTML_TAGS, STANDARD_HTML_TAGS, SVG_HTML_TAG_NAMES, StrikethroughNode, StrongNode, SubscriptNode, SuperscriptNode, TEX_BRACE_COMMANDS, TableCellNode, TableNode, TableRowNode, TextNode, ThematicBreakNode, TransformTokensHook, URL_HTML_ATTRS, URL_HTML_ATTR_NAMES, UnknownNode, VOID_HTML_TAGS, VOID_HTML_TAG_NAMES, VmrContainerNode, applyContainers, applyMath, clearRegisteredMarkdownPlugins, convertHtmlAttrsToProps, convertHtmlPropValue, findMatchingClose, getHtmlTagFromContent, getMarkdown, hasCompleteHtmlTagContent, hasCustomHtmlComponents, isBrokenMermaidSvg, isCustomHtmlComponentTag, isHtmlLikeTagName, isHtmlTagBlocked, isHtmlTagHardBlocked, isMathLike, isUnsafeHtmlUrl, mergeCustomHtmlTags, normalizeCustomHtmlTagName, normalizeCustomHtmlTags, normalizeStandaloneBackslashT, parseFenceToken, parseInlineTokens, parseMarkdownToStructure, processTokens, registerMarkdownPlugin, resolveCustomHtmlTags, sanitizeHtmlAttrs, sanitizeHtmlContent, sanitizeHtmlTokenAttrs, sanitizeImageSrc, sanitizeMermaidSvg, setDefaultMathOptions, shouldOpenLinkInNewTab, shouldRenderUnknownHtmlTagAsText, stripCustomHtmlWrapper, stripHtmlControlAndWhitespace, toSafeMermaidSvgMarkup, toSafeSvgElement, tokenAttrsToRecord, tokenizeHtml };
+//# sourceMappingURL=index.d.cts.map

@@ -1,0 +1,441 @@
+import { l as DiffStreamOptions, r as CodeStreamOptions } from "./types-DbIfYsQX.mjs";
+import { PropType } from "vue";
+import { DiffLineAnnotation, FileOptions, LineAnnotation, UnresolvedFileOptions } from "@pierre/diffs";
+import { WorkerPoolManager } from "@pierre/diffs/worker";
+//#region src/vue.d.ts
+declare const StreamCode: import("vue").DefineComponent<import("vue").ExtractPropTypes<{
+  code: {
+    type: StringConstructor;
+    default: string;
+  };
+  language: {
+    type: StringConstructor;
+    default: string;
+  };
+  fileName: StringConstructor;
+  loading: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  lineNumbers: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  wrap: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  maxHeight: (NumberConstructor | StringConstructor)[];
+  theme: (StringConstructor | ObjectConstructor)[];
+  options: {
+    type: PropType<CodeStreamOptions>;
+    default: () => {};
+  };
+  fileOptions: {
+    type: PropType<FileOptions<unknown>>;
+    default: () => {};
+  };
+  annotations: {
+    type: PropType<LineAnnotation<unknown>[]>;
+    default: () => never[];
+  };
+  workerManager: PropType<WorkerPoolManager>;
+}>, () => import("vue").VNode<import("vue").RendererNode, import("vue").RendererElement, {
+  [key: string]: any;
+}>, {}, {}, {}, import("vue").ComponentOptionsMixin, import("vue").ComponentOptionsMixin, {}, string, import("vue").PublicProps, Readonly<import("vue").ExtractPropTypes<{
+  code: {
+    type: StringConstructor;
+    default: string;
+  };
+  language: {
+    type: StringConstructor;
+    default: string;
+  };
+  fileName: StringConstructor;
+  loading: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  lineNumbers: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  wrap: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  maxHeight: (NumberConstructor | StringConstructor)[];
+  theme: (StringConstructor | ObjectConstructor)[];
+  options: {
+    type: PropType<CodeStreamOptions>;
+    default: () => {};
+  };
+  fileOptions: {
+    type: PropType<FileOptions<unknown>>;
+    default: () => {};
+  };
+  annotations: {
+    type: PropType<LineAnnotation<unknown>[]>;
+    default: () => never[];
+  };
+  workerManager: PropType<WorkerPoolManager>;
+}>> & Readonly<{}>, {
+  code: string;
+  wrap: boolean;
+  language: string;
+  loading: boolean;
+  lineNumbers: boolean;
+  options: CodeStreamOptions;
+  fileOptions: FileOptions<unknown>;
+  annotations: LineAnnotation<unknown>[];
+}, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;
+declare const StreamDiff: import("vue").DefineComponent<import("vue").ExtractPropTypes<{
+  original: {
+    type: StringConstructor;
+    required: true;
+  };
+  modified: {
+    type: StringConstructor;
+    required: true;
+  };
+  language: {
+    type: StringConstructor;
+    default: string;
+  };
+  fileName: {
+    type: StringConstructor;
+    default: string;
+  };
+  loading: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  diffStyle: {
+    type: () => "unified" | "split";
+    default: string;
+  };
+  options: {
+    type: PropType<DiffStreamOptions<unknown>>;
+    default: () => {};
+  };
+  annotations: {
+    type: PropType<DiffLineAnnotation<unknown>[]>;
+    default: () => never[];
+  };
+  workerManager: PropType<WorkerPoolManager>;
+}>, () => import("vue").VNode<import("vue").RendererNode, import("vue").RendererElement, {
+  [key: string]: any;
+}>, {}, {}, {}, import("vue").ComponentOptionsMixin, import("vue").ComponentOptionsMixin, {}, string, import("vue").PublicProps, Readonly<import("vue").ExtractPropTypes<{
+  original: {
+    type: StringConstructor;
+    required: true;
+  };
+  modified: {
+    type: StringConstructor;
+    required: true;
+  };
+  language: {
+    type: StringConstructor;
+    default: string;
+  };
+  fileName: {
+    type: StringConstructor;
+    default: string;
+  };
+  loading: {
+    type: BooleanConstructor;
+    default: boolean;
+  };
+  diffStyle: {
+    type: () => "unified" | "split";
+    default: string;
+  };
+  options: {
+    type: PropType<DiffStreamOptions<unknown>>;
+    default: () => {};
+  };
+  annotations: {
+    type: PropType<DiffLineAnnotation<unknown>[]>;
+    default: () => never[];
+  };
+  workerManager: PropType<WorkerPoolManager>;
+}>> & Readonly<{}>, {
+  diffStyle: "unified" | "split";
+  fileName: string;
+  language: string;
+  loading: boolean;
+  options: DiffStreamOptions<unknown>;
+  annotations: DiffLineAnnotation<unknown>[];
+}, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;
+declare const StreamMergeConflict: import("vue").DefineComponent<import("vue").ExtractPropTypes<{
+  code: {
+    type: StringConstructor;
+    required: true;
+  };
+  language: {
+    type: StringConstructor;
+    default: string;
+  };
+  fileName: {
+    type: StringConstructor;
+    default: string;
+  };
+  options: {
+    type: PropType<UnresolvedFileOptions<unknown>>;
+    default: () => {};
+  };
+  annotations: {
+    type: PropType<DiffLineAnnotation<unknown>[]>;
+    default: () => never[];
+  };
+  workerManager: PropType<WorkerPoolManager>;
+}>, () => import("vue").VNode<import("vue").RendererNode, import("vue").RendererElement, {
+  [key: string]: any;
+}>, {}, {}, {}, import("vue").ComponentOptionsMixin, import("vue").ComponentOptionsMixin, {}, string, import("vue").PublicProps, Readonly<import("vue").ExtractPropTypes<{
+  code: {
+    type: StringConstructor;
+    required: true;
+  };
+  language: {
+    type: StringConstructor;
+    default: string;
+  };
+  fileName: {
+    type: StringConstructor;
+    default: string;
+  };
+  options: {
+    type: PropType<UnresolvedFileOptions<unknown>>;
+    default: () => {};
+  };
+  annotations: {
+    type: PropType<DiffLineAnnotation<unknown>[]>;
+    default: () => never[];
+  };
+  workerManager: PropType<WorkerPoolManager>;
+}>> & Readonly<{}>, {
+  fileName: string;
+  language: string;
+  options: UnresolvedFileOptions<unknown>;
+  annotations: DiffLineAnnotation<unknown>[];
+}, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;
+declare const _default: {
+  StreamCode: import("vue").DefineComponent<import("vue").ExtractPropTypes<{
+    code: {
+      type: StringConstructor;
+      default: string;
+    };
+    language: {
+      type: StringConstructor;
+      default: string;
+    };
+    fileName: StringConstructor;
+    loading: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    lineNumbers: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    wrap: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    maxHeight: (NumberConstructor | StringConstructor)[];
+    theme: (StringConstructor | ObjectConstructor)[];
+    options: {
+      type: PropType<CodeStreamOptions>;
+      default: () => {};
+    };
+    fileOptions: {
+      type: PropType<FileOptions<unknown>>;
+      default: () => {};
+    };
+    annotations: {
+      type: PropType<LineAnnotation<unknown>[]>;
+      default: () => never[];
+    };
+    workerManager: PropType<WorkerPoolManager>;
+  }>, () => import("vue").VNode<import("vue").RendererNode, import("vue").RendererElement, {
+    [key: string]: any;
+  }>, {}, {}, {}, import("vue").ComponentOptionsMixin, import("vue").ComponentOptionsMixin, {}, string, import("vue").PublicProps, Readonly<import("vue").ExtractPropTypes<{
+    code: {
+      type: StringConstructor;
+      default: string;
+    };
+    language: {
+      type: StringConstructor;
+      default: string;
+    };
+    fileName: StringConstructor;
+    loading: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    lineNumbers: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    wrap: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    maxHeight: (NumberConstructor | StringConstructor)[];
+    theme: (StringConstructor | ObjectConstructor)[];
+    options: {
+      type: PropType<CodeStreamOptions>;
+      default: () => {};
+    };
+    fileOptions: {
+      type: PropType<FileOptions<unknown>>;
+      default: () => {};
+    };
+    annotations: {
+      type: PropType<LineAnnotation<unknown>[]>;
+      default: () => never[];
+    };
+    workerManager: PropType<WorkerPoolManager>;
+  }>> & Readonly<{}>, {
+    code: string;
+    wrap: boolean;
+    language: string;
+    loading: boolean;
+    lineNumbers: boolean;
+    options: CodeStreamOptions;
+    fileOptions: FileOptions<unknown>;
+    annotations: LineAnnotation<unknown>[];
+  }, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;
+  StreamDiff: import("vue").DefineComponent<import("vue").ExtractPropTypes<{
+    original: {
+      type: StringConstructor;
+      required: true;
+    };
+    modified: {
+      type: StringConstructor;
+      required: true;
+    };
+    language: {
+      type: StringConstructor;
+      default: string;
+    };
+    fileName: {
+      type: StringConstructor;
+      default: string;
+    };
+    loading: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    diffStyle: {
+      type: () => "unified" | "split";
+      default: string;
+    };
+    options: {
+      type: PropType<DiffStreamOptions<unknown>>;
+      default: () => {};
+    };
+    annotations: {
+      type: PropType<DiffLineAnnotation<unknown>[]>;
+      default: () => never[];
+    };
+    workerManager: PropType<WorkerPoolManager>;
+  }>, () => import("vue").VNode<import("vue").RendererNode, import("vue").RendererElement, {
+    [key: string]: any;
+  }>, {}, {}, {}, import("vue").ComponentOptionsMixin, import("vue").ComponentOptionsMixin, {}, string, import("vue").PublicProps, Readonly<import("vue").ExtractPropTypes<{
+    original: {
+      type: StringConstructor;
+      required: true;
+    };
+    modified: {
+      type: StringConstructor;
+      required: true;
+    };
+    language: {
+      type: StringConstructor;
+      default: string;
+    };
+    fileName: {
+      type: StringConstructor;
+      default: string;
+    };
+    loading: {
+      type: BooleanConstructor;
+      default: boolean;
+    };
+    diffStyle: {
+      type: () => "unified" | "split";
+      default: string;
+    };
+    options: {
+      type: PropType<DiffStreamOptions<unknown>>;
+      default: () => {};
+    };
+    annotations: {
+      type: PropType<DiffLineAnnotation<unknown>[]>;
+      default: () => never[];
+    };
+    workerManager: PropType<WorkerPoolManager>;
+  }>> & Readonly<{}>, {
+    diffStyle: "unified" | "split";
+    fileName: string;
+    language: string;
+    loading: boolean;
+    options: DiffStreamOptions<unknown>;
+    annotations: DiffLineAnnotation<unknown>[];
+  }, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;
+  StreamMergeConflict: import("vue").DefineComponent<import("vue").ExtractPropTypes<{
+    code: {
+      type: StringConstructor;
+      required: true;
+    };
+    language: {
+      type: StringConstructor;
+      default: string;
+    };
+    fileName: {
+      type: StringConstructor;
+      default: string;
+    };
+    options: {
+      type: PropType<UnresolvedFileOptions<unknown>>;
+      default: () => {};
+    };
+    annotations: {
+      type: PropType<DiffLineAnnotation<unknown>[]>;
+      default: () => never[];
+    };
+    workerManager: PropType<WorkerPoolManager>;
+  }>, () => import("vue").VNode<import("vue").RendererNode, import("vue").RendererElement, {
+    [key: string]: any;
+  }>, {}, {}, {}, import("vue").ComponentOptionsMixin, import("vue").ComponentOptionsMixin, {}, string, import("vue").PublicProps, Readonly<import("vue").ExtractPropTypes<{
+    code: {
+      type: StringConstructor;
+      required: true;
+    };
+    language: {
+      type: StringConstructor;
+      default: string;
+    };
+    fileName: {
+      type: StringConstructor;
+      default: string;
+    };
+    options: {
+      type: PropType<UnresolvedFileOptions<unknown>>;
+      default: () => {};
+    };
+    annotations: {
+      type: PropType<DiffLineAnnotation<unknown>[]>;
+      default: () => never[];
+    };
+    workerManager: PropType<WorkerPoolManager>;
+  }>> & Readonly<{}>, {
+    fileName: string;
+    language: string;
+    options: UnresolvedFileOptions<unknown>;
+    annotations: DiffLineAnnotation<unknown>[];
+  }, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;
+};
+//#endregion
+export { StreamCode, StreamDiff, StreamMergeConflict, _default as default };

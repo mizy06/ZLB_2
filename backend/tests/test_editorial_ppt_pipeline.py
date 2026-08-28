@@ -22,11 +22,16 @@ from backend.app.editorial_ppt_pipeline import (
     PIPELINE_MODE,
     EditorialMindMap,
     EditorialReviewReport,
+    EDITORIAL_TEXT_CONTEXT_PROMPT,
     _load_cached_render,
     _render_cache_input_hash,
     _validate_review_report,
     editorial_ppt_enabled,
     run_editorial_ppt_pipeline,
+)
+from backend.app.config import (
+    QWEN38_MAX_CONTEXT_WINDOW_TOKENS,
+    QWEN38_MAX_INPUT_TOKENS_WITH_THINKING,
 )
 from backend.app.editorial_ppt_prompts import (
     CONTENT_OMISSION_REVIEWER_PROMPT,
@@ -38,6 +43,7 @@ from backend.app.editorial_ppt_prompts import (
     GLOBAL_EDITOR_REVISION_PROMPT,
     MULTILEVEL_STRUCTURE_REVIEWER_PROMPT,
     PRUNING_REVIEWER_PROMPT,
+    VISUAL_CONTEXT_COMPACTOR_PROMPT,
 )
 from backend.app.main import health
 from backend.app.mindmap_engine.schemas import RenderResponse, RenderedPage
@@ -232,6 +238,11 @@ class _FakeEditorialClient:
             return _empty_report("pruning")
         if prompt == MULTILEVEL_STRUCTURE_REVIEWER_PROMPT:
             return _empty_report("multilevel_structure")
+        if prompt == GLOBAL_EDITOR_REVISION_PROMPT:
+            return {
+                "mindmap": _draft_payload(),
+                "decisions": [],
+            }
         raise AssertionError("unexpected text prompt")
 
 
@@ -299,6 +310,45 @@ class _PatchRecoveryEditorialClient(_FakeEditorialClient):
         return await super().complete_response_json(**kwargs)
 
 
+class _HumanRefinementEditorialClient(_FakeEditorialClient):
+    def _payload_for_prompt(self, **kwargs):
+        prompt = kwargs["system_prompt"]
+        user_prompt = kwargs["user_prompt"]
+        if (
+            prompt == EDITORIAL_IMAGE_CONTEXT_PROMPT
+            and GLOBAL_EDITOR_PATCH_PROMPT in user_prompt
+        ):
+            match = re.search(
+                r"human_refinement:[0-9a-f]{16}",
+                user_prompt,
+            )
+            if match is None:
+                raise AssertionError("human patch prompt omitted issue ID")
+            return {
+                "decisions": [
+                    {
+                        "issue_id": match.group(0),
+                        "decision": "accepted",
+                        "reason": "按用户意见补充可导与连续的关系说明。",
+                        "affected_node_ids": ["definition"],
+                    }
+                ],
+                "operations": [
+                    {
+                        "op": "update_node",
+                        "target_id": "definition",
+                        "changes": {
+                            "definition": (
+                                "函数增量与自变量增量之比在增量趋零时的极限；"
+                                "可导必连续，但连续未必可导。"
+                            )
+                        },
+                    }
+                ],
+            }
+        return super()._payload_for_prompt(**kwargs)
+
+
 class _SessionResetEditorialClient(_FakeEditorialClient):
     def __init__(self):
         super().__init__()
@@ -319,6 +369,90 @@ class _UnavailableResponsesEditorialClient(_FakeEditorialClient):
     async def complete_response_json(self, **kwargs):
         self.calls.append({"kind": "response", **kwargs})
         raise ModelProviderError("Responses endpoint unavailable")
+
+
+class _LengthRetryEditorialClient(_FakeEditorialClient):
+    supports_responses = False
+    supports_temporary_uploads = False
+
+    def __init__(self):
+        super().__init__()
+        self.draft_attempts = 0
+
+    async def complete_multi_image_json(self, **kwargs):
+        if (
+            kwargs["system_prompt"] == EDITORIAL_IMAGE_CONTEXT_PROMPT
+            and GLOBAL_EDITOR_DRAFT_PROMPT in kwargs["user_prompt"]
+        ):
+            self.calls.append({"kind": "images", **kwargs})
+            self.draft_attempts += 1
+            if self.draft_attempts == 1:
+                raise ModelProviderError("Qwen 响应因输出长度限制被截断")
+            return self._payload_for_prompt(**kwargs)
+        return await super().complete_multi_image_json(**kwargs)
+
+
+class _PrecompactionEditorialClient(_FakeEditorialClient):
+    supports_responses = True
+    supports_temporary_uploads = True
+
+    def __init__(self):
+        super().__init__()
+        self.context_compactor_calls: list[dict] = []
+        self.active_context_compactor_calls = 0
+        self.max_context_compactor_concurrency = 0
+
+    async def complete_multi_image_json(self, **kwargs):
+        self.calls.append({"kind": "images", **kwargs})
+        if kwargs["system_prompt"] != VISUAL_CONTEXT_COMPACTOR_PROMPT:
+            raise AssertionError("unexpected multi-image prompt")
+        self.context_compactor_calls.append(kwargs)
+        self.active_context_compactor_calls += 1
+        self.max_context_compactor_concurrency = max(
+            self.max_context_compactor_concurrency,
+            self.active_context_compactor_calls,
+        )
+        try:
+            # Yield after entering the request so a serial loop never reaches
+            # a concurrency greater than one, while gather launches all batches.
+            await asyncio.sleep(0)
+            source_slides = [
+                int(label.rsplit("_", 1)[-1])
+                for label, _ in kwargs["images"]
+            ]
+            return {
+                "summary": f"第 {source_slides[0]} 至 {source_slides[-1]} 页摘要。",
+                "evidence": [
+                    {
+                        "source_slides": source_slides,
+                        "content": "本批页面包含可追溯的课程知识与结构线索。",
+                    }
+                ],
+            }
+        finally:
+            self.active_context_compactor_calls -= 1
+
+    async def complete_json(self, **kwargs):
+        self.calls.append({"kind": "text", **kwargs})
+        prompt = kwargs["system_prompt"]
+        if prompt == EDITORIAL_TEXT_CONTEXT_PROMPT:
+            payload = _draft_payload()
+            payload["usage"] = {"input_tokens": 900_000}
+            return payload
+        if "上下文压缩器" in prompt:
+            return {"summary": "已保留当前导图、审稿结论和遗留问题。"}
+        if prompt == GLOBAL_EDITOR_REVISION_PROMPT:
+            return {
+                "mindmap": _draft_payload(),
+                "decisions": [],
+            }
+        if prompt == CONTENT_OMISSION_REVIEWER_PROMPT:
+            return _empty_report("content_omission")
+        if prompt == PRUNING_REVIEWER_PROMPT:
+            return _empty_report("pruning")
+        if prompt == MULTILEVEL_STRUCTURE_REVIEWER_PROMPT:
+            return _empty_report("multilevel_structure")
+        raise AssertionError("unexpected text prompt")
 
 
 class _StreamingEditorialClient(_FakeEditorialClient):
@@ -369,8 +503,8 @@ class EditorialPromptContractTests(unittest.TestCase):
         self.assertIn("只通过增量 Patch", GLOBAL_EDITOR_PATCH_PROMPT)
         self.assertIn("无效果操作", GLOBAL_EDITOR_PATCH_PROMPT)
         self.assertIn("当前导图仍保持原样", GLOBAL_EDITOR_PATCH_REPAIR_PROMPT)
-        self.assertEqual(len(EDITORIAL_PROMPT_SHA256), 8)
-        self.assertEqual(len(set(EDITORIAL_PROMPT_SHA256.values())), 8)
+        self.assertEqual(len(EDITORIAL_PROMPT_SHA256), 9)
+        self.assertEqual(len(set(EDITORIAL_PROMPT_SHA256.values())), 9)
         review_schema = EditorialReviewReport.model_json_schema()
         self.assertEqual(
             review_schema["properties"]["issues"]["maxItems"],
@@ -496,6 +630,186 @@ class EditorialPromptContractTests(unittest.TestCase):
 
 
 class EditorialPipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_human_refinement_uses_only_global_editor_patch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "course.pptx"
+            source.write_bytes(b"synthetic-pptx")
+            data_root = root / "data"
+            blackboard = SQLiteBlackboard(data_root / "blackboard.sqlite3")
+            render_call_count = 0
+
+            def fake_render(
+                _source_path,
+                _filename,
+                render_root,
+                _public_base_url,
+                _asset_token,
+                *,
+                max_pages,
+                pdf_dpi,
+            ):
+                nonlocal render_call_count
+                render_call_count += 1
+                self.assertIsNone(max_pages)
+                self.assertEqual(pdf_dpi, 120)
+                render_id = "render_human_refinement_test"
+                render_dir = render_root / "assets" / render_id
+                render_dir.mkdir(parents=True, exist_ok=True)
+                pages = []
+                for page_number in (1, 2):
+                    page_filename = f"page_{page_number:04d}.png"
+                    Image.new("RGB", (640, 360), "white").save(
+                        render_dir / page_filename
+                    )
+                    pages.append(
+                        RenderedPage(
+                            asset_id=f"page_{page_number:04d}",
+                            render_id=render_id,
+                            filename=page_filename,
+                            url=f"/assets/{page_filename}",
+                            page=page_number,
+                            width=640,
+                            height=360,
+                        )
+                    )
+                return RenderResponse(
+                    render_id=render_id,
+                    filename="course.pptx",
+                    pages=pages,
+                    native_visuals=[],
+                )
+
+            async def progress(_stage: str, _value: int, _message: str):
+                return None
+
+            loop_config = MindMapLoopConfig(
+                rounds=[MindMapLoopRound(editor_model="qwen-editor-model")]
+            )
+            fake_settings = SimpleNamespace(
+                mindmap_data_dir=data_root,
+                asset_public_base_url="",
+                asset_access_token="",
+                qwen_vision_model="qwen-vl-test",
+            )
+            with patch(
+                "backend.app.editorial_ppt_pipeline.settings",
+                fake_settings,
+            ):
+                initial = await run_editorial_ppt_pipeline(
+                    task_id="task-human-refinement",
+                    file_path=source,
+                    filename="course.pptx",
+                    model="legacy-model-is-not-used",
+                    provider="qwen",
+                    mode="standard",
+                    use_ai=True,
+                    progress=progress,
+                    blackboard=blackboard,
+                    loop_config=loop_config,
+                    client=_FakeEditorialClient(),
+                    render=fake_render,
+                )
+                initial_session = blackboard.load_checkpoint(
+                    initial.run_id,
+                    "editorial_response_session",
+                )
+                self.assertIsInstance(initial_session, dict)
+                refinement_client = _HumanRefinementEditorialClient()
+                refined = await run_editorial_ppt_pipeline(
+                    task_id="task-human-refinement",
+                    file_path=source,
+                    filename="course.pptx",
+                    model="legacy-model-is-not-used",
+                    provider="qwen",
+                    mode="standard",
+                    use_ai=True,
+                    progress=progress,
+                    blackboard=blackboard,
+                    loop_config=loop_config,
+                    client=refinement_client,
+                    render=fake_render,
+                    user_instruction="请补充可导与连续之间的关系。",
+                    previous_result=initial,
+                )
+
+            self.assertEqual(len(refinement_client.calls), 1)
+            self.assertEqual(
+                render_call_count,
+                1,
+                "后续修改不得重新渲染源文档",
+            )
+            refinement_call = refinement_client.calls[0]
+            self.assertEqual(refinement_call["kind"], "response")
+            self.assertEqual(refinement_call["images"], [])
+            self.assertEqual(
+                refinement_call["previous_response_id"],
+                initial_session["current_response_id"],
+            )
+            refinement_prompt = refinement_client.calls[0]["user_prompt"]
+            self.assertIn(GLOBAL_EDITOR_PATCH_PROMPT, refinement_prompt)
+            self.assertIn("human_refinement:", refinement_prompt)
+            self.assertNotIn(
+                GLOBAL_EDITOR_DRAFT_PROMPT,
+                refinement_prompt,
+            )
+            self.assertNotIn(
+                CONTENT_OMISSION_REVIEWER_PROMPT,
+                refinement_prompt,
+            )
+            self.assertEqual(
+                refined.run_manifest["refinement_mode"],
+                "human_direct_patch",
+            )
+            self.assertEqual(
+                refined.run_manifest["base_graph_version"],
+                initial.graph_version,
+            )
+            self.assertEqual(
+                refined.run_manifest["actual_editorial_revisions"],
+                1,
+            )
+            self.assertEqual(
+                refined.run_manifest["actual_editorial_review_rounds"],
+                0,
+            )
+            self.assertEqual(
+                refined.run_manifest["patch_attempt_count"],
+                1,
+            )
+            self.assertEqual(
+                refined.run_manifest["patch_repair_count"],
+                0,
+            )
+            self.assertEqual(
+                refined.run_manifest["actual_model_calls"],
+                1,
+            )
+            self.assertTrue(
+                refined.run_manifest["refinement_context_reused"]
+            )
+            self.assertTrue(
+                refined.run_manifest[
+                    "refinement_response_session_resumed"
+                ]
+            )
+            self.assertTrue(
+                refined.run_manifest["refinement_render_reused"]
+            )
+            self.assertGreater(
+                refined.graph_version,
+                initial.graph_version,
+            )
+            definition = next(
+                node
+                for node in refined.nodes
+                if node.temp_ids == ["definition"]
+            )
+            self.assertIn("可导必连续", definition.definition)
+            stored = blackboard.load_latest_result("task-human-refinement")
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored.graph_version, refined.graph_version)
+
     async def _run_patch_recovery_fixture(
         self,
         client: _PatchRecoveryEditorialClient,
@@ -793,7 +1107,7 @@ class EditorialPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 result.run_manifest["draft_max_output_tokens"],
-                9000,
+                14000,
             )
             self.assertEqual(
                 result.run_manifest["review_max_output_tokens"],
@@ -1184,6 +1498,218 @@ class EditorialPipelineTests(unittest.IsolatedAsyncioTestCase):
             any("重建上下文" in warning for warning in result.warnings)
         )
 
+    async def test_large_visual_input_is_precompressed_before_draft_and_again_after_high_usage(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "large-course.pptx"
+            source.write_bytes(b"synthetic-pptx")
+            data_root = root / "data"
+            blackboard = SQLiteBlackboard(data_root / "blackboard.sqlite3")
+            client = _PrecompactionEditorialClient()
+            model_events: list[dict] = []
+
+            def fake_render(
+                _source_path,
+                _filename,
+                render_root,
+                _public_base_url,
+                _asset_token,
+                *,
+                max_pages,
+                pdf_dpi,
+            ):
+                self.assertIsNone(max_pages)
+                self.assertEqual(pdf_dpi, 120)
+                render_id = "render_large_context_test"
+                render_dir = render_root / "assets" / render_id
+                render_dir.mkdir(parents=True)
+                pages = []
+                for page_number in range(1, 34):
+                    page_filename = f"page_{page_number:04d}.png"
+                    Image.new("RGB", (640, 360), "white").save(
+                        render_dir / page_filename
+                    )
+                    pages.append(
+                        RenderedPage(
+                            asset_id=f"page_{page_number:04d}",
+                            render_id=render_id,
+                            filename=page_filename,
+                            url=f"/assets/{page_filename}",
+                            page=page_number,
+                            width=640,
+                            height=360,
+                        )
+                    )
+                return RenderResponse(
+                    render_id=render_id,
+                    filename="large-course.pptx",
+                    pages=pages,
+                    native_visuals=[],
+                )
+
+            async def progress(_stage: str, _value: int, _message: str):
+                return None
+
+            async def model_output(event: dict):
+                model_events.append(event)
+
+            fake_settings = SimpleNamespace(
+                mindmap_data_dir=data_root,
+                asset_public_base_url="",
+                asset_access_token="",
+                qwen_vision_model="qwen-vl-test",
+            )
+            loop_config = MindMapLoopConfig(
+                rounds=[
+                    MindMapLoopRound(
+                        editor_model="qwen3.8-max",
+                        content_omission_model="qwen3.8-max",
+                        pruning_model="qwen3.8-max",
+                        multilevel_structure_model="qwen3.8-max",
+                    )
+                ]
+            )
+            with patch(
+                "backend.app.editorial_ppt_pipeline.settings",
+                fake_settings,
+            ):
+                result = await run_editorial_ppt_pipeline(
+                    task_id="task-large-context",
+                    file_path=source,
+                    filename="large-course.pptx",
+                    model="ignored-text-model",
+                    provider="qwen",
+                    mode="standard",
+                    use_ai=True,
+                    progress=progress,
+                    blackboard=blackboard,
+                    loop_config=loop_config,
+                    client=client,
+                    render=fake_render,
+                    model_output=model_output,
+                )
+
+            self.assertEqual(client.upload_calls, [])
+            self.assertEqual(len(client.context_compactor_calls), 3)
+            self.assertGreater(
+                client.max_context_compactor_concurrency,
+                1,
+            )
+            self.assertTrue(
+                all(
+                    len(call["images"]) <= 12
+                    for call in client.context_compactor_calls
+                )
+            )
+            self.assertTrue(
+                all(
+                    call["system_prompt"] == VISUAL_CONTEXT_COMPACTOR_PROMPT
+                    for call in client.context_compactor_calls
+                )
+            )
+            self.assertTrue(
+                all(
+                    call["model"] == "qwen3-vl-flash"
+                    and call["max_tokens"] == 2200
+                    and "thinking_budget" not in call
+                    for call in client.context_compactor_calls
+                )
+            )
+            self.assertTrue(
+                any(
+                    "全部视觉页分批直读" in call["user_prompt"]
+                    for call in client.calls
+                    if call["kind"] == "text"
+                    and call["system_prompt"] == EDITORIAL_TEXT_CONTEXT_PROMPT
+                )
+            )
+            compaction_triggers = [
+                event.get("trigger")
+                for event in model_events
+                if event.get("kind") == "compaction"
+            ]
+            self.assertIn("preflight_visual", compaction_triggers)
+            self.assertIn("auto", compaction_triggers)
+            self.assertTrue(result.run_manifest["source_context_compacted"])
+            self.assertEqual(
+                result.run_manifest["source_context_packet_count"],
+                3,
+            )
+            self.assertLess(
+                result.run_manifest["source_context_tokens_after"],
+                QWEN38_MAX_CONTEXT_WINDOW_TOKENS,
+            )
+            self.assertEqual(
+                result.run_manifest["max_context_tokens"],
+                QWEN38_MAX_CONTEXT_WINDOW_TOKENS,
+            )
+            self.assertEqual(
+                result.run_manifest["model_max_input_tokens"],
+                QWEN38_MAX_INPUT_TOKENS_WITH_THINKING,
+            )
+            self.assertEqual(
+                result.run_manifest["context_compaction_trigger_tokens"],
+                int(QWEN38_MAX_INPUT_TOKENS_WITH_THINKING * 0.85),
+            )
+            self.assertEqual(
+                result.run_manifest["responses_chat_fallback_count"],
+                0,
+            )
+            self.assertEqual(
+                result.run_manifest["visual_context_compactor_model"],
+                "qwen3-vl-flash",
+            )
+            self.assertEqual(
+                result.run_manifest["context_compactor_model"],
+                "qwen3.8-flash",
+            )
+            self.assertEqual(
+                result.run_manifest[
+                    "visual_context_compactor_max_output_tokens"
+                ],
+                2200,
+            )
+            self.assertEqual(
+                result.run_manifest[
+                    "context_compactor_max_output_tokens"
+                ],
+                2000,
+            )
+
+    async def test_complete_draft_retries_once_with_larger_budget_after_length(
+        self,
+    ):
+        client = _LengthRetryEditorialClient()
+
+        result = await self._run_patch_recovery_fixture(client)
+
+        draft_calls = [
+            call
+            for call in client.calls
+            if call["kind"] == "images"
+            and call["system_prompt"] == EDITORIAL_IMAGE_CONTEXT_PROMPT
+            and GLOBAL_EDITOR_DRAFT_PROMPT in call["user_prompt"]
+        ]
+        self.assertEqual(len(draft_calls), 2)
+        self.assertEqual(
+            [call["max_completion_tokens"] for call in draft_calls],
+            [25_536, 33_536],
+        )
+        self.assertNotIn("必须从头完整重写", draft_calls[0]["user_prompt"])
+        self.assertIn("必须从头完整重写", draft_calls[1]["user_prompt"])
+        self.assertEqual(
+            result.run_manifest["draft_max_output_tokens"],
+            24_000,
+        )
+        self.assertEqual(
+            result.run_manifest["complete_graph_length_retry_count"],
+            1,
+        )
+        self.assertEqual(result.run_manifest["actual_model_calls"], 6)
+
+
     async def test_unavailable_responses_falls_back_to_chat_with_urls(self):
         client = _UnavailableResponsesEditorialClient()
 
@@ -1207,7 +1733,7 @@ class EditorialPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result.run_manifest["responses_api_final_active"])
 
-    async def test_pipeline_rejects_non_pptx_before_model_call(self):
+    async def test_pipeline_fails_non_visual_input_without_usable_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "course.pdf"
@@ -1217,7 +1743,10 @@ class EditorialPipelineTests(unittest.IsolatedAsyncioTestCase):
             async def progress(_stage: str, _value: int, _message: str):
                 return None
 
-            with self.assertRaisesRegex(ValueError, "仅支持 PPTX"):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "既没有成功渲染的视觉页面",
+            ):
                 await run_editorial_ppt_pipeline(
                     task_id="task-pdf",
                     file_path=source,

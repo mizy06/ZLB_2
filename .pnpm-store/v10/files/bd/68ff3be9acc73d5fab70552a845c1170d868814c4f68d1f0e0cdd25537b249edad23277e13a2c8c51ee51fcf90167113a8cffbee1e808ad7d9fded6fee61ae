@@ -1,0 +1,215 @@
+import type { Token as TokenType } from './common/token.js';
+import type { ParserBlock } from './parse/parser_block.js';
+import type { ParserInline } from './parse/parser_inline/index.js';
+import type { StreamStats } from './stream/parser.js';
+import type { UnboundedBufferStats, UnboundedChunkInfo } from './stream/unbounded.js';
+import { LinkifyIt } from 'linkify-it';
+import * as utils from './common/utils.js';
+import * as helpers from './helpers/index.js';
+import { normalizeLink, normalizeLinkText, validateLink } from './parse/link_utils.js';
+import { ParserCore } from './parse/parser_core.js';
+import Renderer from './render/renderer.js';
+export { Token } from './common/token.js';
+export { parse, parseInline } from './parse/index.js';
+export type { ParseSource, TextSource } from './parse/source.js';
+export { withRenderer } from './plugins/with-renderer.js';
+export type { RendererEnv, RendererOptions } from './render/index.js';
+type QuotesOption = string | [string, string, string, string];
+export interface MarkdownItExperimentalOptions {
+    stream?: boolean;
+    streamOptimizationMinSize?: number;
+    streamContextParseStrategy?: 'chars' | 'lines' | 'constructs';
+    streamContextParseMinChars?: number;
+    streamContextParseMinLines?: number;
+    streamChunkedFallback?: boolean;
+    streamChunkSizeChars?: number;
+    streamChunkSizeLines?: number;
+    streamChunkFenceAware?: boolean;
+    streamChunkAdaptive?: boolean;
+    streamChunkTargetChunks?: number;
+    streamChunkMaxChunks?: number;
+    streamLargeCachePolicy?: 'retain' | 'skip';
+    streamSkipCacheAboveChars?: number;
+    streamSkipCacheAboveLines?: number;
+    fullChunkedFallback?: boolean;
+    fullChunkThresholdChars?: number;
+    fullChunkThresholdLines?: number;
+    fullChunkSizeChars?: number;
+    fullChunkSizeLines?: number;
+    fullChunkFenceAware?: boolean;
+    fullChunkMaxChunks?: number;
+    fullChunkAdaptive?: boolean;
+    fullChunkTargetChunks?: number;
+    autoTuneChunks?: boolean;
+    autoUnbounded?: boolean;
+    autoUnboundedThresholdChars?: number;
+    autoUnboundedThresholdLines?: number;
+}
+export interface MarkdownItOptions {
+    html?: boolean;
+    xhtmlOut?: boolean;
+    breaks?: boolean;
+    langPrefix?: string;
+    linkify?: boolean;
+    typographer?: boolean;
+    quotes?: QuotesOption;
+    highlight?: ((str: string, lang?: string, attrs?: string) => string | Promise<string>) | null;
+    maxNesting?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. */
+    experimental?: MarkdownItExperimentalOptions;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.stream instead. */
+    stream?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamOptimizationMinSize instead. */
+    streamOptimizationMinSize?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamContextParseStrategy instead. */
+    streamContextParseStrategy?: 'chars' | 'lines' | 'constructs';
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamContextParseMinChars instead. */
+    streamContextParseMinChars?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamContextParseMinLines instead. */
+    streamContextParseMinLines?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamChunkedFallback instead. */
+    streamChunkedFallback?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamChunkSizeChars instead. */
+    streamChunkSizeChars?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamChunkSizeLines instead. */
+    streamChunkSizeLines?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamChunkFenceAware instead. */
+    streamChunkFenceAware?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamChunkAdaptive instead. */
+    streamChunkAdaptive?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamChunkTargetChunks instead. */
+    streamChunkTargetChunks?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamChunkMaxChunks instead. */
+    streamChunkMaxChunks?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamLargeCachePolicy instead. */
+    streamLargeCachePolicy?: 'retain' | 'skip';
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamSkipCacheAboveChars instead. */
+    streamSkipCacheAboveChars?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.streamSkipCacheAboveLines instead. */
+    streamSkipCacheAboveLines?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkedFallback instead. */
+    fullChunkedFallback?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkThresholdChars instead. */
+    fullChunkThresholdChars?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkThresholdLines instead. */
+    fullChunkThresholdLines?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkSizeChars instead. */
+    fullChunkSizeChars?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkSizeLines instead. */
+    fullChunkSizeLines?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkFenceAware instead. */
+    fullChunkFenceAware?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkMaxChunks instead. */
+    fullChunkMaxChunks?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkAdaptive instead. */
+    fullChunkAdaptive?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.fullChunkTargetChunks instead. */
+    fullChunkTargetChunks?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.autoTuneChunks instead. */
+    autoTuneChunks?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.autoUnbounded instead. */
+    autoUnbounded?: boolean;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.autoUnboundedThresholdChars instead. */
+    autoUnboundedThresholdChars?: number;
+    /** @experimental Not part of the markdown-it stable compatibility surface. @deprecated Use experimental.autoUnboundedThresholdLines instead. */
+    autoUnboundedThresholdLines?: number;
+}
+interface PresetComponentRules {
+    rules?: string[];
+}
+interface PresetComponents {
+    core?: PresetComponentRules;
+    block?: PresetComponentRules;
+    inline?: PresetComponentRules;
+    inline2?: PresetComponentRules;
+}
+interface Preset {
+    options?: MarkdownItOptions;
+    components?: PresetComponents;
+}
+export interface MarkdownIt {
+    core: ParserCore;
+    block: ParserBlock;
+    inline: ParserInline;
+    linkify: InstanceType<typeof LinkifyIt>;
+    renderer: Renderer;
+    options: MarkdownItOptions;
+    /**
+     * @experimental Append-heavy stream parser controls. Not part of the
+     * markdown-it stable compatibility surface.
+     */
+    stream: {
+        enabled: boolean;
+        parse: (src: string, env?: Record<string, unknown>) => TokenType[];
+        reset: () => void;
+        peek: () => TokenType[];
+        stats: () => StreamStats;
+        resetStats: () => void;
+    };
+    set: (options: MarkdownItOptions) => this;
+    configure: (presets: string | Preset) => this;
+    enable: (list: string | string[], ignoreInvalid?: boolean) => this;
+    disable: (list: string | string[], ignoreInvalid?: boolean) => this;
+    use: (plugin: MarkdownItPlugin, ...params: unknown[]) => this;
+    render: (src: string, env?: Record<string, unknown>) => string;
+    renderAsync: (src: string, env?: Record<string, unknown>) => Promise<string>;
+    /**
+     * Render iterable chunk sources.
+     *
+     * @experimental Same correctness boundary as parseIterable().
+     */
+    renderIterable: (chunks: Iterable<string>, env?: Record<string, unknown>) => string;
+    /**
+     * Render async iterable chunk sources.
+     *
+     * @experimental Same correctness boundary as parseAsyncIterable().
+     */
+    renderAsyncIterable: (chunks: AsyncIterable<string>, env?: Record<string, unknown>) => Promise<string>;
+    renderInline: (src: string, env?: Record<string, unknown>) => string;
+    validateLink: typeof validateLink;
+    normalizeLink: typeof normalizeLink;
+    normalizeLinkText: typeof normalizeLinkText;
+    utils: typeof utils;
+    helpers: typeof helpers;
+    parse: (src: string, env?: Record<string, unknown>) => TokenType[];
+    /**
+     * Parse an iterable chunk source without first joining all chunks.
+     *
+     * @experimental This is for explicit chunk-stream inputs. It may flush earlier
+     * chunks before later document-level definitions are observed.
+     */
+    parseIterable: (chunks: Iterable<string>, env?: Record<string, unknown>) => TokenType[];
+    /**
+     * Parse an async iterable chunk source without first joining all chunks.
+     *
+     * @experimental This is for explicit chunk-stream inputs. It may flush earlier
+     * chunks before later document-level definitions are observed.
+     */
+    parseAsyncIterable: (chunks: AsyncIterable<string>, env?: Record<string, unknown>) => Promise<TokenType[]>;
+    /**
+     * Parse iterable chunks and deliver token chunks to a sink.
+     *
+     * @experimental Sink output is streaming-oriented and can differ from a final
+     * full parse when future document-level definitions affect earlier text.
+     */
+    parseIterableToSink: (chunks: Iterable<string>, onChunkTokens: (tokens: TokenType[], info: UnboundedChunkInfo) => void, env?: Record<string, unknown>) => UnboundedBufferStats;
+    /**
+     * Parse async iterable chunks and deliver token chunks to a sink.
+     *
+     * @experimental Sink output is streaming-oriented and can differ from a final
+     * full parse when future document-level definitions affect earlier text.
+     */
+    parseAsyncIterableToSink: (chunks: AsyncIterable<string>, onChunkTokens: (tokens: TokenType[], info: UnboundedChunkInfo) => void, env?: Record<string, unknown>) => Promise<UnboundedBufferStats>;
+    parseInline: (src: string, env?: Record<string, unknown>) => TokenType[];
+}
+export type MarkdownItPluginFn = (md: MarkdownIt, ...params: unknown[]) => unknown;
+export interface MarkdownItPluginModule {
+    default: MarkdownItPluginFn;
+}
+export type MarkdownItPlugin = MarkdownItPluginFn | MarkdownItPluginModule;
+export interface MarkdownItConstructor {
+    new (presetName?: string | MarkdownItOptions, options?: MarkdownItOptions): MarkdownIt;
+    (presetName?: string | MarkdownItOptions, options?: MarkdownItOptions): MarkdownIt;
+}
+declare const MarkdownItExport: MarkdownItConstructor;
+export default MarkdownItExport;

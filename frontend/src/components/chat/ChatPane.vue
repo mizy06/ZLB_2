@@ -12,7 +12,6 @@ import CronNotice from './CronNotice.vue';
 import MessageTime from './MessageTime.vue';
 import AuthMedia from './AuthMedia.vue';
 import AttachmentChip from './AttachmentChip.vue';
-import MoonSpinner from '../ui/MoonSpinner.vue';
 import Spinner from '../ui/Spinner.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
@@ -63,12 +62,10 @@ const props = withDefaults(
     turnActive?: boolean;
     /**
      * The main conversation has an unfinished prompt (submitted, or a main
-     * turn in flight). Renders the moon-spinner placeholder at the end of the
-     * transcript and gates "edit & resend" on the last user message.
+     * turn in flight). Renders a standard loading placeholder at the end of
+     * the transcript and gates "edit & resend" on the last user message.
      */
     working?: boolean;
-    /** Switches the CSS-only working moon to the faster visual cadence. */
-    fastMoon?: boolean;
     /**
      * True while the session turns are being fetched (e.g. after switching to
      * a historical session). Shows a lightweight loading placeholder instead of
@@ -117,7 +114,6 @@ const props = withDefaults(
   {
     turnActive: false,
     working: false,
-    fastMoon: false,
     compaction: null,
     hasMoreMessages: false,
     loadingMore: false,
@@ -665,14 +661,14 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
       </div>
     </template>
 
-    <!-- Compaction in progress — body-sized moon activity notice -->
+    <!-- Compaction in progress — body-sized activity notice -->
     <ActivityNotice v-if="compaction" :label="t('conversation.compacting')" />
 
-    <!-- Working placeholder — moon spinner while the conversation has an
+    <!-- Working placeholder — standard spinner while the conversation has an
          unfinished prompt (covers a page refresh mid-stream, where the
          optimistic submit flag was lost but the main turn is still in flight). -->
     <div v-if="showWorking" class="sending-placeholder">
-      <MoonSpinner :fast="fastMoon" />
+      <Spinner label="Waiting for response" />
     </div>
 
     <!-- Inline queue — pending user messages shown after the running turn.

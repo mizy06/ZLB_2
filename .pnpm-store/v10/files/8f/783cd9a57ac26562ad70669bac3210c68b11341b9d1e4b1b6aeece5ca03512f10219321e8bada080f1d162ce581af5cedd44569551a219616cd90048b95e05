@@ -1,0 +1,1829 @@
+import { CodeBlockNode as CodeBlockNode$1, BaseNode, ParseOptions, MarkdownIt, HtmlPolicy, MathOptions } from 'stream-markdown-parser';
+export * from 'stream-markdown-parser';
+export { KATEX_COMMANDS, MathOptions, normalizeStandaloneBackslashT, setDefaultMathOptions } from 'stream-markdown-parser';
+import * as vue from 'vue';
+import { Ref, ComputedRef, MaybeRefOrGetter, Component, App, InjectionKey, DefineComponent, Plugin } from 'vue';
+import { SmoothMarkdownStreamOptions } from 'markstream-core';
+export { SmoothMarkdownStreamOptions } from 'markstream-core';
+
+interface InfographicInstance {
+    render: (source: string) => unknown;
+    destroy?: () => unknown;
+    on?: (event: string, handler: (payload: unknown) => void) => unknown;
+}
+interface InfographicConstructor {
+    new (options: {
+        container: HTMLElement;
+        width?: string | number;
+        height?: string | number;
+    }): InfographicInstance;
+}
+type InfographicModuleLike = InfographicConstructor | {
+    default?: InfographicModuleLike;
+    Infographic?: InfographicConstructor;
+} | null | undefined;
+type InfographicLoader = () => Promise<InfographicModuleLike> | InfographicModuleLike;
+
+declare function setInfographicLoader(loader?: InfographicLoader | null): void;
+
+declare function enableInfographic(loader: InfographicLoader): void;
+declare function disableInfographic(): void;
+declare function isInfographicEnabled(): boolean;
+
+interface SmoothMarkdownStreamControllerVue {
+    source: Ref<string>;
+    visible: Ref<string>;
+    done: Ref<boolean>;
+    final: ComputedRef<boolean>;
+    caughtUp: ComputedRef<boolean>;
+    pendingChars: ComputedRef<number>;
+    enqueue: (chunk: string) => void;
+    finish: (options?: {
+        flush?: boolean;
+    }) => void;
+    flush: () => void;
+    reset: (initialMarkdown?: string) => void;
+    pause: () => void;
+    resume: () => void;
+}
+/** @deprecated Use SmoothMarkdownStreamControllerVue for the Vue-specific interface, or SmoothMarkdownStreamController from markstream-core for the framework-agnostic interface */
+type SmoothMarkdownStreamController = SmoothMarkdownStreamControllerVue;
+declare function useSmoothMarkdownStream(options?: SmoothMarkdownStreamOptions): SmoothMarkdownStreamControllerVue;
+
+interface CodeBlockMonacoThemeObject {
+    name: string;
+    base?: string;
+    inherit?: boolean;
+    colors?: Record<string, string>;
+    rules?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+}
+type CodeBlockMonacoTheme = string | CodeBlockMonacoThemeObject;
+type CodeBlockThemeProp = CodeBlockMonacoTheme | {
+    light: CodeBlockMonacoTheme;
+    dark: CodeBlockMonacoTheme;
+};
+type CodeBlockMonacoLanguage = string | ((...args: unknown[]) => unknown);
+interface CommonCodeBlockProps {
+    showHeader?: boolean;
+    showCopyButton?: boolean;
+    showExpandButton?: boolean;
+}
+interface ShikiCodeBlockProps extends CommonCodeBlockProps {
+    themes?: readonly string[];
+    
+    langs?: readonly string[];
+}
+interface CodeBlockDiffHideUnchangedRegionsOptions {
+    enabled?: boolean;
+    contextLineCount?: number;
+    minimumLineCount?: number;
+    revealLineCount?: number;
+}
+type CodeBlockDiffHideUnchangedRegions = boolean | CodeBlockDiffHideUnchangedRegionsOptions;
+type CodeBlockDiffLineStyle = 'background' | 'bar';
+type CodeBlockDiffAppearance = 'auto' | 'light' | 'dark';
+type CodeBlockDiffUnchangedRegionStyle = 'line-info' | 'line-info-basic' | 'metadata' | 'simple';
+type CodeBlockDiffHunkActionKind = 'revert' | 'stage';
+type CodeBlockDiffHunkSide = 'upper' | 'lower';
+interface CodeBlockDiffHunkActionContext {
+    action: CodeBlockDiffHunkActionKind;
+    side: CodeBlockDiffHunkSide;
+    lineChange: unknown;
+    originalModel: unknown;
+    modifiedModel: unknown;
+}
+interface CodeBlockMonacoOptions {
+    MAX_HEIGHT?: number | string;
+    fontSize?: number;
+    lineHeight?: number;
+    fontFamily?: string;
+    tabSize?: number;
+    padding?: {
+        top?: number;
+        bottom?: number;
+    };
+    readOnly?: boolean;
+    wordWrap?: 'off' | 'on' | 'wordWrapColumn' | 'bounded' | string;
+    diffWordWrap?: 'off' | 'on' | 'inherit';
+    wrappingIndent?: 'none' | 'same' | 'indent' | 'deepIndent' | string;
+    theme?: string;
+    themes?: CodeBlockMonacoTheme[];
+    languages?: CodeBlockMonacoLanguage[];
+    renderSideBySide?: boolean;
+    useInlineViewWhenSpaceIsLimited?: boolean;
+    renderSideBySideInlineBreakpoint?: number;
+    enableSplitViewResizing?: boolean;
+    ignoreTrimWhitespace?: boolean;
+    maxComputationTime?: number;
+    diffAlgorithm?: string;
+    renderIndicators?: boolean;
+    originalEditable?: boolean;
+    revealDebounceMs?: number;
+    revealStrategy?: 'bottom' | 'centerIfOutside' | 'center';
+    revealBatchOnIdleMs?: number;
+    updateThrottleMs?: number;
+    diffUpdateThrottleMs?: number;
+    diffAutoScroll?: boolean;
+    diffHideUnchangedRegions?: CodeBlockDiffHideUnchangedRegions;
+    diffLineStyle?: CodeBlockDiffLineStyle;
+    diffAppearance?: CodeBlockDiffAppearance;
+    diffUnchangedRegionStyle?: CodeBlockDiffUnchangedRegionStyle;
+    diffHunkActionsOnHover?: boolean;
+    diffHunkHoverHideDelayMs?: number;
+    onDiffHunkAction?: (context: CodeBlockDiffHunkActionContext) => void | boolean | Promise<void | boolean>;
+    scrollbar?: Record<string, unknown>;
+    [key: string]: unknown;
+}
+interface CodeBlockNodeProps extends CommonCodeBlockProps {
+    node: CodeBlockNode$1;
+    isDark?: boolean;
+    loading?: boolean;
+    stream?: boolean;
+    theme?: CodeBlockThemeProp;
+    /** @deprecated Use `theme` prop instead. Kept for backward compatibility. */
+    darkTheme?: CodeBlockMonacoTheme;
+    /** @deprecated Use `theme` prop instead. Kept for backward compatibility. */
+    lightTheme?: CodeBlockMonacoTheme;
+    isShowPreview?: boolean;
+    monacoOptions?: CodeBlockMonacoOptions;
+    enableFontSizeControl?: boolean;
+    minWidth?: string | number;
+    maxWidth?: string | number;
+    themes?: CodeBlockMonacoTheme[];
+    showPreviewButton?: boolean;
+    showCollapseButton?: boolean;
+    showFontSizeButtons?: boolean;
+    showTooltips?: boolean;
+    htmlPreviewAllowScripts?: boolean;
+    htmlPreviewSandbox?: string;
+    customId?: string;
+}
+interface ImageNodeProps {
+    node: {
+        type: 'image';
+        src: string;
+        alt: string;
+        title: string | null;
+        raw: string;
+        loading?: boolean;
+    };
+    fallbackSrc?: string;
+    lazy?: boolean;
+    usePlaceholder?: boolean;
+}
+interface LinkNodeProps {
+    node: {
+        type: 'link';
+        href: string;
+        title: string | null;
+        text: string;
+        attrs?: [string, string][];
+        children: {
+            type: string;
+            raw: string;
+        }[];
+        raw: string;
+        loading?: boolean;
+    };
+    indexKey: number | string;
+    customId?: string;
+    showTooltip?: boolean;
+    color?: string;
+    underlineHeight?: number;
+    underlineBottom?: number | string;
+    animationDuration?: number;
+    animationOpacity?: number;
+    animationTiming?: string;
+    animationIteration?: string | number;
+}
+interface PreCodeNodeProps {
+    node: CodeBlockNode$1;
+    loading?: boolean;
+    showLineNumbers?: boolean;
+    diffInline?: boolean;
+    diffHideUnchangedRegions?: CodeBlockDiffHideUnchangedRegions;
+    
+    reservedHeightPx?: number;
+}
+interface MermaidBlockNodeProps {
+    node: CodeBlockNode$1;
+    maxHeight?: string | null;
+    estimatedPreviewHeightPx?: number;
+    loading?: boolean;
+    isDark?: boolean;
+    workerTimeoutMs?: number;
+    parseTimeoutMs?: number;
+    renderTimeoutMs?: number;
+    fullRenderTimeoutMs?: number;
+    renderDebounceMs?: number;
+    contentStableDelayMs?: number;
+    previewPollDelayMs?: number;
+    previewPollMaxDelayMs?: number;
+    previewPollMaxAttempts?: number;
+    showHeader?: boolean;
+    showModeToggle?: boolean;
+    showCopyButton?: boolean;
+    showExportButton?: boolean;
+    showFullscreenButton?: boolean;
+    showCollapseButton?: boolean;
+    showZoomControls?: boolean;
+    enableWheelZoom?: boolean;
+    isStrict?: boolean;
+    enableMermaidInteractions?: boolean;
+    showTooltips?: boolean;
+    onRenderError?: (error: unknown, code: string, container: HTMLElement) => boolean | void;
+}
+interface CodeBlockPreviewPayload {
+    node: CodeBlockNode$1;
+    artifactType: 'text/html' | 'image/svg+xml';
+    artifactTitle: string;
+    id: string;
+}
+interface MarkdownCodeBlockPreviewPayload {
+    type: 'text/html' | 'image/svg+xml';
+    content: string;
+    title: string;
+}
+interface MermaidBlockEvent<TPayload = unknown> {
+    payload?: TPayload;
+    defaultPrevented: boolean;
+    preventDefault: () => void;
+    svgElement?: SVGElement | null;
+    svgString?: string | null;
+}
+interface D2BlockNodeProps {
+    node: CodeBlockNode$1;
+    maxHeight?: string | null;
+    loading?: boolean;
+    isDark?: boolean;
+    progressiveRender?: boolean;
+    progressiveIntervalMs?: number;
+    themeId?: number | null;
+    darkThemeId?: number | null;
+    showHeader?: boolean;
+    showModeToggle?: boolean;
+    showCopyButton?: boolean;
+    showExportButton?: boolean;
+    showCollapseButton?: boolean;
+}
+interface InfographicBlockNodeProps {
+    node: CodeBlockNode$1;
+    maxHeight?: string | null;
+    estimatedPreviewHeightPx?: number;
+    loading?: boolean;
+    isDark?: boolean;
+    showHeader?: boolean;
+    showModeToggle?: boolean;
+    showCopyButton?: boolean;
+    showCollapseButton?: boolean;
+    showExportButton?: boolean;
+    showFullscreenButton?: boolean;
+    showZoomControls?: boolean;
+}
+interface MathBlockNodeProps {
+    node: {
+        type: 'math_block';
+        content: string;
+        raw: string;
+        loading?: boolean;
+    };
+    indexKey?: number | string;
+    cacheScope?: string | number;
+}
+interface MathInlineNodeProps {
+    node: {
+        type: 'math_inline';
+        content: string;
+        raw: string;
+        loading?: boolean;
+        markup?: string;
+    };
+}
+
+type NodeRendererCodeBlockThemes = CodeBlockNodeProps['themes'] | ShikiCodeBlockProps['themes'];
+type NodeRendererCodeBlockProps = Partial<Omit<CodeBlockNodeProps, 'node' | 'themes'>> & Partial<Omit<ShikiCodeBlockProps, 'themes'>> & {
+    themes?: NodeRendererCodeBlockThemes;
+} & Record<string, unknown>;
+type NodeRendererMode = 'docs' | 'chat' | 'minimal';
+type NodeRendererCodeRenderer = 'pre' | 'shiki' | 'monaco';
+type NodeRendererTypewriter = boolean | 'simple' | 'precise';
+type NodeRendererDomMode = 'full' | 'minimal';
+type MarkstreamVirtualPhase = 'estimating' | 'streaming' | 'measuring' | 'settling' | 'settled' | 'final';
+type MarkstreamVirtualConfidence = 'estimate' | 'mixed' | 'measured' | 'final';
+type MarkstreamVirtualReason = 'content' | 'parse' | 'batch' | 'resize' | 'node-resize' | 'async-node' | 'font' | 'theme' | 'final' | 'restore' | 'manual';
+type MarkstreamVirtualAnchor = {
+    type: 'node';
+    nodeIndex: number;
+    offsetWithinNodePx: number;
+} | {
+    type: 'bottom';
+    distanceFromBottomPx: number;
+};
+interface MarkstreamMeasuredHeightCacheEntry {
+    index: number;
+    height: number;
+}
+interface MarkstreamHeightCacheEntry extends MarkstreamMeasuredHeightCacheEntry {
+    
+    nodeType?: string;
+    signature: string;
+}
+type MarkstreamHeightCache = MarkstreamHeightCacheEntry[];
+interface MarkstreamVirtualMetrics {
+    sessionKey: string;
+    threadKey?: string;
+    phase: MarkstreamVirtualPhase;
+    nodeCount: number;
+    liveRange: {
+        start: number;
+        end: number;
+    };
+    renderedCount: number;
+    measuredCount: number;
+    estimatedCount: number;
+    averageNodeHeight: number;
+    topSpacerHeight: number;
+    bottomSpacerHeight: number;
+    visibleDomHeight: number;
+    totalHeight: number;
+    width: number;
+    final: boolean;
+    stable: boolean;
+    confidence: MarkstreamVirtualConfidence;
+    reason: MarkstreamVirtualReason;
+}
+interface MarkstreamVirtualState {
+    sessionKey: string;
+    threadKey?: string;
+    
+    anchor?: MarkstreamVirtualAnchor;
+    
+    anchorCaptured?: boolean;
+    metrics: MarkstreamVirtualMetrics;
+    width: number;
+    contentHash?: string;
+    measurementKey?: string;
+    heightCache?: MarkstreamHeightCache;
+}
+type MarkstreamScrollRoot = HTMLElement | null | undefined;
+type MarkstreamScrollRootRef = Ref<MarkstreamScrollRoot>;
+type MarkstreamScrollRootLike = MarkstreamScrollRoot | MarkstreamScrollRootRef | {
+    $el?: MarkstreamScrollRoot;
+};
+type MarkstreamScrollRootResolver = () => MarkstreamScrollRootLike;
+type MarkstreamVirtualScrollHeightCacheOptions = {
+    heightCache?: null | undefined;
+    heightCacheWidth?: number;
+} | {
+    
+    heightCache: MarkstreamHeightCache;
+    heightCacheWidth: number;
+};
+interface MarkstreamVirtualScrollSharedBaseOptions {
+    scrollRoot?: MarkstreamScrollRootLike | MarkstreamScrollRootResolver;
+    threadKey?: string;
+    restoreState?: MarkstreamVirtualState | null;
+    
+    restoreAnchor?: boolean | string | number;
+    
+    measurementKey?: string | number;
+    settleMode?: 'auto' | 'manual';
+    settledToken?: string | number | boolean;
+    emitIntervalMs?: number;
+    heightDiffThresholdPx?: number;
+    
+    heightCacheLimit?: number;
+}
+type MarkstreamVirtualScrollSharedOptions = MarkstreamVirtualScrollSharedBaseOptions & MarkstreamVirtualScrollHeightCacheOptions;
+type MarkstreamVirtualScrollOptions = (MarkstreamVirtualScrollSharedOptions & {
+    enabled: true;
+    sessionKey: string;
+}) | (MarkstreamVirtualScrollSharedOptions & {
+    enabled: boolean;
+    sessionKey: string;
+}) | (MarkstreamVirtualScrollSharedOptions & {
+    enabled?: false;
+    sessionKey?: string;
+});
+interface MarkstreamCaptureVirtualStateOptions {
+    
+    requireViewport?: boolean;
+    
+    allowFallbackAnchor?: boolean;
+    
+    includeEmptyState?: boolean;
+}
+interface MarkstreamRendererHandle {
+    getVirtualMetrics: () => MarkstreamVirtualMetrics;
+    captureVirtualState: (options?: MarkstreamCaptureVirtualStateOptions) => MarkstreamVirtualState | null;
+    restoreVirtualState: (state: MarkstreamVirtualState, options?: {
+        
+        restoreAnchor?: boolean;
+        restoreToken?: string | number | boolean;
+        
+        allowUncapturedAnchor?: boolean;
+    }) => void;
+    forceMeasure: (reason?: MarkstreamVirtualReason) => Promise<MarkstreamVirtualMetrics>;
+    settle: (options?: {
+        frames?: number;
+        timeoutMs?: number;
+        reason?: MarkstreamVirtualReason;
+        
+        flushPendingTimers?: boolean;
+    }) => Promise<MarkstreamVirtualMetrics>;
+    scrollToNode: (index: number, align?: 'start' | 'center' | 'end' | 'nearest') => void;
+}
+interface MarkstreamNodeLifecycle {
+    reportHeight: (indexKey: string | number, height: number) => void;
+    markPending: (indexKey: string | number) => void;
+    markSettled: (indexKey: string | number) => void;
+}
+
+interface MarkstreamViewportPriorityOptions {
+    
+    rootMargin?: string;
+    
+    heavyBlockMargin?: string;
+    
+    maxTargets?: number;
+}
+interface NodeRendererProps {
+    
+    content?: string;
+    
+    nodes?: BaseNode[];
+    
+    final?: boolean;
+    
+    parseOptions?: ParseOptions;
+    customMarkdownIt?: (md: MarkdownIt) => MarkdownIt;
+    
+    debugPerformance?: boolean;
+    
+    customHtmlTags?: readonly string[];
+    
+    mode?: NodeRendererMode;
+    
+    domMode?: NodeRendererDomMode;
+    
+    htmlPolicy?: HtmlPolicy;
+    
+    viewportPriority?: boolean;
+    
+    viewportPriorityOptions?: MarkstreamViewportPriorityOptions;
+    
+    codeBlockStream?: boolean;
+    
+    codeBlockDarkTheme?: CodeBlockMonacoTheme;
+    
+    codeBlockLightTheme?: CodeBlockMonacoTheme;
+    
+    codeBlockMonacoOptions?: CodeBlockMonacoOptions;
+    
+    codeRenderer?: NodeRendererCodeRenderer;
+    
+    renderCodeBlocksAsPre?: boolean;
+    
+    codeBlockMinWidth?: string | number;
+    
+    codeBlockMaxWidth?: string | number;
+    
+    codeBlockProps?: NodeRendererCodeBlockProps;
+    
+    mermaidProps?: Partial<Omit<MermaidBlockNodeProps, 'node' | 'loading' | 'isDark'>>;
+    
+    d2Props?: Partial<Omit<D2BlockNodeProps, 'node' | 'loading' | 'isDark'>>;
+    
+    infographicProps?: Partial<Omit<InfographicBlockNodeProps, 'node' | 'loading' | 'isDark'>>;
+    
+    showTooltips?: boolean;
+    
+    themes?: CodeBlockMonacoTheme[];
+    
+    langs?: readonly string[];
+    
+    isDark?: boolean;
+    
+    customId?: string;
+    indexKey?: number | string;
+    
+    typewriter?: NodeRendererTypewriter;
+    
+    smoothStreaming?: boolean | 'auto';
+    
+    smoothStreamingOptions?: SmoothMarkdownStreamOptions;
+    
+    parseCoalesceMs?: number;
+    
+    fade?: boolean;
+    
+    batchRendering?: boolean;
+    
+    initialRenderBatchSize?: number;
+    
+    renderBatchSize?: number;
+    
+    renderBatchDelay?: number;
+    
+    renderBatchBudgetMs?: number;
+    
+    renderBatchIdleTimeoutMs?: number;
+    
+    deferNodesUntilVisible?: boolean;
+    
+    maxLiveNodes?: number;
+    
+    liveNodeBuffer?: number;
+    
+    nodeVirtual?: boolean | 'auto';
+    
+    virtualScroll?: MarkstreamVirtualScrollOptions;
+    
+    renderAsFragment?: boolean;
+}
+
+type MarkstreamTimelineItemKey = string | number;
+interface MarkstreamTimelineItem {
+    id: MarkstreamTimelineItemKey;
+    kind?: string;
+    content?: string;
+    final?: boolean;
+    revision?: MarkstreamTimelineItemKey;
+    text?: string;
+    label?: string;
+    status?: string;
+    message?: string;
+    component?: unknown;
+}
+interface MarkstreamVirtualTimelineProps<T = MarkstreamTimelineItem> {
+    items: T[];
+    threadKey?: MarkstreamTimelineItemKey;
+    
+    layoutRevision?: MarkstreamTimelineItemKey;
+    getKey?: (item: T, index: number) => MarkstreamTimelineItemKey;
+    getKind?: (item: T, index: number) => string;
+    getContent?: (item: T, index: number) => string;
+    getFinal?: (item: T, index: number) => boolean;
+    getRevision?: (item: T, index: number) => MarkstreamTimelineItemKey | undefined;
+    estimateItemHeight?: (item: T, index: number) => number;
+    overscan?: number;
+    overscanPx?: number;
+    stickToBottom?: boolean | 'auto';
+    measurementKey?: string | number;
+    markdownMode?: NodeRendererMode;
+    markdownCodeRenderer?: NodeRendererCodeRenderer;
+    
+    initialThreadState?: MarkstreamThreadVirtualState | null;
+    
+    markdownFade?: boolean;
+    
+    restoreMaxLoadingMs?: number | false;
+    debug?: boolean;
+}
+interface MarkstreamVisibleRange {
+    start: number;
+    end: number;
+}
+interface MarkstreamOuterVirtualizerAdapter {
+    getScrollElement: () => HTMLElement | null;
+    getScrollTop: () => number;
+    setScrollTop: (value: number) => void;
+    getViewportHeight: () => number;
+    getTotalHeight: () => number;
+    getItemOffset: (key: string) => number;
+    getItemSize: (key: string) => number;
+    setItemSize: (key: string, size: number) => void;
+    getVisibleRange: () => MarkstreamVisibleRange;
+    scrollToOffset: (offset: number) => void;
+    scrollToIndex: (index: number, align?: 'start' | 'center' | 'end') => void;
+    measureElement?: (key: string, el: HTMLElement) => void;
+}
+interface MarkstreamOuterAnchor {
+    type: 'item';
+    itemKey: string;
+    offsetWithinItemPx: number;
+}
+interface MarkstreamBottomAnchor {
+    type: 'bottom';
+    distanceFromBottomPx: number;
+}
+type MarkstreamThreadAnchor = MarkstreamOuterAnchor | MarkstreamBottomAnchor;
+interface MarkstreamThreadVirtualState {
+    threadKey?: string;
+    measurementKey?: string;
+    widthBucket?: number;
+    outerAnchor?: MarkstreamThreadAnchor;
+    itemHeights: Record<string, number>;
+    itemSizeSources?: Record<string, {
+        sourceKey: string;
+        measurementKey?: string;
+        widthBucket?: number;
+    }>;
+    markdownStates: Record<string, MarkstreamVirtualState>;
+}
+interface MarkstreamVirtualMarkdownProps extends Pick<NodeRendererProps, 'content' | 'final' | 'indexKey' | 'nodeVirtual' | 'maxLiveNodes' | 'liveNodeBuffer' | 'virtualScroll' | 'fade' | 'mode' | 'codeRenderer'> {
+    onHeightChange: (metrics: MarkstreamVirtualMetrics) => void;
+    onVirtualStateChange: (state: MarkstreamVirtualState) => void;
+}
+interface UseMarkstreamVirtualAdapterOptions<T = MarkstreamTimelineItem> {
+    items: MaybeRefOrGetter<readonly T[]>;
+    threadKey?: MaybeRefOrGetter<MarkstreamTimelineItemKey | undefined>;
+    layoutRevision?: MaybeRefOrGetter<MarkstreamTimelineItemKey | undefined>;
+    getKey?: (item: T, index: number) => MarkstreamTimelineItemKey;
+    getKind?: (item: T, index: number) => string;
+    getContent?: (item: T, index: number) => string;
+    getFinal?: (item: T, index: number) => boolean;
+    getRevision?: (item: T, index: number) => MarkstreamTimelineItemKey | undefined;
+    estimateItemHeight?: (item: T, index: number) => number;
+    measurementKey?: MaybeRefOrGetter<string | number | undefined>;
+    markdownMode?: MaybeRefOrGetter<NodeRendererMode | undefined>;
+    markdownCodeRenderer?: MaybeRefOrGetter<NodeRendererCodeRenderer | undefined>;
+    
+    markdownFade?: boolean;
+    
+    preserveScrollAnchor?: boolean | 'auto';
+    
+    bottomThresholdPx?: number;
+    debug?: boolean;
+    virtualizer: MarkstreamOuterVirtualizerAdapter;
+}
+interface MarkstreamVirtualAdapterController<T = MarkstreamTimelineItem> {
+    itemHeights: Map<string, number>;
+    markdownStates: Map<string, MarkstreamVirtualState>;
+    getItemKey: (item: T, index: number) => string;
+    isMarkdownItem: (item: T, index: number) => boolean;
+    isRestoringThread: () => boolean;
+    measureItem: (item: T, index: number, el: Element | {
+        $el?: Element | null;
+    } | null | undefined) => void;
+    markdownProps: (item: T, index: number) => MarkstreamVirtualMarkdownProps;
+    captureThreadState: () => MarkstreamThreadVirtualState;
+    preloadThreadState: (state: MarkstreamThreadVirtualState | null | undefined) => void;
+    restoreThreadState: (state: MarkstreamThreadVirtualState | null | undefined) => void;
+    dispose: () => void;
+}
+declare function useMarkstreamVirtualAdapter<T = MarkstreamTimelineItem>(options: UseMarkstreamVirtualAdapterOptions<T>): MarkstreamVirtualAdapterController<T>;
+
+interface CustomComponents$1 {
+    text?: Component;
+    paragraph?: Component;
+    heading?: Component;
+    code_block?: Component;
+    list?: Component;
+    list_item?: Component;
+    blockquote?: Component;
+    table?: Component;
+    definition_list?: Component;
+    footnote?: Component;
+    footnote_reference?: Component;
+    footnote_anchor?: Component;
+    admonition?: Component;
+    hardbreak?: Component;
+    link?: Component;
+    image?: Component;
+    thematic_break?: Component;
+    math_inline?: Component;
+    math_block?: Component;
+    strong?: Component;
+    emphasis?: Component;
+    strikethrough?: Component;
+    highlight?: Component;
+    insert?: Component;
+    subscript?: Component;
+    superscript?: Component;
+    emoji?: Component;
+    checkbox?: Component;
+    inline_code?: Component;
+    html_inline?: Component;
+    html_block?: Component;
+    reference?: Component;
+    mermaid?: Component;
+    infographic?: Component;
+    d2?: Component;
+    vmr_container?: Component;
+    [key: string]: Component | undefined;
+}
+
+type LanguageIconResolver = (lang: string) => string | undefined | null;
+declare const languageIconsRevision: vue.ShallowRef<number, number>;
+declare function setLanguageIconResolver(resolver?: LanguageIconResolver | null): void;
+declare function normalizeLanguageIdentifier(lang?: string | null): string;
+declare function resolveMonacoLanguageId(lang?: string | null): string;
+declare function preloadExtendedLanguageIcons(): Promise<void>;
+declare function getLanguageIcon(lang: string): string;
+declare const languageMap: Record<string, string>;
+
+type AdmonitionKind = 'note' | 'info' | 'tip' | 'warning' | 'danger' | 'caution' | 'error';
+interface AdmonitionNode {
+    type: 'admonition';
+    kind: AdmonitionKind;
+    title?: string;
+    children: {
+        type: string;
+        raw: string;
+    }[];
+    raw: string;
+    collapsible?: boolean;
+    open?: boolean;
+}
+type __VLS_Props$q = {
+    node: AdmonitionNode;
+    indexKey: number | string;
+    isDark?: boolean;
+    typewriter?: boolean;
+    fade?: boolean;
+    customId?: string;
+};
+declare const _default$v: vue.DefineComponent<__VLS_Props$q, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (...args: any[]) => void;
+}, string, vue.PublicProps, Readonly<__VLS_Props$q> & Readonly<{
+    onCopy?: (...args: any[]) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLDivElement>;
+
+interface NodeChild$b {
+    type: string;
+    raw: string;
+    children?: NodeChild$b[];
+    [key: string]: unknown;
+}
+interface BlockquoteNode {
+    type: 'blockquote';
+    children: NodeChild$b[];
+    raw: string;
+    cite?: string;
+}
+type __VLS_Props$p = {
+    node: BlockquoteNode;
+    indexKey: string | number;
+    typewriter?: boolean;
+    fade?: boolean;
+    customId?: string;
+    showTooltips?: boolean;
+};
+declare const _default$u: vue.DefineComponent<__VLS_Props$p, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (text: string) => any;
+}, string, vue.PublicProps, Readonly<__VLS_Props$p> & Readonly<{
+    onCopy?: (text: string) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLQuoteElement>;
+
+type __VLS_Props$o = {
+    node: {
+        type: 'checkbox';
+        checked: boolean;
+        raw: string;
+    };
+};
+declare const _default$t: vue.DefineComponent<__VLS_Props$o, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$o> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLSpanElement>;
+
+type D2Loader = () => Promise<unknown> | unknown;
+declare function setD2Loader(loader: D2Loader | null): void;
+declare function enableD2(loader?: D2Loader): void;
+declare function disableD2(): void;
+declare function isD2Enabled(): boolean;
+
+interface DefinitionItemNode {
+    type: 'definition_item';
+    term: {
+        type: string;
+        raw: string;
+    }[];
+    definition: {
+        type: string;
+        raw: string;
+    }[];
+    raw: string;
+}
+interface DefinitionListNode {
+    type: 'definition_list';
+    items: DefinitionItemNode[];
+    raw: string;
+}
+type __VLS_Props$n = {
+    node: DefinitionListNode;
+    indexKey: string | number;
+    typewriter?: boolean;
+    fade?: boolean;
+    customId?: string;
+};
+declare const _default$s: vue.DefineComponent<__VLS_Props$n, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (...args: any[]) => void;
+}, string, vue.PublicProps, Readonly<__VLS_Props$n> & Readonly<{
+    onCopy?: (...args: any[]) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLDListElement>;
+
+type __VLS_Props$m = {
+    node: {
+        type: 'emoji';
+        name: string;
+        markup: string;
+        raw: string;
+    };
+};
+declare const _default$r: vue.DefineComponent<__VLS_Props$m, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$m> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLSpanElement>;
+
+interface NodeChild$a {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$l = {
+    node: {
+        type: 'emphasis';
+        children: NodeChild$a[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+};
+declare const _default$q: vue.DefineComponent<__VLS_Props$l, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$l> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLElement>;
+
+type __VLS_Props$k = {
+    node: {
+        type: 'footnote_anchor';
+        id: string;
+        raw?: string;
+    };
+};
+declare const _default$p: vue.DefineComponent<__VLS_Props$k, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$k> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLAnchorElement>;
+
+interface FootnoteNode {
+    type: 'footnote';
+    id: string;
+    children: {
+        type: string;
+        raw: string;
+    }[];
+    raw: string;
+}
+type __VLS_Props$j = {
+    node: FootnoteNode;
+    indexKey: string | number;
+    typewriter?: boolean;
+    fade?: boolean;
+    customId?: string;
+};
+declare const _default$o: vue.DefineComponent<__VLS_Props$j, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (...args: any[]) => void;
+}, string, vue.PublicProps, Readonly<__VLS_Props$j> & Readonly<{
+    onCopy?: (...args: any[]) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLDivElement>;
+
+interface FootnoteReferenceNode {
+    type: 'footnote_reference';
+    id: string;
+    raw: string;
+}
+type __VLS_Props$i = {
+    node: FootnoteReferenceNode;
+};
+declare const _default$n: vue.DefineComponent<__VLS_Props$i, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$i> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLElement>;
+
+interface HardBreakNode {
+    type: 'hardbreak';
+    raw: string;
+}
+type __VLS_Props$h = {
+    node: HardBreakNode;
+};
+declare const _default$m: vue.DefineComponent<__VLS_Props$h, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$h> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLBRElement>;
+
+interface NodeChild$9 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$g = {
+    node: {
+        type: 'heading';
+        level: number;
+        text: string;
+        attrs?: Record<string, string | boolean>;
+        children: NodeChild$9[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+};
+declare const _default$l: vue.DefineComponent<__VLS_Props$g, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$g> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, any>;
+
+type InstallableComponent$1<T> = T & {
+    install?: (app: App) => void;
+};
+declare const _HeadingNode: InstallableComponent$1<typeof _default$l>;
+
+interface NodeChild$8 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$f = {
+    node: {
+        type: 'highlight';
+        children: NodeChild$8[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+};
+declare const _default$k: vue.DefineComponent<__VLS_Props$f, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$f> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLElement>;
+
+type __VLS_Props$e = {
+    node: {
+        content: string;
+        raw?: string;
+        tag?: string;
+        attrs?: [string, string][] | null;
+        children?: any[];
+        loading?: boolean;
+    };
+    customId?: string;
+    htmlPolicy?: HtmlPolicy;
+};
+declare function __VLS_template$2(): {
+    attrs: Partial<{}>;
+    slots: {
+        placeholder?(_: {
+            node: {
+                content: string;
+                raw?: string;
+                tag?: string;
+                attrs?: [string, string][] | null;
+                children?: any[];
+                loading?: boolean;
+            };
+        }): any;
+    };
+    refs: {
+        htmlRef: unknown;
+    };
+    rootEl: any;
+};
+type __VLS_TemplateResult$2 = ReturnType<typeof __VLS_template$2>;
+declare const __VLS_component$2: vue.DefineComponent<__VLS_Props$e, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$e> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {
+    htmlRef: unknown;
+}, any>;
+declare const _default$j: __VLS_WithTemplateSlots$2<typeof __VLS_component$2, __VLS_TemplateResult$2["slots"]>;
+
+type __VLS_WithTemplateSlots$2<T, S> = T & {
+    new (): {
+        $slots: S;
+    };
+};
+
+type __VLS_Props$d = {
+    node: {
+        type: 'html_inline';
+        tag?: string;
+        content: string;
+        loading?: boolean;
+        autoClosed?: boolean;
+    };
+    customId?: string;
+    htmlPolicy?: HtmlPolicy;
+};
+declare const _default$i: vue.DefineComponent<__VLS_Props$d, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$d> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, any>;
+
+declare function __VLS_template$1(): {
+    attrs: Partial<{}>;
+    slots: {
+        placeholder?(_: {
+            node: {
+                type: "image";
+                src: string;
+                alt: string;
+                title: string | null;
+                raw: string;
+                loading?: boolean;
+            };
+            displaySrc: string;
+            imageLoaded: boolean;
+            hasError: boolean;
+            fallbackSrc: string;
+            lazy: boolean;
+        }): any;
+        placeholder?(_: {
+            node: {
+                type: "image";
+                src: string;
+                alt: string;
+                title: string | null;
+                raw: string;
+                loading?: boolean;
+            };
+            displaySrc: string;
+            imageLoaded: boolean;
+            hasError: boolean;
+            fallbackSrc: string;
+            lazy: boolean;
+        }): any;
+        error?(_: {
+            node: {
+                type: "image";
+                src: string;
+                alt: string;
+                title: string | null;
+                raw: string;
+                loading?: boolean;
+            };
+            displaySrc: string;
+            imageLoaded: boolean;
+            hasError: boolean;
+            fallbackSrc: string;
+            lazy: boolean;
+        }): any;
+    };
+    refs: {
+        rootRef: HTMLSpanElement;
+    };
+    rootEl: HTMLSpanElement;
+};
+type __VLS_TemplateResult$1 = ReturnType<typeof __VLS_template$1>;
+declare const __VLS_component$1: vue.DefineComponent<ImageNodeProps, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {} & {
+    error: (src: string) => any;
+    click: (payload: [Event, string]) => any;
+    load: (src: string) => any;
+}, string, vue.PublicProps, Readonly<ImageNodeProps> & Readonly<{
+    onError?: (src: string) => any;
+    onClick?: (payload: [Event, string]) => any;
+    onLoad?: (src: string) => any;
+}>, {
+    fallbackSrc: string;
+    lazy: boolean;
+    usePlaceholder: boolean;
+}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {
+    rootRef: HTMLSpanElement;
+}, HTMLSpanElement>;
+declare const _default$h: __VLS_WithTemplateSlots$1<typeof __VLS_component$1, __VLS_TemplateResult$1["slots"]>;
+
+type __VLS_WithTemplateSlots$1<T, S> = T & {
+    new (): {
+        $slots: S;
+    };
+};
+
+type __VLS_Props$c = {
+    node: {
+        type: 'inline_code';
+        code: string;
+        raw: string;
+    };
+};
+declare const _default$g: vue.DefineComponent<__VLS_Props$c, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$c> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLElement>;
+
+interface NodeChild$7 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$b = {
+    node: {
+        type: 'insert';
+        children: NodeChild$7[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+};
+declare const _default$f: vue.DefineComponent<__VLS_Props$b, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$b> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLModElement>;
+
+declare const _default$e: vue.DefineComponent<LinkNodeProps, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<LinkNodeProps> & Readonly<{}>, {
+    showTooltip: boolean;
+}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, any>;
+
+interface NodeChild$6 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+interface ListItem$1 {
+    type: 'list_item';
+    children: NodeChild$6[];
+    raw: string;
+}
+type __VLS_Props$a = {
+    
+    node?: ListItem$1;
+    item?: ListItem$1;
+    indexKey?: number | string;
+    customId?: string;
+    typewriter?: boolean;
+    fade?: boolean;
+    showTooltips?: boolean;
+    value?: number | null;
+    isDark?: boolean;
+};
+declare const _default$d: vue.DefineComponent<__VLS_Props$a, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (text: string) => any;
+}, string, vue.PublicProps, Readonly<__VLS_Props$a> & Readonly<{
+    onCopy?: (text: string) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, true, {}, HTMLLIElement>;
+
+interface NodeChild$5 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+interface ListItem {
+    type: 'list_item';
+    children: NodeChild$5[];
+    raw: string;
+}
+type __VLS_Props$9 = {
+    node: {
+        type: 'list';
+        ordered: boolean;
+        start?: number;
+        items: ListItem[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+    typewriter?: boolean;
+    fade?: boolean;
+    showTooltips?: boolean;
+    isDark?: boolean;
+};
+declare const _default$c: vue.DefineComponent<__VLS_Props$9, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (...args: any[]) => void;
+}, string, vue.PublicProps, Readonly<__VLS_Props$9> & Readonly<{
+    onCopy?: (...args: any[]) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, any>;
+
+type KatexLoader = () => Promise<unknown> | unknown;
+declare function setKatexLoader(loader: KatexLoader | null): void;
+declare function enableKatex(loader?: KatexLoader): void;
+declare function disableKatex(): void;
+declare function isKatexEnabled(): boolean;
+
+type MermaidLoader = () => Promise<unknown> | unknown;
+declare function setMermaidLoader(loader: MermaidLoader | null): void;
+declare function enableMermaid(loader?: MermaidLoader): void;
+declare function disableMermaid(): void;
+declare function isMermaidEnabled(): boolean;
+
+declare const _default$b: vue.DefineComponent<NodeRendererProps, {
+    getVirtualMetrics: () => MarkstreamVirtualMetrics;
+    captureVirtualState: (options?: MarkstreamCaptureVirtualStateOptions) => MarkstreamVirtualState | null;
+    restoreVirtualState: (state: MarkstreamVirtualState, options?: {
+        restoreAnchor?: boolean;
+        restoreToken?: string | number | boolean;
+        allowUncapturedAnchor?: boolean;
+    }) => void;
+    forceMeasure: (reason?: MarkstreamVirtualReason) => Promise<MarkstreamVirtualMetrics>;
+    settle: (options?: {
+        frames?: number;
+        timeoutMs?: number;
+        reason?: MarkstreamVirtualReason;
+        flushPendingTimers?: boolean;
+    }) => Promise<MarkstreamVirtualMetrics>;
+    scrollToNode: (index: number, align?: "start" | "center" | "end" | "nearest") => void;
+}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {} & {
+    click: (event: MouseEvent) => any;
+    copy: (code: string) => any;
+    mouseout: (event: MouseEvent) => any;
+    mouseover: (event: MouseEvent) => any;
+    "copy-code": (code: string) => any;
+    handleArtifactClick: (payload: CodeBlockPreviewPayload) => any;
+    "virtual-state-change": (payload: MarkstreamVirtualState) => any;
+    "height-change": (payload: MarkstreamVirtualMetrics) => any;
+    "render-settled": (payload: MarkstreamVirtualMetrics) => any;
+    "render-final": (payload: MarkstreamVirtualMetrics) => any;
+    "anchor-change": (payload: MarkstreamVirtualAnchor) => any;
+}, string, vue.PublicProps, Readonly<NodeRendererProps> & Readonly<{
+    onClick?: (event: MouseEvent) => any;
+    onCopy?: (code: string) => any;
+    onMouseout?: (event: MouseEvent) => any;
+    onMouseover?: (event: MouseEvent) => any;
+    "onCopy-code"?: (code: string) => any;
+    onHandleArtifactClick?: (payload: CodeBlockPreviewPayload) => any;
+    "onVirtual-state-change"?: (payload: MarkstreamVirtualState) => any;
+    "onHeight-change"?: (payload: MarkstreamVirtualMetrics) => any;
+    "onRender-settled"?: (payload: MarkstreamVirtualMetrics) => any;
+    "onRender-final"?: (payload: MarkstreamVirtualMetrics) => any;
+    "onAnchor-change"?: (payload: MarkstreamVirtualAnchor) => any;
+}>, {
+    showTooltips: boolean;
+    nodeVirtual: boolean | "auto";
+    fade: boolean;
+    debugPerformance: boolean;
+    viewportPriority: boolean;
+    codeBlockStream: boolean;
+    renderCodeBlocksAsPre: boolean;
+    typewriter: NodeRendererTypewriter;
+    smoothStreaming: boolean | "auto";
+    batchRendering: boolean;
+    deferNodesUntilVisible: boolean;
+}, {}, {}, {}, string, vue.ComponentProvideOptions, true, {
+    containerRef: HTMLDivElement;
+    typewriterCursorRef: HTMLSpanElement;
+}, any>;
+
+type InstallableComponent<T> = T & {
+    install?: (app: App) => void;
+    __name?: string;
+    name?: string;
+};
+declare const _NodeRenderer: InstallableComponent<typeof _default$b>;
+
+interface NodeChild$4 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$8 = {
+    node: {
+        type: 'paragraph';
+        children: NodeChild$4[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+    customHtmlTags?: readonly string[];
+    parseOptions?: NodeRendererProps['parseOptions'];
+    customMarkdownIt?: NodeRendererProps['customMarkdownIt'];
+};
+declare const _default$a: vue.DefineComponent<__VLS_Props$8, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$8> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLParagraphElement>;
+
+declare const _default$9: vue.DefineComponent<PreCodeNodeProps, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<PreCodeNodeProps> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {
+    preRef: HTMLPreElement;
+}, HTMLPreElement>;
+
+type __VLS_Props$7 = {
+    node: {
+        type: 'reference';
+        id: string;
+        raw: string;
+    };
+    messageId?: string;
+    threadId?: string;
+};
+declare const _default$8: vue.DefineComponent<__VLS_Props$7, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    click: (...args: any[]) => void;
+    mouseEnter: (...args: any[]) => void;
+    mouseLeave: (...args: any[]) => void;
+}, string, vue.PublicProps, Readonly<__VLS_Props$7> & Readonly<{
+    onClick?: (...args: any[]) => any;
+    onMouseEnter?: (...args: any[]) => any;
+    onMouseLeave?: (...args: any[]) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLSpanElement>;
+
+interface NodeChild$3 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$6 = {
+    node: {
+        type: 'strikethrough';
+        children: NodeChild$3[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: string | number;
+};
+declare const _default$7: vue.DefineComponent<__VLS_Props$6, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$6> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLModElement>;
+
+interface NodeChild$2 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$5 = {
+    node: {
+        type: 'strong';
+        children: NodeChild$2[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+};
+declare const _default$6: vue.DefineComponent<__VLS_Props$5, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$5> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLElement>;
+
+interface NodeChild$1 {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$4 = {
+    node: {
+        type: 'subscript';
+        children: NodeChild$1[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+};
+declare const _default$5: vue.DefineComponent<__VLS_Props$4, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$4> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLElement>;
+
+interface NodeChild {
+    type: string;
+    raw: string;
+    [key: string]: unknown;
+}
+type __VLS_Props$3 = {
+    node: {
+        type: 'superscript';
+        children: NodeChild[];
+        raw: string;
+    };
+    customId?: string;
+    indexKey?: number | string;
+};
+declare const _default$4: vue.DefineComponent<__VLS_Props$3, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props$3> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLElement>;
+
+interface SimpleInlineNode {
+    type: string;
+    raw?: string;
+    children?: SimpleInlineNode[];
+    [key: string]: unknown;
+}
+
+type TableCellChildNode = SimpleInlineNode & {
+    raw: string;
+};
+interface TableCellNode {
+    type: 'table_cell';
+    header: boolean;
+    children: TableCellChildNode[];
+    raw: string;
+    align?: 'left' | 'right' | 'center';
+}
+interface TableRowNode {
+    type: 'table_row';
+    cells: TableCellNode[];
+    raw: string;
+}
+interface TableNode {
+    type: 'table';
+    header: TableRowNode;
+    rows: TableRowNode[];
+    raw: string;
+    loading: boolean;
+}
+type __VLS_Props$2 = {
+    node: TableNode;
+    indexKey: string | number;
+    isDark?: boolean;
+    typewriter?: boolean;
+    fade?: boolean;
+    customId?: string;
+    showTooltips?: boolean;
+};
+declare function __VLS_template(): {
+    attrs: Partial<{}>;
+    slots: {
+        loading?(_: {
+            isLoading: true;
+        }): any;
+    };
+    refs: {
+        tableRef: HTMLTableElement;
+    };
+    rootEl: HTMLDivElement;
+};
+type __VLS_TemplateResult = ReturnType<typeof __VLS_template>;
+declare const __VLS_component: vue.DefineComponent<__VLS_Props$2, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (...args: any[]) => void;
+}, string, vue.PublicProps, Readonly<__VLS_Props$2> & Readonly<{
+    onCopy?: (...args: any[]) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {
+    tableRef: HTMLTableElement;
+}, HTMLDivElement>;
+declare const _default$3: __VLS_WithTemplateSlots<typeof __VLS_component, __VLS_TemplateResult["slots"]>;
+
+type __VLS_WithTemplateSlots<T, S> = T & {
+    new (): {
+        $slots: S;
+    };
+};
+
+type __VLS_Props$1 = {
+    node: {
+        type: 'text';
+        content: string;
+        raw: string;
+        center?: boolean;
+    };
+};
+declare const _default$2: vue.DefineComponent<__VLS_Props$1, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {
+    copy: (...args: any[]) => void;
+}, string, vue.PublicProps, Readonly<__VLS_Props$1> & Readonly<{
+    onCopy?: (...args: any[]) => any;
+}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLSpanElement>;
+
+declare const _default$1: vue.DefineComponent<{}, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<{}> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, true, {}, HTMLHRElement>;
+
+interface VmrContainerNode {
+    type: 'vmr_container';
+    name: string;
+    loading?: boolean;
+    attrs?: Record<string, string>;
+    children: {
+        type: string;
+        raw: string;
+    }[];
+    raw: string;
+}
+type __VLS_Props = {
+    node: VmrContainerNode;
+    indexKey: number | string;
+    isDark?: boolean;
+    typewriter?: boolean;
+    fade?: boolean;
+    customId?: string;
+};
+declare const _default: vue.DefineComponent<__VLS_Props, {}, {}, {}, {}, vue.ComponentOptionsMixin, vue.ComponentOptionsMixin, {}, string, vue.PublicProps, Readonly<__VLS_Props> & Readonly<{}>, {}, {}, {}, {}, string, vue.ComponentProvideOptions, false, {}, HTMLDivElement>;
+
+declare const defaultMap: Record<string, string>;
+
+declare function setDefaultI18nMap(map: Partial<Record<keyof typeof defaultMap, string>>): void;
+
+declare function setCustomComponents(id: string, mapping: Partial<CustomComponents$1>): void;
+declare function setCustomComponents(mapping: Partial<CustomComponents$1>): void;
+
+declare function getCustomNodeComponents(customId?: string): Partial<CustomComponents$1>;
+
+declare function removeCustomComponents(id: string): void;
+
+declare function clearGlobalCustomComponents(): void;
+
+declare function isCodeBlockRuntimeReady(): boolean;
+
+interface MonacoDisposableLike {
+    dispose?: () => void;
+}
+interface MonacoModelLike {
+    getLineCount?: () => number;
+    getValue?: () => string;
+}
+interface MonacoEditorViewLike {
+    getModel?: () => MonacoModelLike | null | undefined;
+    getOption?: (option: unknown) => unknown;
+    updateOptions?: (options: Record<string, unknown>) => void;
+    layout?: (dimension?: {
+        width: number;
+        height: number;
+    }) => void;
+    getContentHeight?: () => number;
+    getScrollTop?: () => number;
+    setScrollTop?: (scrollTop: number) => void;
+    onDidContentSizeChange?: (listener: () => void) => MonacoDisposableLike | void;
+    onDidLayoutChange?: (listener: () => void) => MonacoDisposableLike | void;
+}
+interface MonacoDiffLineChangeLike {
+    originalStartLineNumber?: number;
+    originalEndLineNumber?: number;
+    modifiedStartLineNumber?: number;
+    modifiedEndLineNumber?: number;
+}
+interface MonacoDiffEditorViewLike extends MonacoEditorViewLike {
+    getOriginalEditor?: () => MonacoEditorViewLike | null | undefined;
+    getModifiedEditor?: () => MonacoEditorViewLike | null | undefined;
+    getLineChanges?: () => MonacoDiffLineChangeLike[] | null | undefined;
+    onDidUpdateDiff?: (listener: () => void) => MonacoDisposableLike | void;
+}
+interface MonacoNamespaceLike {
+    EditorOption?: {
+        fontInfo?: unknown;
+        lineHeight?: unknown;
+    };
+}
+interface MonacoRuntimeOptions extends Omit<CodeBlockMonacoOptions, 'theme'> {
+    theme?: CodeBlockMonacoTheme;
+    themes?: CodeBlockMonacoTheme[];
+    onThemeChange?: () => void;
+}
+interface MonacoHelpers {
+    createEditor?: (container: HTMLElement, code: string, language: string) => Promise<unknown> | unknown;
+    createDiffEditor?: (container: HTMLElement, original: string, modified: string, language: string) => Promise<unknown> | unknown;
+    updateCode?: (code: string, language: string) => Promise<unknown> | unknown;
+    updateDiff?: (original: string, modified: string, language: string) => Promise<unknown> | unknown;
+    getEditor?: () => MonacoNamespaceLike | null;
+    getEditorView?: () => MonacoEditorViewLike | null;
+    getDiffEditorView?: () => MonacoDiffEditorViewLike | null;
+    cleanupEditor?: () => void;
+    safeClean?: () => void;
+    refreshDiffPresentation?: () => Promise<unknown> | unknown;
+    setTheme?: (theme: CodeBlockMonacoTheme | undefined) => Promise<void> | void;
+    whenVisualReady?: () => Promise<boolean>;
+}
+interface MonacoModule {
+    useMonaco?: (options: MonacoRuntimeOptions) => MonacoHelpers | null | undefined;
+    detectLanguage?: (code: string) => string;
+    preloadMonacoWorkers?: () => Promise<unknown> | unknown;
+}
+
+type LanguageIconMap = Record<string, string>;
+interface IconTheme {
+    
+    readonly id: string;
+    
+    readonly core: LanguageIconMap;
+    
+    readonly fallback: string;
+    
+    loadExtended?: () => Promise<LanguageIconMap>;
+}
+
+declare function registerIconTheme(theme: IconTheme): void;
+declare function setIconTheme(id: string): void;
+declare function getRegisteredThemes(): string[];
+
+
+interface ThresholdInput {
+    R: number;
+    H?: number;
+    B?: number;
+}
+declare function recommendWorkerThreshold({ R, H, B }: ThresholdInput): number;
+declare function estimateRByFormula(sample: string): 'simple' | 'medium' | 'complex';
+declare function defaultRByClass(cls: 'simple' | 'medium' | 'complex'): number;
+declare function recommendNForSamples(formulas: string[], opts?: {
+    H?: number;
+    B?: number;
+}): number;
+
+declare const MARKSTREAM_NODE_LIFECYCLE_KEY: InjectionKey<MarkstreamNodeLifecycle>;
+declare function useMarkstreamNodeLifecycle(): MarkstreamNodeLifecycle;
+
+
+interface RenderMetrics {
+    type: 'worker' | 'direct' | 'cache-hit';
+    duration: number;
+    formulaLength: number;
+    timestamp: number;
+    success: boolean;
+    error?: string;
+}
+declare class PerformanceMonitor {
+    private metrics;
+    private enabled;
+    private maxMetrics;
+    enable(): void;
+    disable(): void;
+    recordRender(metrics: RenderMetrics): void;
+    getStats(): {
+        totalRenders: number;
+        cacheHitRate: number;
+        averageWorkerTime: number;
+        averageDirectTime: number;
+        averageCacheHitTime: number;
+        workerSavings: number;
+        recommendation: string;
+        cacheHits?: undefined;
+        workerCalls?: undefined;
+        directCalls?: undefined;
+    } | {
+        totalRenders: number;
+        cacheHits: number;
+        cacheHitRate: string;
+        workerCalls: number;
+        directCalls: number;
+        averageWorkerTime: string;
+        averageDirectTime: string;
+        averageCacheHitTime: string;
+        workerSavings: string;
+        recommendation: string;
+    };
+    printReport(): {
+        totalRenders: number;
+        cacheHitRate: number;
+        averageWorkerTime: number;
+        averageDirectTime: number;
+        averageCacheHitTime: number;
+        workerSavings: number;
+        recommendation: string;
+        cacheHits?: undefined;
+        workerCalls?: undefined;
+        directCalls?: undefined;
+    } | {
+        totalRenders: number;
+        cacheHits: number;
+        cacheHitRate: string;
+        workerCalls: number;
+        directCalls: number;
+        averageWorkerTime: string;
+        averageDirectTime: string;
+        averageCacheHitTime: string;
+        workerSavings: string;
+        recommendation: string;
+    };
+    reset(): void;
+    exportMetrics(): {
+        metrics: RenderMetrics[];
+        stats: {
+            totalRenders: number;
+            cacheHitRate: number;
+            averageWorkerTime: number;
+            averageDirectTime: number;
+            averageCacheHitTime: number;
+            workerSavings: number;
+            recommendation: string;
+            cacheHits?: undefined;
+            workerCalls?: undefined;
+            directCalls?: undefined;
+        } | {
+            totalRenders: number;
+            cacheHits: number;
+            cacheHitRate: string;
+            workerCalls: number;
+            directCalls: number;
+            averageWorkerTime: string;
+            averageDirectTime: string;
+            averageCacheHitTime: string;
+            workerSavings: string;
+            recommendation: string;
+        };
+        timestamp: number;
+    };
+}
+declare const perfMonitor: PerformanceMonitor;
+declare function enablePerfMonitoring(): void;
+declare function disablePerfMonitoring(): void;
+declare function getPerfReport(): {
+    totalRenders: number;
+    cacheHitRate: number;
+    averageWorkerTime: number;
+    averageDirectTime: number;
+    averageCacheHitTime: number;
+    workerSavings: number;
+    recommendation: string;
+    cacheHits?: undefined;
+    workerCalls?: undefined;
+    directCalls?: undefined;
+} | {
+    totalRenders: number;
+    cacheHits: number;
+    cacheHitRate: string;
+    workerCalls: number;
+    directCalls: number;
+    averageWorkerTime: string;
+    averageDirectTime: string;
+    averageCacheHitTime: string;
+    workerSavings: string;
+    recommendation: string;
+};
+
+declare function safeRaf(cb: FrameRequestCallback): any;
+declare function safeCancelRaf(id: number | null): void;
+
+declare function preloadCodeBlockRuntime(): Promise<boolean>;
+declare function getUseMonaco(): Promise<MonacoModule>;
+
+type KaTeXCDNWorkerMode = 'classic' | 'module';
+interface KaTeXCDNWorkerOptions {
+    
+    katexUrl: string;
+    
+    mhchemUrl?: string;
+    
+    mode?: KaTeXCDNWorkerMode;
+    
+    debug?: boolean;
+    
+    workerOptions?: WorkerOptions;
+    
+    renderOptions?: {
+        throwOnError?: boolean;
+        output?: string;
+        strict?: string;
+    };
+}
+interface KaTeXCDNWorkerHandle {
+    worker: Worker | null;
+    
+    dispose: () => void;
+    
+    source: string;
+}
+declare function buildKaTeXCDNWorkerSource(options: KaTeXCDNWorkerOptions): string;
+declare function createKaTeXWorkerFromCDN(options: KaTeXCDNWorkerOptions): KaTeXCDNWorkerHandle;
+
+
+declare function setKaTeXWorker(w: Worker): void;
+
+declare function clearKaTeXWorker(): void;
+declare function setKaTeXWorkerDebug(enabled: boolean): void;
+declare function renderKaTeXInWorker(content: string, displayMode?: boolean, timeout?: number, signal?: AbortSignal): Promise<string>;
+declare function setKaTeXCache(content: string, displayMode: boolean, html: string): void;
+
+declare function getKaTeXWorkerLoad(): {
+    inFlight: number;
+    max: number;
+};
+declare function setKaTeXWorkerMaxConcurrency(n: number): void;
+declare const WORKER_BUSY_CODE = "WORKER_BUSY";
+declare function isKaTeXWorkerBusy(): boolean;
+declare function waitForKaTeXWorkerSlot(timeout?: number, signal?: AbortSignal): Promise<void>;
+interface BackpressureOptions {
+    timeout?: number;
+    waitTimeout?: number;
+    backoffMs?: number;
+    maxRetries?: number;
+    signal?: AbortSignal;
+}
+declare const defaultBackpressure: {
+    timeout: number;
+    waitTimeout: number;
+    backoffMs: number;
+    maxRetries: number;
+};
+declare function setKaTeXBackpressureDefaults(opts: Partial<typeof defaultBackpressure>): void;
+declare function getKaTeXBackpressureDefaults(): {
+    timeout: number;
+    waitTimeout: number;
+    backoffMs: number;
+    maxRetries: number;
+};
+
+declare function renderKaTeXWithBackpressure(content: string, displayMode?: boolean, opts?: BackpressureOptions): Promise<string>;
+
+type MermaidCDNWorkerMode = 'classic' | 'module';
+interface MermaidCDNWorkerOptions {
+    
+    mermaidUrl: string;
+    
+    mode?: MermaidCDNWorkerMode;
+    
+    debug?: boolean;
+    
+    workerOptions?: WorkerOptions;
+    
+    initializeOptions?: Record<string, any>;
+}
+interface MermaidCDNWorkerHandle {
+    worker: Worker | null;
+    dispose: () => void;
+    source: string;
+}
+declare function buildMermaidCDNWorkerSource(options: MermaidCDNWorkerOptions): string;
+declare function createMermaidWorkerFromCDN(options: MermaidCDNWorkerOptions): MermaidCDNWorkerHandle;
+
+type Theme = 'light' | 'dark';
+declare function setMermaidWorkerClientDebug(enabled: boolean): void;
+declare function setMermaidWorkerMaxConcurrency(n: number): void;
+declare function getMermaidWorkerLoad(): {
+    inFlight: number;
+    max: number;
+};
+declare const MERMAID_WORKER_BUSY_CODE = "WORKER_BUSY";
+declare const MERMAID_DISABLED_CODE = "MERMAID_DISABLED";
+
+declare function setMermaidWorker(w: Worker): void;
+
+declare function clearMermaidWorker(): void;
+declare function canParseOffthread(code: string, theme: Theme, timeout?: number, signal?: AbortSignal): Promise<boolean>;
+declare function findPrefixOffthread(code: string, theme: Theme, timeout?: number, signal?: AbortSignal): Promise<string>;
+declare function terminateWorker(): void;
+
+declare const CodeBlockNode: DefineComponent<CodeBlockNodeProps>;
+declare const MathBlockNode: DefineComponent<MathBlockNodeProps>;
+declare const MathInlineNode: DefineComponent<MathInlineNodeProps>;
+declare const MermaidBlockNode: DefineComponent<MermaidBlockNodeProps>;
+declare const InfographicBlockNode: DefineComponent<InfographicBlockNodeProps>;
+declare const D2BlockNode: DefineComponent<D2BlockNodeProps>;
+declare const Tooltip: DefineComponent<Record<string, unknown>>;
+declare const MarkdownCodeBlockNode: DefineComponent<Record<string, unknown>>;
+declare const MarkstreamVirtualTimeline: DefineComponent<MarkstreamVirtualTimelineProps<any>>;
+
+interface CustomComponents extends CustomComponents$1 {
+}
+interface MarkstreamVuePluginOptions {
+    
+    components?: Partial<CustomComponents$1>;
+    
+    defaultI18nMap?: Partial<Record<string, string>>;
+    
+    languageIconResolver?: LanguageIconResolver | null;
+    /**
+     * @deprecated Prefer setLanguageIconResolver() before app.mount().
+     *
+     * Kept for 1.x compatibility. This still mutates process-global icon
+     * resolution state, so avoid it in multi-tenant SSR apps.
+     */
+    getLanguageIcon?: LanguageIconResolver;
+    /**
+     * @deprecated Prefer setIconTheme() before app.mount().
+     *
+     * Kept for 1.x compatibility. This still mutates process-global icon
+     * theme state, so avoid it in multi-tenant SSR apps.
+     */
+    iconTheme?: string;
+    /**
+     * @deprecated Prefer setInfographicLoader() before app.mount().
+     *
+     * Kept for 1.x compatibility.
+     */
+    infographicLoader?: InfographicLoader | null;
+    /**
+     * @deprecated Prefer setDefaultMathOptions() before app.mount().
+     *
+     * Kept for 1.x compatibility.
+     */
+    mathOptions?: MathOptions;
+}
+
+declare const VueRendererMarkdown: Plugin<[options?: MarkstreamVuePluginOptions]>;
+
+export { _default$v as AdmonitionNode, BackpressureOptions, _default$u as BlockquoteNode, _default$t as CheckboxNode, CodeBlockDiffAppearance, CodeBlockDiffHideUnchangedRegions, CodeBlockDiffHideUnchangedRegionsOptions, CodeBlockDiffHunkActionContext, CodeBlockDiffHunkActionKind, CodeBlockDiffHunkSide, CodeBlockDiffLineStyle, CodeBlockDiffUnchangedRegionStyle, CodeBlockMonacoLanguage, CodeBlockMonacoOptions, CodeBlockMonacoTheme, CodeBlockMonacoThemeObject, CodeBlockNode, CodeBlockNodeProps, CodeBlockPreviewPayload, CodeBlockThemeProp, CustomComponents, D2BlockNode, D2BlockNodeProps, D2Loader, _default$s as DefinitionListNode, _default$r as EmojiNode, _default$q as EmphasisNode, _default$p as FootnoteAnchorNode, _default$o as FootnoteNode, _default$n as FootnoteReferenceNode, _default$m as HardBreakNode, _HeadingNode as HeadingNode, _default$k as HighlightNode, _default$j as HtmlBlockNode, _default$i as HtmlInlineNode, IconTheme, _default$h as ImageNode, ImageNodeProps, InfographicBlockNode, InfographicBlockNodeProps, InfographicLoader, _default$g as InlineCodeNode, _default$f as InsertNode, KaTeXCDNWorkerHandle, KaTeXCDNWorkerMode, KaTeXCDNWorkerOptions, KatexLoader, LanguageIconResolver, _default$e as LinkNode, LinkNodeProps, _default$d as ListItemNode, _default$c as ListNode, MARKSTREAM_NODE_LIFECYCLE_KEY, MERMAID_DISABLED_CODE, MERMAID_WORKER_BUSY_CODE, MarkdownCodeBlockNode, MarkdownCodeBlockPreviewPayload, _NodeRenderer as MarkdownRender, MarkstreamBottomAnchor, MarkstreamCaptureVirtualStateOptions, MarkstreamHeightCache, MarkstreamHeightCacheEntry, MarkstreamMeasuredHeightCacheEntry, MarkstreamNodeLifecycle, MarkstreamOuterAnchor, MarkstreamOuterVirtualizerAdapter, MarkstreamRendererHandle, MarkstreamScrollRoot, MarkstreamScrollRootLike, MarkstreamScrollRootRef, MarkstreamScrollRootResolver, MarkstreamThreadAnchor, MarkstreamThreadVirtualState, MarkstreamTimelineItem, MarkstreamTimelineItemKey, MarkstreamViewportPriorityOptions, MarkstreamVirtualAdapterController, MarkstreamVirtualAnchor, MarkstreamVirtualConfidence, MarkstreamVirtualMarkdownProps, MarkstreamVirtualMetrics, MarkstreamVirtualPhase, MarkstreamVirtualReason, MarkstreamVirtualScrollHeightCacheOptions, MarkstreamVirtualScrollOptions, MarkstreamVirtualScrollSharedOptions, MarkstreamVirtualState, MarkstreamVirtualTimeline, MarkstreamVirtualTimelineProps, MarkstreamVisibleRange, MarkstreamVuePluginOptions, MathBlockNode, MathBlockNodeProps, MathInlineNode, MathInlineNodeProps, MermaidBlockEvent, MermaidBlockNode, MermaidBlockNodeProps, MermaidCDNWorkerHandle, MermaidCDNWorkerMode, MermaidCDNWorkerOptions, MermaidLoader, MonacoDiffEditorViewLike, MonacoDiffLineChangeLike, MonacoDisposableLike, MonacoEditorViewLike, MonacoHelpers, MonacoModelLike, MonacoModule, MonacoNamespaceLike, MonacoRuntimeOptions, NodeRendererCodeRenderer, NodeRendererDomMode, NodeRendererMode, NodeRendererProps, NodeRendererTypewriter, _default$a as ParagraphNode, _default$9 as PreCodeNode, PreCodeNodeProps, _default$8 as ReferenceNode, ShikiCodeBlockProps, SmoothMarkdownStreamController, _default$7 as StrikethroughNode, _default$6 as StrongNode, _default$5 as SubscriptNode, _default$4 as SuperscriptNode, _default$3 as TableNode, _default$2 as TextNode, _default$1 as ThematicBreakNode, ThresholdInput, Tooltip, UseMarkstreamVirtualAdapterOptions, _default as VmrContainerNode, VueRendererMarkdown, WORKER_BUSY_CODE, buildKaTeXCDNWorkerSource, buildMermaidCDNWorkerSource, canParseOffthread, clearGlobalCustomComponents, clearKaTeXWorker, clearMermaidWorker, createKaTeXWorkerFromCDN, createMermaidWorkerFromCDN, _NodeRenderer as default, defaultRByClass, disableD2, disableInfographic, disableKatex, disableMermaid, disablePerfMonitoring, enableD2, enableInfographic, enableKatex, enableMermaid, enablePerfMonitoring, estimateRByFormula, findPrefixOffthread, getCustomNodeComponents, getKaTeXBackpressureDefaults, getKaTeXWorkerLoad, getLanguageIcon, getMermaidWorkerLoad, getPerfReport, getRegisteredThemes, getUseMonaco, isCodeBlockRuntimeReady, isD2Enabled, isInfographicEnabled, isKaTeXWorkerBusy, isKatexEnabled, isMermaidEnabled, languageIconsRevision, languageMap, normalizeLanguageIdentifier, perfMonitor, preloadCodeBlockRuntime, preloadExtendedLanguageIcons, recommendNForSamples, recommendWorkerThreshold, registerIconTheme, removeCustomComponents, renderKaTeXInWorker, renderKaTeXWithBackpressure, resolveMonacoLanguageId, safeCancelRaf, safeRaf, setCustomComponents, setD2Loader, setDefaultI18nMap, setIconTheme, setInfographicLoader, setKaTeXBackpressureDefaults, setKaTeXCache, setKaTeXWorker, setKaTeXWorkerDebug, setKaTeXWorkerMaxConcurrency, setKatexLoader, setLanguageIconResolver, setMermaidLoader, setMermaidWorker, setMermaidWorkerClientDebug, setMermaidWorkerMaxConcurrency, terminateWorker, useMarkstreamNodeLifecycle, useMarkstreamVirtualAdapter, useSmoothMarkdownStream, waitForKaTeXWorkerSlot };

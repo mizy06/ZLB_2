@@ -1,0 +1,4 @@
+declare function safeRaf(cb: FrameRequestCallback): any;
+declare function safeCancelRaf(id: number | null): void;
+
+export { safeCancelRaf, safeRaf };

@@ -136,10 +136,7 @@ class MultiImageClientTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(content[0]["text"], "vision_id=slide_0001")
         self.assertEqual(content[2]["text"], "vision_id=slide_0002")
-        self.assertEqual(
-            content[4]["cache_control"],
-            {"type": "ephemeral"},
-        )
+        self.assertNotIn("cache_control", content[4])
         self.assertEqual(messages[2]["content"], "review current graph")
 
     async def test_cached_image_prefix_is_stable_across_dynamic_tasks(self):

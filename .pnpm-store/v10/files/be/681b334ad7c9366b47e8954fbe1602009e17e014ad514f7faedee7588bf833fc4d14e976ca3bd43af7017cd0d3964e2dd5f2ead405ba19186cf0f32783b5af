@@ -1,0 +1,2455 @@
+//#region src/utils/highlighter-revision.ts
+const highlighterRevisions = /* @__PURE__ */ new WeakMap();
+function getHighlighterRevision(highlighter$1) {
+	return highlighterRevisions.get(highlighter$1) ?? 0;
+}
+function bumpHighlighterRevision(highlighter$1) {
+	const next = getHighlighterRevision(highlighter$1) + 1;
+	highlighterRevisions.set(highlighter$1, next);
+	return next;
+}
+function clearHighlighterRevision(highlighter$1) {
+	highlighterRevisions.delete(highlighter$1);
+}
+
+//#endregion
+//#region src/utils/html-cache.ts
+const DEFAULT_HTML_CACHE_SIZE = 30;
+const perHighlighterCache$1 = /* @__PURE__ */ new WeakMap();
+function clearHtmlCache(highlighter$1) {
+	perHighlighterCache$1.delete(highlighter$1);
+}
+function getCache$1(highlighter$1) {
+	let cache = perHighlighterCache$1.get(highlighter$1);
+	if (!cache) {
+		cache = /* @__PURE__ */ new Map();
+		perHighlighterCache$1.set(highlighter$1, cache);
+	}
+	return cache;
+}
+function getLimit(opts) {
+	return typeof opts?.htmlCacheMaxEntries === "number" ? Math.max(0, Math.floor(opts.htmlCacheMaxEntries)) : DEFAULT_HTML_CACHE_SIZE;
+}
+function getCachedHtml(highlighter$1, key, opts) {
+	const cacheEnabled = opts?.htmlCache !== false;
+	const limit = getLimit(opts);
+	if (!cacheEnabled || limit <= 0) return void 0;
+	const cache = getCache$1(highlighter$1);
+	const cached = cache.get(key);
+	if (cached) {
+		cache.delete(key);
+		cache.set(key, cached);
+	}
+	return cached;
+}
+function setCachedHtml(highlighter$1, key, html, opts) {
+	const cacheEnabled = opts?.htmlCache !== false;
+	const limit = getLimit(opts);
+	if (!cacheEnabled || limit <= 0) return;
+	const cache = getCache$1(highlighter$1);
+	cache.set(key, html);
+	if (cache.size > limit) {
+		const firstKey = cache.keys().next().value;
+		if (firstKey !== void 0) cache.delete(firstKey);
+	}
+}
+
+//#endregion
+//#region src/utils/token-cache.ts
+const DEFAULT_TOKEN_CACHE_SIZE = 50;
+const perHighlighterCache = /* @__PURE__ */ new WeakMap();
+function getCache(highlighter$1) {
+	let cache = perHighlighterCache.get(highlighter$1);
+	if (!cache) {
+		cache = /* @__PURE__ */ new Map();
+		perHighlighterCache.set(highlighter$1, cache);
+	}
+	return cache;
+}
+function clearTokenCache(highlighter$1) {
+	perHighlighterCache.delete(highlighter$1);
+}
+function getTokenLines(highlighter$1, code, lang, theme, opts) {
+	const cacheEnabled = opts?.tokenCache !== false;
+	const limit = typeof opts?.tokenCacheMaxEntries === "number" ? Math.max(0, Math.floor(opts.tokenCacheMaxEntries)) : DEFAULT_TOKEN_CACHE_SIZE;
+	const anyHl = highlighter$1;
+	const getTokens = () => {
+		if (typeof anyHl.codeToThemedTokens === "function") return anyHl.codeToThemedTokens(code, lang, theme);
+		if (typeof anyHl.codeToTokens === "function") return anyHl.codeToTokens(code, {
+			lang,
+			theme
+		}).tokens;
+		throw new TypeError("Highlighter does not support token APIs: codeToThemedTokens/codeToTokens");
+	};
+	if (!cacheEnabled || limit <= 0) return getTokens();
+	const cache = getCache(highlighter$1);
+	const key = JSON.stringify([
+		"stream-markdown-token-v2",
+		getHighlighterRevision(highlighter$1),
+		lang,
+		theme,
+		code
+	]);
+	const cached = cache.get(key);
+	if (cached) {
+		cache.delete(key);
+		cache.set(key, cached);
+		return cached;
+	}
+	const tokens = getTokens();
+	cache.set(key, tokens);
+	if (cache.size > limit) {
+		const firstKey = cache.keys().next().value;
+		if (firstKey !== void 0) cache.delete(firstKey);
+	}
+	return tokens;
+}
+
+//#endregion
+//#region src/utils/highlight.ts
+const defaultLanguages = [
+	"jsx",
+	"tsx",
+	"vue",
+	"csharp",
+	"python",
+	"java",
+	"c",
+	"cpp",
+	"rust",
+	"go",
+	"powershell",
+	"sql",
+	"json",
+	"html",
+	"javascript",
+	"typescript",
+	"css",
+	"markdown",
+	"xml",
+	"yaml",
+	"toml",
+	"dockerfile",
+	"kotlin",
+	"objective-c",
+	"objective-cpp",
+	"php",
+	"ruby",
+	"scala",
+	"svelte",
+	"swift",
+	"erlang",
+	"angular-html",
+	"angular-ts",
+	"dart",
+	"lua",
+	"mermaid",
+	"cmake",
+	"nginx"
+];
+const defaultThemes = ["vitesse-dark", "vitesse-light"];
+let highlighter = null;
+let highlighterPromise = null;
+const pendingLangs = /* @__PURE__ */ new Set();
+let pendingThemes = [];
+const loadedLangs = /* @__PURE__ */ new Set();
+const loadedBundledThemes = /* @__PURE__ */ new Set();
+const loadedObjectThemes = /* @__PURE__ */ new WeakMap();
+const loadedObjectThemesById = /* @__PURE__ */ new Map();
+let applyPromise = Promise.resolve();
+let highlighterGeneration = 0;
+const highlighterMutationNames = ["loadLanguage", "loadTheme"];
+const wrappedHighlighterMutations = /* @__PURE__ */ new WeakMap();
+function invalidateHighlighterCaches(instance) {
+	bumpHighlighterRevision(instance);
+	clearTokenCache(instance);
+	clearHtmlCache(instance);
+}
+function getHighlighterMutation(instance, name) {
+	const original = wrappedHighlighterMutations.get(instance)?.[name];
+	if (original) return original;
+	const current = instance[name];
+	return typeof current === "function" ? current : void 0;
+}
+function hasHighlighterMutation(instance, name) {
+	return !!getHighlighterMutation(instance, name);
+}
+async function callHighlighterMutation(instance, name, ...args) {
+	const mutation = getHighlighterMutation(instance, name);
+	if (!mutation) return;
+	await mutation.apply(instance, args);
+}
+function markLoadedAfterHighlighterMutation(instance, name, args) {
+	if (highlighter !== instance) return;
+	if (name === "loadLanguage") {
+		for (const lang of args) if (typeof lang === "string") loadedLangs.add(lang);
+		return;
+	}
+	for (const theme of args) markThemeLoaded(theme);
+}
+function completeHighlighterMutation(instance, name, args) {
+	markLoadedAfterHighlighterMutation(instance, name, args);
+	invalidateHighlighterCaches(instance);
+}
+function wrapHighlighterMutationMethods(instance) {
+	if (wrappedHighlighterMutations.has(instance)) return;
+	const originals = {};
+	const anyHl = instance;
+	for (const name of highlighterMutationNames) {
+		const original = anyHl[name];
+		if (typeof original !== "function") continue;
+		originals[name] = original;
+		anyHl[name] = (...args) => {
+			let result;
+			try {
+				result = original.apply(instance, args);
+			} catch (error) {
+				invalidateHighlighterCaches(instance);
+				throw error;
+			}
+			if (result && typeof result.then === "function") return result.then((value) => {
+				completeHighlighterMutation(instance, name, args);
+				return value;
+			}, (error) => {
+				invalidateHighlighterCaches(instance);
+				throw error;
+			});
+			completeHighlighterMutation(instance, name, args);
+			return result;
+		};
+	}
+	wrappedHighlighterMutations.set(instance, originals);
+}
+function isCurrentHighlighterInstance(instance, generation) {
+	return highlighterGeneration === generation && highlighter === instance;
+}
+function disposeHighlighterInstance(instance) {
+	try {
+		const result = instance.dispose?.();
+		if (result && typeof result.catch === "function") result.catch(() => void 0);
+	} catch {}
+}
+function getThemeId(theme) {
+	if (typeof theme === "string") return theme;
+	try {
+		const name = theme?.name;
+		return typeof name === "string" ? name : void 0;
+	} catch {
+		return;
+	}
+}
+function isThemeObject(theme) {
+	return !!theme && typeof theme === "object";
+}
+function themeFingerprintMarker(type, value) {
+	return value === void 0 ? { __streamMarkdownType: type } : {
+		__streamMarkdownType: type,
+		value
+	};
+}
+function normalizeThemeFingerprint(value, seen = /* @__PURE__ */ new WeakSet()) {
+	if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : themeFingerprintMarker("number", String(value));
+	if (typeof value === "undefined") return themeFingerprintMarker("undefined");
+	if (typeof value === "bigint") return themeFingerprintMarker("bigint", value.toString());
+	if (typeof value === "symbol") return themeFingerprintMarker("symbol", String(value));
+	if (typeof value === "function") return themeFingerprintMarker("function", value.name || "");
+	if (typeof value !== "object") return themeFingerprintMarker(typeof value);
+	if (seen.has(value)) return themeFingerprintMarker("circular");
+	seen.add(value);
+	try {
+		if (Array.isArray(value)) return value.map((item) => normalizeThemeFingerprint(item, seen));
+		const input = value;
+		const output = {};
+		for (const key of Object.keys(input).sort()) output[key] = normalizeThemeFingerprint(input[key], seen);
+		return output;
+	} finally {
+		seen.delete(value);
+	}
+}
+function getThemeFingerprint(theme) {
+	if (!isThemeObject(theme)) return void 0;
+	try {
+		return JSON.stringify(normalizeThemeFingerprint(theme));
+	} catch {
+		return;
+	}
+}
+function getLoadedObjectThemeFingerprint(theme) {
+	if (!isThemeObject(theme)) return void 0;
+	const id = getThemeId(theme);
+	const entry = id ? loadedObjectThemesById.get(id) : loadedObjectThemes.get(theme);
+	return entry?.generation === highlighterGeneration ? entry.fingerprint : void 0;
+}
+function isThemeLoaded(theme) {
+	if (typeof theme === "string") return loadedBundledThemes.has(theme);
+	const fingerprint = getThemeFingerprint(theme);
+	return fingerprint !== void 0 && getLoadedObjectThemeFingerprint(theme) === fingerprint;
+}
+function markThemeLoaded(theme) {
+	if (typeof theme === "string") {
+		loadedBundledThemes.add(theme);
+		loadedObjectThemesById.delete(theme);
+		return;
+	}
+	if (!isThemeObject(theme)) return;
+	const id = getThemeId(theme);
+	const fingerprint = getThemeFingerprint(theme);
+	if (fingerprint !== void 0) {
+		const entry = {
+			generation: highlighterGeneration,
+			fingerprint
+		};
+		if (id) loadedObjectThemesById.set(id, entry);
+		else loadedObjectThemes.set(theme, entry);
+	}
+	if (id) loadedBundledThemes.delete(id);
+}
+function markInitialLoaded(langs, themes) {
+	for (const lang of langs) loadedLangs.add(lang);
+	for (const theme of themes) markThemeLoaded(theme);
+}
+function removeInitiallyLoadedPendingThemes(themes) {
+	const stringThemes = /* @__PURE__ */ new Set();
+	const objectThemes = /* @__PURE__ */ new Set();
+	for (const theme of themes) {
+		if (typeof theme === "string") {
+			stringThemes.add(theme);
+			continue;
+		}
+		if (isThemeObject(theme)) objectThemes.add(theme);
+	}
+	pendingThemes = pendingThemes.filter((theme) => {
+		if (typeof theme === "string") return !stringThemes.has(theme);
+		return !(isThemeObject(theme) && objectThemes.has(theme));
+	});
+}
+function addPendingLangs(langs) {
+	for (const l of langs) if (!loadedLangs.has(l)) pendingLangs.add(l);
+}
+function findPendingThemeIndexById(id) {
+	return pendingThemes.findIndex((theme) => getThemeId(theme) === id);
+}
+function hasPendingThemeObject(theme) {
+	return pendingThemes.includes(theme);
+}
+function addPendingThemes(themes) {
+	for (const theme of themes) {
+		const id = getThemeId(theme);
+		if (id) {
+			const existingIndex = findPendingThemeIndexById(id);
+			if (existingIndex !== -1) {
+				if (isThemeLoaded(theme)) pendingThemes.splice(existingIndex, 1);
+				else pendingThemes[existingIndex] = theme;
+				continue;
+			}
+		} else if (isThemeObject(theme) && hasPendingThemeObject(theme)) continue;
+		if (isThemeLoaded(theme)) continue;
+		pendingThemes.push(theme);
+	}
+}
+function requeuePendingThemes(themes) {
+	for (const theme of themes) {
+		if (isThemeLoaded(theme)) continue;
+		const id = getThemeId(theme);
+		if (id && findPendingThemeIndexById(id) !== -1) continue;
+		if (!id && isThemeObject(theme) && hasPendingThemeObject(theme)) continue;
+		pendingThemes.push(theme);
+	}
+}
+async function loadPendingIntoHighlighter(targetHighlighter, generation) {
+	if (!isCurrentHighlighterInstance(targetHighlighter, generation)) return;
+	const langs = Array.from(pendingLangs).filter((l) => !loadedLangs.has(l));
+	const themes = pendingThemes.filter((t) => !isThemeLoaded(t));
+	pendingLangs.clear();
+	pendingThemes = [];
+	let didMutateHighlighter = false;
+	let didAttemptHighlighterMutation = false;
+	let invalidatedAfterFailure = false;
+	let langIndex = 0;
+	let themeIndex = 0;
+	try {
+		if (langs.length > 0 && hasHighlighterMutation(targetHighlighter, "loadLanguage")) for (; langIndex < langs.length; langIndex++) {
+			const l = langs[langIndex];
+			if (loadedLangs.has(l)) continue;
+			didAttemptHighlighterMutation = true;
+			await callHighlighterMutation(targetHighlighter, "loadLanguage", l);
+			if (!isCurrentHighlighterInstance(targetHighlighter, generation)) return;
+			loadedLangs.add(l);
+			didMutateHighlighter = true;
+		}
+		if (themes.length > 0 && hasHighlighterMutation(targetHighlighter, "loadTheme")) for (; themeIndex < themes.length; themeIndex++) {
+			const t = themes[themeIndex];
+			if (isThemeLoaded(t)) continue;
+			didAttemptHighlighterMutation = true;
+			await callHighlighterMutation(targetHighlighter, "loadTheme", t);
+			if (!isCurrentHighlighterInstance(targetHighlighter, generation)) return;
+			markThemeLoaded(t);
+			didMutateHighlighter = true;
+		}
+	} catch (error) {
+		if (!isCurrentHighlighterInstance(targetHighlighter, generation)) return;
+		if (didAttemptHighlighterMutation) {
+			invalidateHighlighterCaches(targetHighlighter);
+			invalidatedAfterFailure = true;
+		}
+		const remainingLangs = langs.slice(langIndex);
+		const remainingThemes = themes.slice(themeIndex);
+		for (const l of remainingLangs) if (!loadedLangs.has(l)) pendingLangs.add(l);
+		requeuePendingThemes(remainingThemes);
+		throw error;
+	} finally {
+		if (didMutateHighlighter && !invalidatedAfterFailure && isCurrentHighlighterInstance(targetHighlighter, generation)) invalidateHighlighterCaches(targetHighlighter);
+	}
+}
+async function applyPending(targetHighlighter, generation = highlighterGeneration) {
+	const run = applyPromise.catch(() => void 0).then(() => {
+		if (!isCurrentHighlighterInstance(targetHighlighter, generation)) return;
+		return loadPendingIntoHighlighter(targetHighlighter, generation);
+	});
+	applyPromise = run.catch(() => void 0);
+	return run;
+}
+async function registerHighlight(options = {}) {
+	const langs = !options.langs || options.langs.length === 0 ? defaultLanguages : options.langs;
+	const themes = !options.themes || options.themes.length === 0 ? defaultThemes : options.themes;
+	addPendingLangs(langs);
+	addPendingThemes(themes);
+	const requestGeneration = highlighterGeneration;
+	if (highlighter) {
+		const activeHighlighter = highlighter;
+		await applyPending(activeHighlighter, requestGeneration);
+		if (requestGeneration !== highlighterGeneration || highlighter !== activeHighlighter) return registerHighlight(options);
+		return activeHighlighter;
+	}
+	if (!highlighterPromise) {
+		const creationGeneration = highlighterGeneration;
+		const trackedPromise = (async () => {
+			const { createHighlighter } = await import("shiki");
+			const initialThemes = pendingThemes.length > 0 ? pendingThemes.slice() : defaultThemes;
+			const initialLangs = pendingLangs.size > 0 ? Array.from(pendingLangs) : defaultLanguages;
+			const h$1 = await createHighlighter({
+				themes: initialThemes,
+				langs: initialLangs
+			});
+			if (creationGeneration !== highlighterGeneration) {
+				disposeHighlighterInstance(h$1);
+				return h$1;
+			}
+			wrapHighlighterMutationMethods(h$1);
+			markInitialLoaded(initialLangs, initialThemes);
+			for (const lang of initialLangs) pendingLangs.delete(lang);
+			removeInitiallyLoadedPendingThemes(initialThemes);
+			highlighter = h$1;
+			await applyPending(h$1, creationGeneration);
+			return h$1;
+		})().finally(() => {
+			if (highlighterPromise === trackedPromise) highlighterPromise = null;
+		});
+		highlighterPromise = trackedPromise;
+	}
+	const h = await highlighterPromise;
+	if (requestGeneration !== highlighterGeneration) return registerHighlight(options);
+	await applyPending(h, requestGeneration);
+	if (requestGeneration !== highlighterGeneration || highlighter !== h) return registerHighlight(options);
+	return h;
+}
+function disposeHighlighter() {
+	highlighterGeneration++;
+	const currentHighlighter = highlighter;
+	highlighter = null;
+	highlighterPromise = null;
+	if (currentHighlighter) {
+		clearHighlighterRevision(currentHighlighter);
+		clearTokenCache(currentHighlighter);
+		clearHtmlCache(currentHighlighter);
+		disposeHighlighterInstance(currentHighlighter);
+	}
+	pendingLangs.clear();
+	pendingThemes = [];
+	loadedLangs.clear();
+	loadedBundledThemes.clear();
+	loadedObjectThemesById.clear();
+	applyPromise = Promise.resolve();
+}
+
+//#endregion
+//#region src/utils/token-style.ts
+const SIMPLE_COLOR_RE = /^#(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i;
+const COLOR_KEYWORD_RE = /^[a-z][a-z0-9-]*$/i;
+const CSS_VAR_NAME_RE = /^--[\w-]+$/;
+const SAFE_CSS_FUNCTION_NAMES = new Set([
+	"rgb",
+	"rgba",
+	"hsl",
+	"hsla",
+	"hwb",
+	"lab",
+	"lch",
+	"oklab",
+	"oklch",
+	"color",
+	"color-mix",
+	"light-dark",
+	"var",
+	"calc",
+	"min",
+	"max",
+	"clamp"
+]);
+const CSS_FUNCTION_NAME_RE = /([a-z][\w-]*)\s*\(/gi;
+function fontStyleToCss(style) {
+	if (style == null || !Number.isFinite(style) || style <= 0) return "";
+	const parts = [];
+	if (style & 1) parts.push("font-style: italic;");
+	if (style & 2) parts.push("font-weight: 600;");
+	if (style & 4) parts.push("text-decoration: underline; text-underline-offset: 0.15em;");
+	return parts.join(" ");
+}
+const TOKEN_CLASS_CACHE = /* @__PURE__ */ new Map();
+const TOKEN_STYLE_CACHE = /* @__PURE__ */ new Map();
+const TOKEN_STYLE_BY_CLASS = /* @__PURE__ */ new Map();
+const TOKEN_STYLE_RULES = [];
+const TOKEN_STYLE_SELECTOR_SPECIFICITY = 3;
+let tokenStyleGeneration = 0;
+let tokenStyleSheetText = "";
+let tokenStyleSheetTextGeneration = -1;
+const TOKEN_STYLE_ROOTS = /* @__PURE__ */ new WeakMap();
+function hasUnsafeCssValueChar(value) {
+	for (let i = 0; i < value.length; i++) {
+		const code = value.charCodeAt(i);
+		if (code <= 31 || code === 127) return true;
+		if (`!;"'{}<>\\`.includes(value[i])) return true;
+	}
+	return false;
+}
+function isSafeCssColorSyntax(value) {
+	if (!value || hasUnsafeCssValueChar(value)) return false;
+	if (/url\s*\(|\/\*|@/i.test(value)) return false;
+	if (!hasBalancedParentheses(value)) return false;
+	return hasOnlyAllowedCssFunctions(value);
+}
+function hasBalancedParentheses(value) {
+	let depth = 0;
+	for (let i = 0; i < value.length; i++) {
+		const ch = value[i];
+		if (ch === "(") {
+			depth++;
+			continue;
+		}
+		if (ch === ")") {
+			depth--;
+			if (depth < 0) return false;
+		}
+	}
+	return depth === 0;
+}
+function hasOnlyAllowedCssFunctions(value) {
+	CSS_FUNCTION_NAME_RE.lastIndex = 0;
+	let match;
+	while (match = CSS_FUNCTION_NAME_RE.exec(value)) {
+		const fn = match[1].toLowerCase();
+		if (!SAFE_CSS_FUNCTION_NAMES.has(fn)) return false;
+	}
+	return true;
+}
+function isSafeTopLevelCssFunction(value) {
+	const open = value.indexOf("(");
+	if (open <= 0 || !value.endsWith(")")) return false;
+	const name = value.slice(0, open).trim().toLowerCase();
+	if (!SAFE_CSS_FUNCTION_NAMES.has(name)) return false;
+	if (name !== "var") return true;
+	const body = value.slice(open + 1, -1).trim();
+	const commaIndex = body.indexOf(",");
+	const varName = (commaIndex === -1 ? body : body.slice(0, commaIndex)).trim();
+	return CSS_VAR_NAME_RE.test(varName);
+}
+function isSafeCssColorForSsr(value) {
+	return SIMPLE_COLOR_RE.test(value) || COLOR_KEYWORD_RE.test(value) || isSafeTopLevelCssFunction(value);
+}
+function normalizeCssColor(color) {
+	if (typeof color !== "string") return "";
+	const value = color.trim();
+	if (!value || !isSafeCssColorSyntax(value)) return "";
+	return isSafeCssColorForSsr(value) ? value : "";
+}
+function tokenStyle(color, fontStyle) {
+	const normalizedColor = normalizeCssColor(color);
+	const cacheKey = `${normalizedColor}|${fontStyle ?? 0}`;
+	const cached = TOKEN_STYLE_CACHE.get(cacheKey);
+	if (cached !== void 0) return cached;
+	const style = `${normalizedColor ? `color: ${normalizedColor};` : ""}${fontStyleToCss(fontStyle)}`;
+	TOKEN_STYLE_CACHE.set(cacheKey, style);
+	return style;
+}
+function escapeAttr$1(value) {
+	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+function getTokenStyleSignature(color, fontStyle) {
+	return tokenStyle(color, fontStyle);
+}
+function hashTokenStyle(style) {
+	let h1 = 2166136261;
+	let h2 = 5381;
+	for (let i = 0; i < style.length; i++) {
+		const code = style.charCodeAt(i);
+		h1 ^= code;
+		h1 = Math.imul(h1, 16777619);
+		h2 = Math.imul(h2, 33) ^ code;
+	}
+	return `${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}`;
+}
+function tokenClassSelector(className) {
+	return Array.from({ length: TOKEN_STYLE_SELECTOR_SPECIFICITY }, () => `.${className}`).join("");
+}
+function getTokenClassNameForStyle(style) {
+	if (!style) return "";
+	const cached = TOKEN_CLASS_CACHE.get(style);
+	if (cached) return cached;
+	const baseClassName = `smd-token-${hashTokenStyle(style)}`;
+	let className = baseClassName;
+	let suffix = 1;
+	while (true) {
+		const existingStyle = TOKEN_STYLE_BY_CLASS.get(className);
+		if (!existingStyle) {
+			TOKEN_CLASS_CACHE.set(style, className);
+			TOKEN_STYLE_BY_CLASS.set(className, style);
+			TOKEN_STYLE_RULES.push(`${tokenClassSelector(className)}{${style}}`);
+			tokenStyleGeneration++;
+			return className;
+		}
+		if (existingStyle === style) {
+			TOKEN_CLASS_CACHE.set(style, className);
+			return className;
+		}
+		className = `${baseClassName}-${suffix++}`;
+	}
+}
+function getTokenInlineStyleAttr(color, fontStyle) {
+	const style = tokenStyle(color, fontStyle);
+	if (!style) return "";
+	return ` style="${escapeAttr$1(style)}"`;
+}
+function getTokenClassAttr(color, fontStyle) {
+	const style = tokenStyle(color, fontStyle);
+	if (!style) return "";
+	const className = getTokenClassNameForStyle(style);
+	return className ? ` class="${className}"` : "";
+}
+function getTokenStyleAttr(color, fontStyle, mode = "inline") {
+	if (mode === "class") return getTokenClassAttr(color, fontStyle);
+	return getTokenInlineStyleAttr(color, fontStyle);
+}
+function applyTokenStyleToElement(element, color, fontStyle, mode = "inline") {
+	const style = tokenStyle(color, fontStyle);
+	if (!style) return;
+	if (mode === "class") {
+		const className = getTokenClassNameForStyle(style);
+		if (className) {
+			element.className = className;
+			return;
+		}
+		return;
+	}
+	element.setAttribute("style", style);
+}
+function isDocumentRoot(node) {
+	return node.nodeType === 9;
+}
+function isShadowRoot(node) {
+	return node.nodeType === 11 && "host" in node;
+}
+function resolveStyleRoot(target) {
+	if (target === null) return null;
+	if (target !== void 0) {
+		if (isDocumentRoot(target) || isShadowRoot(target)) return target;
+		if (target.isConnected === false) return null;
+		const root = typeof target.getRootNode === "function" ? target.getRootNode() : null;
+		if (root && (isDocumentRoot(root) || isShadowRoot(root))) return root;
+		return target.ownerDocument ?? null;
+	}
+	if (typeof document !== "undefined") return document;
+	return null;
+}
+function canUseTokenStyleClasses(target) {
+	return resolveStyleRoot(target) != null;
+}
+function resolveTokenStyleMode(requested, target, defaultMode = "inline") {
+	const mode = requested ?? defaultMode;
+	if (mode === "auto") return canUseTokenStyleClasses(target) ? "class" : "inline";
+	if (mode === "class") return canUseTokenStyleClasses(target) ? "class" : "inline";
+	return "inline";
+}
+function getRootDocument(root) {
+	return isDocumentRoot(root) ? root : root.ownerDocument;
+}
+function appendStyleElement(root, styleElement) {
+	if (isDocumentRoot(root)) {
+		(root.head ?? root.documentElement).appendChild(styleElement);
+		return;
+	}
+	root.appendChild(styleElement);
+}
+function isNodeInDocument(root, node) {
+	if (typeof node.getRootNode === "function") return node.getRootNode() === root;
+	const contains = root.contains;
+	if (typeof contains === "function") return contains.call(root, node);
+	return node.ownerDocument === root && node.isConnected === true;
+}
+function isStyleElementMounted(root, styleElement) {
+	if (styleElement.ownerDocument !== getRootDocument(root)) return false;
+	if (isDocumentRoot(root)) return isNodeInDocument(root, styleElement);
+	return styleElement.parentNode === root;
+}
+function getTokenStyleSheetText() {
+	if (tokenStyleSheetTextGeneration !== tokenStyleGeneration) {
+		tokenStyleSheetText = TOKEN_STYLE_RULES.join("\n");
+		tokenStyleSheetTextGeneration = tokenStyleGeneration;
+	}
+	return tokenStyleSheetText;
+}
+function ensureTokenStyleSheet(target) {
+	if (TOKEN_STYLE_RULES.length === 0) return;
+	const root = resolveStyleRoot(target);
+	if (!root) return;
+	let state = TOKEN_STYLE_ROOTS.get(root);
+	if (!state || !isStyleElementMounted(root, state.element)) {
+		const styleElement = getRootDocument(root).createElement("style");
+		styleElement.dataset.streamMarkdownTokenStyles = "";
+		appendStyleElement(root, styleElement);
+		state = {
+			element: styleElement,
+			generation: -1
+		};
+		TOKEN_STYLE_ROOTS.set(root, state);
+	}
+	const sheetText = getTokenStyleSheetText();
+	if (state.generation === tokenStyleGeneration && state.element.textContent === sheetText) return;
+	state.element.textContent = sheetText;
+	state.generation = tokenStyleGeneration;
+}
+
+//#endregion
+//#region src/utils/shiki-render.ts
+function countLines$1(code) {
+	let count = 1;
+	for (let i = 0; i < code.length; i++) if (code.charCodeAt(i) === 10) count++;
+	return count;
+}
+function normalizeTokenLinesForCode$1(tokenLines, code, cloneLines = false) {
+	const expected = countLines$1(code);
+	let lines = cloneLines ? tokenLines.map((line) => line.slice()) : tokenLines;
+	if (lines.length > expected) lines = lines.slice(0, expected);
+	if (lines.length < expected) lines = lines.concat(Array.from({ length: expected - lines.length }, () => []));
+	return lines;
+}
+function escapeHtml$1(str) {
+	return str.replace(/\r/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escapeAttr(str) {
+	return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function normalizeStartingLineNumber$1(value) {
+	if (typeof value !== "number" || !Number.isFinite(value)) return 1;
+	return Math.trunc(value);
+}
+function getRenderStyleRoot(opts) {
+	if (opts.styleRoot !== void 0) return opts.styleRoot;
+	return typeof document !== "undefined" ? document : void 0;
+}
+function renderCodeWithTokens(highlighter$1, code, opts) {
+	const { lang, theme, preClass = "shiki", codeClass = "", lineClass = "line", showLineNumbers = false, startingLineNumber: rawStartingLineNumber = 1 } = opts;
+	const startingLineNumber = normalizeStartingLineNumber$1(rawStartingLineNumber);
+	const styleRoot = getRenderStyleRoot(opts);
+	const tokenStyleMode = resolveTokenStyleMode(opts.tokenStyleMode, styleRoot, "inline");
+	let bg;
+	try {
+		bg = (highlighter$1.getTheme?.(theme))?.bg;
+	} catch {}
+	const safeBg = normalizeCssColor(bg);
+	const cacheKey = JSON.stringify([
+		"stream-markdown-html-v3",
+		getHighlighterRevision(highlighter$1),
+		tokenStyleMode,
+		safeBg,
+		lang,
+		theme,
+		preClass,
+		codeClass,
+		lineClass,
+		showLineNumbers,
+		startingLineNumber,
+		code
+	]);
+	const canUseHtmlCache = opts.tokenLines == null;
+	if (canUseHtmlCache) {
+		const cachedHtml = getCachedHtml(highlighter$1, cacheKey, {
+			htmlCache: opts.htmlCache,
+			htmlCacheMaxEntries: opts.htmlCacheMaxEntries
+		});
+		if (cachedHtml) {
+			if (tokenStyleMode === "class") ensureTokenStyleSheet(styleRoot);
+			return cachedHtml;
+		}
+	}
+	const lines = opts.tokenLines ? normalizeTokenLinesForCode$1(opts.tokenLines, code, true) : normalizeTokenLinesForCode$1(getTokenLines(highlighter$1, code, lang, theme, {
+		tokenCache: opts.tokenCache,
+		tokenCacheMaxEntries: opts.tokenCacheMaxEntries
+	}), code);
+	let lineNumber = startingLineNumber;
+	const lineHtml = lines.map((line) => {
+		const tokensHtml = tokenStyleMode === "class" ? (() => {
+			let html$1 = "";
+			let i = 0;
+			while (i < line.length) {
+				const t = line[i];
+				const styleAttr = getTokenStyleAttr(t.color, t.fontStyle, tokenStyleMode);
+				let content = t.content;
+				i++;
+				while (i < line.length) {
+					const t2 = line[i];
+					if (getTokenStyleAttr(t2.color, t2.fontStyle, tokenStyleMode) !== styleAttr) break;
+					content += t2.content;
+					i++;
+				}
+				html$1 += `<span${styleAttr}>${escapeHtml$1(content)}</span>`;
+			}
+			return html$1;
+		})() : line.map((t) => {
+			return `<span${getTokenStyleAttr(t.color, t.fontStyle, tokenStyleMode)}>${escapeHtml$1(t.content)}</span>`;
+		}).join("");
+		const ln = showLineNumbers ? `<span class="line-number" data-line="${lineNumber++}"></span>` : "";
+		return `<span class="${escapeAttr(lineClass)}">${ln}${tokensHtml}</span>`;
+	}).join("\n");
+	const preStyle = safeBg ? ` style="background-color: ${escapeAttr(safeBg)};"` : "";
+	const html = `<pre class="${escapeAttr(preClass)}"${preStyle}><code${codeClass ? ` class="${escapeAttr(codeClass)}"` : ""}>${lineHtml}</code></pre>`;
+	if (tokenStyleMode === "class") ensureTokenStyleSheet(styleRoot);
+	if (canUseHtmlCache) setCachedHtml(highlighter$1, cacheKey, html, {
+		htmlCache: opts.htmlCache,
+		htmlCacheMaxEntries: opts.htmlCacheMaxEntries
+	});
+	return html;
+}
+
+//#endregion
+//#region src/utils/incremental-tokens.ts
+const RENDER_SIGNATURES = /* @__PURE__ */ new WeakMap();
+const LINE_SIGNATURES = /* @__PURE__ */ new WeakMap();
+const LINE_DOM_HTML = /* @__PURE__ */ new WeakMap();
+const LAST_CODE = /* @__PURE__ */ new WeakMap();
+const CODE_DOM_HTML = /* @__PURE__ */ new WeakMap();
+function countLines(code) {
+	let count = 1;
+	for (let i = 0; i < code.length; i++) if (code.charCodeAt(i) === 10) count++;
+	return count;
+}
+function normalizeTokenLinesForCode(tokenLines, code, cloneLines = false) {
+	const expected = countLines(code);
+	let lines = cloneLines ? tokenLines.map((line) => line.slice()) : tokenLines;
+	if (lines.length > expected) lines = lines.slice(0, expected);
+	if (lines.length < expected) lines = lines.concat(Array.from({ length: expected - lines.length }, () => []));
+	return lines;
+}
+function cloneTokenLines(tokenLines) {
+	return tokenLines?.map((line) => line.map((token) => ({ ...token })));
+}
+function normalizeStartingLineNumber(value) {
+	if (typeof value !== "number" || !Number.isFinite(value)) return 1;
+	return Math.trunc(value);
+}
+function estimateNodeCost(code) {
+	const lineCount = countLines(code);
+	const estTokenSpans = Math.ceil(code.length / 6);
+	return Math.min(8e3, lineCount + estTokenSpans);
+}
+function normalizeDelayMs(value) {
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+	return value;
+}
+function getIdleTimeRemaining(deadline, fallback = 50) {
+	if (typeof deadline?.timeRemaining !== "function") return fallback;
+	const value = deadline.timeRemaining();
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+function normalizeRenderedContent(str) {
+	return str.replace(/\r/g, "");
+}
+function escapeHtml(str) {
+	return normalizeRenderedContent(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function renderSignature(options) {
+	return JSON.stringify([
+		options.lang,
+		options.theme,
+		options.backgroundColor,
+		options.highlighterRevision,
+		options.tokenStyleMode,
+		options.preClass,
+		options.codeClass,
+		options.lineClass,
+		options.showLineNumbers,
+		options.startingLineNumber
+	]);
+}
+function getThemeBackgroundColor(highlighter$1, theme) {
+	try {
+		const themeObj = highlighter$1.getTheme?.(theme);
+		return normalizeCssColor(themeObj?.bg);
+	} catch {
+		return "";
+	}
+}
+function getClassAttribute(el) {
+	return el.getAttribute("class") ?? "";
+}
+function expectedPreStyle(backgroundColor) {
+	return backgroundColor ? `background-color: ${backgroundColor};` : "";
+}
+function normalizeInlineStyle(ownerDocument, styleText) {
+	if (!styleText) return "";
+	const el = ownerDocument.createElement("pre");
+	el.setAttribute("style", styleText);
+	return el.style.cssText.trim();
+}
+function hasExpectedPreStyle(preEl, backgroundColor) {
+	const actual = preEl.getAttribute("style") ?? "";
+	const expected = expectedPreStyle(backgroundColor);
+	if (actual === expected) return true;
+	return normalizeInlineStyle(preEl.ownerDocument, actual) === normalizeInlineStyle(preEl.ownerDocument, expected);
+}
+function hasExpectedRenderedShell(container, codeEl, options) {
+	const preEl = codeEl.parentElement;
+	return !!preEl && preEl.tagName.toLowerCase() === "pre" && preEl.parentElement === container && container.childNodes.length === 1 && container.firstChild === preEl && preEl.childNodes.length === 1 && preEl.firstChild === codeEl && getClassAttribute(preEl) === options.preClass && getClassAttribute(codeEl) === options.codeClass && hasExpectedPreStyle(preEl, options.backgroundColor);
+}
+function clearContainerRenderState(container) {
+	LAST_CODE.delete(container);
+	RENDER_SIGNATURES.delete(container);
+	CODE_DOM_HTML.delete(container);
+}
+function setContainerRenderState(container, code, signature) {
+	LAST_CODE.set(container, code);
+	RENDER_SIGNATURES.set(container, signature);
+	const codeEl = container.querySelector("code");
+	if (codeEl) CODE_DOM_HTML.set(container, codeEl.innerHTML);
+	else CODE_DOM_HTML.delete(container);
+}
+function rememberLineSignature(line, signature) {
+	LINE_SIGNATURES.set(line, signature);
+	LINE_DOM_HTML.set(line, line.innerHTML);
+}
+function getTrustedLineSignature(line) {
+	const signature = LINE_SIGNATURES.get(line);
+	if (!signature) return void 0;
+	if (LINE_DOM_HTML.get(line) !== line.innerHTML) {
+		LINE_SIGNATURES.delete(line);
+		LINE_DOM_HTML.delete(line);
+		return;
+	}
+	return signature;
+}
+function hasUnchangedRenderedCodeDom(container, codeEl) {
+	return CODE_DOM_HTML.get(container) === codeEl.innerHTML;
+}
+function getIncrementalStyleRoot(opts, container) {
+	return opts.styleRoot === void 0 ? container : opts.styleRoot;
+}
+function resolveIncrementalTokenStyleMode(opts, styleRoot) {
+	return resolveTokenStyleMode(opts.tokenStyleMode, styleRoot, "class");
+}
+function ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode) {
+	if (tokenStyleMode === "class") ensureTokenStyleSheet(styleRoot);
+}
+function splitClassNames(className) {
+	return className.trim().split(/\s+/).filter(Boolean);
+}
+function getCodeLineElements(codeEl, lineClass) {
+	const lines = Array.from(codeEl.children);
+	const classNames = splitClassNames(lineClass);
+	if (classNames.length === 0) return lines;
+	return lines.filter((el) => classNames.every((className) => el.classList.contains(className)));
+}
+function previousCodeLines(code) {
+	return normalizeRenderedContent(code).split("\n");
+}
+function hasExpectedLineElementShell(line, lineClass) {
+	return line.tagName.toLowerCase() === "span" && getClassAttribute(line) === lineClass;
+}
+function hasExpectedCodeLineChildNodes(codeEl, oldLines) {
+	if (oldLines.length === 0) return codeEl.childNodes.length === 0;
+	if (codeEl.childNodes.length !== oldLines.length * 2 - 1) return false;
+	for (let i = 0; i < oldLines.length; i++) {
+		const lineNodeIndex = i * 2;
+		if (codeEl.childNodes[lineNodeIndex] !== oldLines[i]) return false;
+		if (i < oldLines.length - 1) {
+			const separator = codeEl.childNodes[lineNodeIndex + 1];
+			if (!separator || separator.nodeType !== 3 || separator.textContent !== "\n") return false;
+		}
+	}
+	return true;
+}
+function hasExpectedCodeLineStructure(codeEl, oldLines, prevCode, lineClass) {
+	const expectedLines = previousCodeLines(prevCode);
+	if (oldLines.length !== codeEl.children.length) return false;
+	if (oldLines.length !== expectedLines.length) return false;
+	if (!hasExpectedCodeLineChildNodes(codeEl, oldLines)) return false;
+	for (let i = 0; i < oldLines.length; i++) {
+		const oldLine = oldLines[i];
+		if (!hasExpectedLineElementShell(oldLine, lineClass)) return false;
+		if ((oldLine.textContent ?? "").replace(/\r/g, "") !== expectedLines[i]) return false;
+	}
+	return true;
+}
+function lineInnerHtml(tokens, showLineNumbers, lineNumber, tokenStyleMode) {
+	let tokensHtml = "";
+	if (tokenStyleMode === "inline") for (const t of tokens) {
+		const styleAttr = getTokenStyleAttr(t.color, t.fontStyle, tokenStyleMode);
+		tokensHtml += `<span${styleAttr}>${escapeHtml(t.content)}</span>`;
+	}
+	else {
+		let i = 0;
+		while (i < tokens.length) {
+			const t = tokens[i];
+			const styleAttr = getTokenStyleAttr(t.color, t.fontStyle, tokenStyleMode);
+			let content = normalizeRenderedContent(t.content);
+			i++;
+			while (i < tokens.length) {
+				const t2 = tokens[i];
+				if (getTokenStyleAttr(t2.color, t2.fontStyle, tokenStyleMode) !== styleAttr) break;
+				content += normalizeRenderedContent(t2.content);
+				i++;
+			}
+			tokensHtml += `<span${styleAttr}>${escapeHtml(content)}</span>`;
+		}
+	}
+	return `${showLineNumbers && typeof lineNumber === "number" ? `<span class="line-number" data-line="${lineNumber}"></span>` : ""}${tokensHtml}`;
+}
+function lineSignature(tokens, showLineNumbers, lineNumber, tokenStyleMode) {
+	const parts = [tokenStyleMode, showLineNumbers && typeof lineNumber === "number" ? lineNumber : ""];
+	let i = 0;
+	while (i < tokens.length) {
+		const style = getTokenStyleSignature(tokens[i].color, tokens[i].fontStyle);
+		let content = "";
+		while (i < tokens.length) {
+			const token = tokens[i];
+			content += normalizeRenderedContent(token.content);
+			i++;
+			if (tokenStyleMode !== "class") break;
+			if (i >= tokens.length || getTokenStyleSignature(tokens[i].color, tokens[i].fontStyle) !== style) break;
+		}
+		parts.push(style, content.length, content);
+	}
+	return JSON.stringify(parts);
+}
+/**
+* Create a DOM <span> element representing a line from tokens.
+* Builds children via createElement/textContent and merges adjacent class-mode
+* tokens with identical token styles to reduce node count.
+*/
+function createLineElement(tokens, showLineNumbers, lineNumber, lineClass, tokenStyleMode, ownerDocument, signature) {
+	const span = ownerDocument.createElement("span");
+	span.className = lineClass;
+	if (showLineNumbers && typeof lineNumber === "number") {
+		const ln = ownerDocument.createElement("span");
+		ln.className = "line-number";
+		ln.dataset.line = String(lineNumber);
+		span.appendChild(ln);
+	}
+	let i = 0;
+	while (i < tokens.length) {
+		const t = tokens[i];
+		const style = getTokenStyleSignature(t.color, t.fontStyle);
+		let content = normalizeRenderedContent(t.content);
+		i++;
+		if (tokenStyleMode === "class") while (i < tokens.length) {
+			const t2 = tokens[i];
+			if (getTokenStyleSignature(t2.color, t2.fontStyle) !== style) break;
+			content += normalizeRenderedContent(t2.content);
+			i++;
+		}
+		const tspan = ownerDocument.createElement("span");
+		applyTokenStyleToElement(tspan, t.color, t.fontStyle, tokenStyleMode);
+		tspan.textContent = content;
+		span.appendChild(tspan);
+	}
+	if (signature) rememberLineSignature(span, signature);
+	return span;
+}
+function updateCodeTokensIncremental(container, highlighter$1, code, opts) {
+	if (!container) return "noop";
+	const { lang, theme, preClass = "shiki", codeClass = "", lineClass = "line", showLineNumbers = false, startingLineNumber: rawStartingLineNumber = 1, tokenLines: providedTokenLines } = opts;
+	const startingLineNumber = normalizeStartingLineNumber(rawStartingLineNumber);
+	const compareMode = opts.compareMode ?? "signature";
+	const ownerDocument = container.ownerDocument;
+	const styleRoot = getIncrementalStyleRoot(opts, container);
+	const tokenStyleMode = resolveIncrementalTokenStyleMode(opts, styleRoot);
+	const backgroundColor = getThemeBackgroundColor(highlighter$1, theme);
+	const signature = renderSignature({
+		lang,
+		theme,
+		backgroundColor,
+		highlighterRevision: getHighlighterRevision(highlighter$1),
+		tokenStyleMode,
+		preClass,
+		codeClass,
+		lineClass,
+		showLineNumbers,
+		startingLineNumber
+	});
+	const finishUpdate = (result) => {
+		setContainerRenderState(container, code, signature);
+		opts.onResult?.(result);
+		return result;
+	};
+	const renderFull = () => {
+		container.innerHTML = renderCodeWithTokens(highlighter$1, code, {
+			lang,
+			theme,
+			preClass,
+			codeClass,
+			lineClass,
+			showLineNumbers,
+			startingLineNumber,
+			tokenCache: opts.tokenCache,
+			tokenCacheMaxEntries: opts.tokenCacheMaxEntries,
+			htmlCache: opts.htmlCache,
+			htmlCacheMaxEntries: opts.htmlCacheMaxEntries,
+			tokenLines: providedTokenLines,
+			styleRoot,
+			tokenStyleMode
+		});
+		return finishUpdate("full");
+	};
+	const codeEl = container.querySelector("code");
+	if (codeEl) ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode);
+	if (!codeEl) return renderFull();
+	if (!hasExpectedRenderedShell(container, codeEl, {
+		preClass,
+		codeClass,
+		backgroundColor
+	})) return renderFull();
+	if (RENDER_SIGNATURES.get(container) !== signature) return renderFull();
+	const prevCode = LAST_CODE.get(container);
+	if (typeof prevCode !== "string") return renderFull();
+	if ((codeEl.textContent ?? "").replace(/\r/g, "") !== prevCode.replace(/\r/g, "")) return renderFull();
+	const oldLines = getCodeLineElements(codeEl, lineClass);
+	if (!hasExpectedCodeLineStructure(codeEl, oldLines, prevCode, lineClass)) return renderFull();
+	const tokenLines = providedTokenLines ? normalizeTokenLinesForCode(providedTokenLines, code, true) : normalizeTokenLinesForCode(getTokenLines(highlighter$1, code, lang, theme, {
+		tokenCache: opts.tokenCache,
+		tokenCacheMaxEntries: opts.tokenCacheMaxEntries
+	}), code);
+	const newLen = tokenLines.length;
+	const oldLen = oldLines.length;
+	if (opts.appendOnlyFastPath === true && typeof prevCode === "string" && prevCode.length > 0 && code.startsWith(prevCode) && code !== prevCode && oldLen > 0) {
+		if (countLines(prevCode) === oldLen) {
+			const lastIdx = oldLen - 1;
+			const lineNumber = showLineNumbers ? startingLineNumber + lastIdx : void 0;
+			const sig = compareMode === "signature" ? lineSignature(tokenLines[lastIdx], showLineNumbers, lineNumber, tokenStyleMode) : void 0;
+			const newLineEl = createLineElement(tokenLines[lastIdx], showLineNumbers, lineNumber, lineClass, tokenStyleMode, ownerDocument, sig);
+			oldLines[lastIdx].innerHTML = "";
+			while (newLineEl.firstChild) oldLines[lastIdx].appendChild(newLineEl.firstChild);
+			if (sig) rememberLineSignature(oldLines[lastIdx], sig);
+			if (newLen > oldLen) {
+				const frag = ownerDocument.createDocumentFragment();
+				let ln = startingLineNumber + oldLen;
+				for (let j = oldLen; j < newLen; j++) {
+					frag.appendChild(ownerDocument.createTextNode("\n"));
+					const lineNumber$1 = showLineNumbers ? ln : void 0;
+					const sig$1 = compareMode === "signature" ? lineSignature(tokenLines[j], showLineNumbers, lineNumber$1, tokenStyleMode) : void 0;
+					const span = createLineElement(tokenLines[j], showLineNumbers, lineNumber$1, lineClass, tokenStyleMode, ownerDocument, sig$1);
+					frag.appendChild(span);
+					ln++;
+				}
+				codeEl.appendChild(frag);
+			}
+			ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode);
+			return finishUpdate("incremental");
+		}
+	}
+	let divergeAt = -1;
+	const minLen = Math.min(oldLen, newLen);
+	let currentLineNumber = startingLineNumber;
+	for (let idx = 0; idx < minLen; idx++) {
+		const lineNumber = showLineNumbers ? currentLineNumber : void 0;
+		const oldLine = oldLines[idx];
+		if (compareMode === "signature") {
+			const sig = lineSignature(tokenLines[idx], showLineNumbers, lineNumber, tokenStyleMode);
+			const oldSig = getTrustedLineSignature(oldLine);
+			if (oldSig) {
+				if (oldSig !== sig) {
+					divergeAt = idx;
+					break;
+				}
+			} else {
+				const newInner = lineInnerHtml(tokenLines[idx], showLineNumbers, lineNumber, tokenStyleMode);
+				if (oldLine.innerHTML !== newInner) {
+					divergeAt = idx;
+					break;
+				}
+				rememberLineSignature(oldLine, sig);
+			}
+		} else {
+			const newInner = lineInnerHtml(tokenLines[idx], showLineNumbers, lineNumber, tokenStyleMode);
+			if (oldLine.innerHTML !== newInner) {
+				divergeAt = idx;
+				break;
+			}
+		}
+		currentLineNumber++;
+	}
+	if (divergeAt === -1) {
+		if (newLen > oldLen) {
+			const frag = ownerDocument.createDocumentFragment();
+			let ln = startingLineNumber + oldLen;
+			for (let j = oldLen; j < newLen; j++) {
+				frag.appendChild(ownerDocument.createTextNode("\n"));
+				const lineNumber = showLineNumbers ? ln : void 0;
+				const sig = compareMode === "signature" ? lineSignature(tokenLines[j], showLineNumbers, lineNumber, tokenStyleMode) : void 0;
+				const span = createLineElement(tokenLines[j], showLineNumbers, lineNumber, lineClass, tokenStyleMode, ownerDocument, sig);
+				frag.appendChild(span);
+				ln++;
+			}
+			codeEl.appendChild(frag);
+			ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode);
+			return finishUpdate("incremental");
+		}
+		if (newLen < oldLen) return renderFull();
+		ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode);
+		return finishUpdate("noop");
+	}
+	if (divergeAt >= oldLen - 1) {
+		const lineNumber = showLineNumbers ? startingLineNumber + divergeAt : void 0;
+		const sig = compareMode === "signature" ? lineSignature(tokenLines[divergeAt], showLineNumbers, lineNumber, tokenStyleMode) : void 0;
+		const newLineEl = createLineElement(tokenLines[divergeAt], showLineNumbers, lineNumber, lineClass, tokenStyleMode, ownerDocument, sig);
+		oldLines[divergeAt].innerHTML = "";
+		while (newLineEl.firstChild) oldLines[divergeAt].appendChild(newLineEl.firstChild);
+		if (sig) rememberLineSignature(oldLines[divergeAt], sig);
+		if (newLen > oldLen) {
+			const frag = ownerDocument.createDocumentFragment();
+			let ln = startingLineNumber + oldLen;
+			for (let j = oldLen; j < newLen; j++) {
+				frag.appendChild(ownerDocument.createTextNode("\n"));
+				const lineNumber$1 = showLineNumbers ? ln : void 0;
+				const sig$1 = compareMode === "signature" ? lineSignature(tokenLines[j], showLineNumbers, lineNumber$1, tokenStyleMode) : void 0;
+				const span = createLineElement(tokenLines[j], showLineNumbers, lineNumber$1, lineClass, tokenStyleMode, ownerDocument, sig$1);
+				frag.appendChild(span);
+				ln++;
+			}
+			codeEl.appendChild(frag);
+		}
+		ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode);
+		return finishUpdate("incremental");
+	}
+	return renderFull();
+}
+function callScheduledOnResult(onResult, result) {
+	if (!onResult) return;
+	try {
+		onResult(result);
+	} catch (error) {
+		console.error("stream-markdown scheduled token update onResult error", error);
+	}
+}
+function createTokenIncrementalUpdater(container, highlighter$1, opts) {
+	let alive = true;
+	let target = container;
+	let lastCode = null;
+	let lastUpdateUsedProvidedTokenLines = false;
+	let updateSeq = 0;
+	return {
+		update: (code, tokenLines) => {
+			if (!alive) return "noop";
+			if (!target) return "noop";
+			const hasProvidedTokenLines = tokenLines !== void 0;
+			if (!hasProvidedTokenLines && !lastUpdateUsedProvidedTokenLines && opts.skipSameCode !== false && lastCode === code) {
+				const codeEl = target.querySelector("code");
+				const styleRoot = getIncrementalStyleRoot(opts, target);
+				const tokenStyleMode = resolveIncrementalTokenStyleMode(opts, styleRoot);
+				const preClass = opts.preClass ?? "shiki";
+				const codeClass = opts.codeClass ?? "";
+				const lineClass = opts.lineClass ?? "line";
+				const showLineNumbers = opts.showLineNumbers ?? false;
+				const backgroundColor = getThemeBackgroundColor(highlighter$1, opts.theme);
+				const startingLineNumber = normalizeStartingLineNumber(opts.startingLineNumber ?? 1);
+				const signature = renderSignature({
+					lang: opts.lang,
+					theme: opts.theme,
+					backgroundColor,
+					highlighterRevision: getHighlighterRevision(highlighter$1),
+					tokenStyleMode,
+					preClass,
+					codeClass,
+					lineClass,
+					showLineNumbers,
+					startingLineNumber
+				});
+				if (codeEl && hasExpectedRenderedShell(target, codeEl, {
+					preClass,
+					codeClass,
+					backgroundColor
+				}) && RENDER_SIGNATURES.get(target) === signature && hasUnchangedRenderedCodeDom(target, codeEl) && (codeEl.textContent ?? "").replace(/\r/g, "") === code.replace(/\r/g, "")) {
+					ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode);
+					opts.onResult?.("noop");
+					return "noop";
+				}
+			}
+			let onResultError;
+			const nextOpts = {
+				...opts,
+				...hasProvidedTokenLines ? { tokenLines } : {},
+				onResult: (result) => {
+					try {
+						opts.onResult?.(result);
+					} catch (error) {
+						onResultError = error;
+					}
+				}
+			};
+			const seq = ++updateSeq;
+			const res = updateCodeTokensIncremental(target, highlighter$1, code, nextOpts);
+			if (seq === updateSeq) {
+				lastCode = code;
+				lastUpdateUsedProvidedTokenLines = hasProvidedTokenLines;
+			}
+			if (onResultError !== void 0) throw onResultError;
+			return res;
+		},
+		reset: () => {
+			if (!alive || !target) return;
+			target.innerHTML = "";
+			clearContainerRenderState(target);
+			lastCode = null;
+			lastUpdateUsedProvidedTokenLines = false;
+			updateSeq++;
+		},
+		cancel: () => {},
+		dispose: () => {
+			alive = false;
+			target = null;
+			lastCode = null;
+			lastUpdateUsedProvidedTokenLines = false;
+			updateSeq++;
+		}
+	};
+}
+function getIntersectionObserverConstructor(container) {
+	const ownerWindow = container?.ownerDocument?.defaultView;
+	if (typeof ownerWindow?.IntersectionObserver === "function") return ownerWindow.IntersectionObserver;
+	const win = typeof window !== "undefined" ? window : null;
+	if (typeof win?.IntersectionObserver === "function") return win.IntersectionObserver;
+	const globalScope = globalThis;
+	return typeof globalScope.IntersectionObserver === "function" ? globalScope.IntersectionObserver : null;
+}
+var TokenUpdateScheduler = class {
+	constructor() {
+		this.queue = [];
+		this.byContainer = /* @__PURE__ */ new WeakMap();
+		this.visible = /* @__PURE__ */ new WeakMap();
+		this.io = null;
+		this.idleScheduled = false;
+		this.idleHandle = null;
+		this.idleCancel = null;
+		this.idleToken = 0;
+		this.nextId = 1;
+	}
+	ensureIntersectionObserver(container) {
+		if (this.io) return;
+		try {
+			const IntersectionObserverCtor = getIntersectionObserverConstructor(container);
+			if (IntersectionObserverCtor) this.io = new IntersectionObserverCtor((entries) => {
+				for (const e of entries) this.visible.set(e.target, e.isIntersecting);
+			}, {
+				root: null,
+				threshold: 0
+			});
+			else this.io = null;
+		} catch {
+			this.io = null;
+		}
+	}
+	schedule(container, highlighter$1, code, opts, tokenLines, shouldRun) {
+		const prev = this.byContainer.get(container);
+		if (prev) {
+			prev.id = this.nextId++;
+			prev.code = code;
+			prev.highlighter = highlighter$1;
+			prev.opts = opts;
+			prev.tokenLines = cloneTokenLines(tokenLines);
+			prev.estNodes = estimateNodeCost(code);
+			prev.shouldRun = shouldRun;
+			return prev.id;
+		}
+		const task = {
+			id: this.nextId++,
+			container,
+			highlighter: highlighter$1,
+			code,
+			opts,
+			tokenLines: cloneTokenLines(tokenLines),
+			estNodes: estimateNodeCost(code),
+			shouldRun
+		};
+		this.queue.push(task);
+		this.byContainer.set(container, task);
+		this.ensureIntersectionObserver(container);
+		if (this.io) try {
+			this.io.observe(container);
+		} catch {}
+		this.ensureProcessing();
+		return task.id;
+	}
+	cancelIdle() {
+		if (!this.idleScheduled) return;
+		const handle = this.idleHandle;
+		const cancel = this.idleCancel;
+		this.idleToken++;
+		this.idleScheduled = false;
+		this.idleHandle = null;
+		this.idleCancel = null;
+		if (handle !== null && cancel) try {
+			cancel(handle);
+		} catch {}
+	}
+	ensureProcessing() {
+		if (this.idleScheduled || this.queue.length === 0) return;
+		const globalScope = globalThis;
+		const win = this.queue[0]?.container.ownerDocument?.defaultView;
+		const ricOwner = win && typeof win.requestIdleCallback === "function" ? win : typeof globalScope.requestIdleCallback === "function" ? globalScope : null;
+		const ric = ricOwner?.requestIdleCallback;
+		this.idleScheduled = true;
+		const token = ++this.idleToken;
+		let ranSynchronously = false;
+		const run = (deadline) => {
+			if (token !== this.idleToken) return;
+			ranSynchronously = true;
+			this.idleScheduled = false;
+			this.idleHandle = null;
+			this.idleCancel = null;
+			this.process(deadline);
+		};
+		if (ric) try {
+			const handle = ric.call(ricOwner, run, { timeout: 100 });
+			if (ranSynchronously) return;
+			this.idleHandle = handle;
+			this.idleCancel = typeof ricOwner.cancelIdleCallback === "function" ? (handle$1) => ricOwner.cancelIdleCallback(handle$1) : null;
+			return;
+		} catch {
+			if (ranSynchronously) return;
+		}
+		const fallbackToken = ++this.idleToken;
+		const fallbackRun = (deadline) => {
+			if (fallbackToken !== this.idleToken) return;
+			ranSynchronously = true;
+			this.idleScheduled = false;
+			this.idleHandle = null;
+			this.idleCancel = null;
+			this.process(deadline);
+		};
+		this.idleHandle = setTimeout(() => fallbackRun({
+			timeRemaining: () => 50,
+			didTimeout: true
+		}), 50);
+		this.idleCancel = (handle) => clearTimeout(handle);
+	}
+	stopObserving(container) {
+		if (this.io) try {
+			this.io.unobserve(container);
+		} catch {}
+		this.visible.delete(container);
+	}
+	process(deadline) {
+		const timeRem = getIdleTimeRemaining(deadline);
+		const allowedNodes = Math.min(2e3, Math.max(100, Math.floor(timeRem * 6)));
+		let nodesProcessed = 0;
+		while (this.queue.length) {
+			if (nodesProcessed >= allowedNodes) break;
+			let idx = this.queue.findIndex((t) => this.visible.get(t.container) === true);
+			if (idx === -1) idx = 0;
+			const task = this.queue.splice(idx, 1)[0];
+			this.byContainer.delete(task.container);
+			if (task.shouldRun && !task.shouldRun()) {
+				if (!this.byContainer.has(task.container)) this.stopObserving(task.container);
+				continue;
+			}
+			if (typeof task.estNodes === "number" && nodesProcessed + task.estNodes > allowedNodes) if (nodesProcessed === 0) {} else {
+				this.queue.push(task);
+				this.byContainer.set(task.container, task);
+				break;
+			}
+			try {
+				updateCodeTokensIncremental(task.container, task.highlighter, task.code, task.tokenLines ? {
+					...task.opts,
+					tokenLines: task.tokenLines
+				} : task.opts);
+			} catch {
+				try {
+					const styleRoot = getIncrementalStyleRoot(task.opts, task.container);
+					const tokenStyleMode = resolveIncrementalTokenStyleMode(task.opts, styleRoot);
+					task.container.innerHTML = renderCodeWithTokens(task.highlighter, task.code, {
+						lang: task.opts.lang,
+						theme: task.opts.theme,
+						preClass: task.opts.preClass,
+						codeClass: task.opts.codeClass,
+						lineClass: task.opts.lineClass,
+						showLineNumbers: task.opts.showLineNumbers,
+						startingLineNumber: task.opts.startingLineNumber,
+						tokenCache: task.opts.tokenCache,
+						tokenCacheMaxEntries: task.opts.tokenCacheMaxEntries,
+						htmlCache: task.opts.htmlCache,
+						htmlCacheMaxEntries: task.opts.htmlCacheMaxEntries,
+						tokenLines: task.tokenLines,
+						styleRoot,
+						tokenStyleMode
+					});
+					setContainerRenderState(task.container, task.code, renderSignature({
+						lang: task.opts.lang,
+						theme: task.opts.theme,
+						backgroundColor: getThemeBackgroundColor(task.highlighter, task.opts.theme),
+						highlighterRevision: getHighlighterRevision(task.highlighter),
+						tokenStyleMode,
+						preClass: task.opts.preClass ?? "shiki",
+						codeClass: task.opts.codeClass ?? "",
+						lineClass: task.opts.lineClass ?? "line",
+						showLineNumbers: task.opts.showLineNumbers ?? false,
+						startingLineNumber: normalizeStartingLineNumber(task.opts.startingLineNumber ?? 1)
+					}));
+					callScheduledOnResult(task.opts.onResult, "full");
+				} catch {
+					callScheduledOnResult(task.opts.onResult, "noop");
+				}
+			}
+			if (typeof task.estNodes === "number") nodesProcessed += task.estNodes;
+			else nodesProcessed += 50;
+			if (!this.byContainer.has(task.container)) this.stopObserving(task.container);
+			if (getIdleTimeRemaining(deadline) < 6) break;
+		}
+		if (this.queue.length) this.ensureProcessing();
+	}
+	cancelFor(container, taskId) {
+		const prev = this.byContainer.get(container);
+		if (prev) {
+			if (taskId !== void 0 && prev.id !== taskId) return;
+			this.byContainer.delete(container);
+			const idx = this.queue.findIndex((t) => t.id === prev.id);
+			if (idx !== -1) this.queue.splice(idx, 1);
+		}
+		if (this.queue.length === 0) this.cancelIdle();
+		this.stopObserving(container);
+	}
+};
+const globalTokenUpdateScheduler = new TokenUpdateScheduler();
+function createScheduledTokenIncrementalUpdater(container, highlighter$1, opts) {
+	let alive = true;
+	let target = container;
+	let scheduledTaskId = null;
+	let pendingCode = null;
+	let pendingTokenLines;
+	let timer = null;
+	let updateGeneration = 0;
+	let lastCode = null;
+	let lastUpdateUsedProvidedTokenLines = false;
+	const isRenderedCodeUnchanged = (code, hasProvidedTokenLines) => {
+		if (!target || hasProvidedTokenLines || lastUpdateUsedProvidedTokenLines || opts.skipSameCode === false) return false;
+		if (lastCode !== code) return false;
+		const codeEl = target.querySelector("code");
+		if (!codeEl) return false;
+		const preClass = opts.preClass ?? "shiki";
+		const codeClass = opts.codeClass ?? "";
+		const backgroundColor = getThemeBackgroundColor(highlighter$1, opts.theme);
+		if (!hasExpectedRenderedShell(target, codeEl, {
+			preClass,
+			codeClass,
+			backgroundColor
+		})) return false;
+		const styleRoot = getIncrementalStyleRoot(opts, target);
+		const tokenStyleMode = resolveIncrementalTokenStyleMode(opts, styleRoot);
+		const lineClass = opts.lineClass ?? "line";
+		const showLineNumbers = opts.showLineNumbers ?? false;
+		const startingLineNumber = normalizeStartingLineNumber(opts.startingLineNumber ?? 1);
+		const signature = renderSignature({
+			lang: opts.lang,
+			theme: opts.theme,
+			backgroundColor,
+			highlighterRevision: getHighlighterRevision(highlighter$1),
+			tokenStyleMode,
+			preClass,
+			codeClass,
+			lineClass,
+			showLineNumbers,
+			startingLineNumber
+		});
+		if (RENDER_SIGNATURES.get(target) !== signature) return false;
+		if (!hasUnchangedRenderedCodeDom(target, codeEl)) return false;
+		if ((codeEl.textContent ?? "").replace(/\r/g, "") !== code.replace(/\r/g, "")) return false;
+		ensureIncrementalTokenStyleSheet(styleRoot, tokenStyleMode);
+		return true;
+	};
+	const cancelScheduledTask = () => {
+		if (!target || scheduledTaskId == null) return;
+		const taskId = scheduledTaskId;
+		scheduledTaskId = null;
+		globalTokenUpdateScheduler.cancelFor(target, taskId);
+	};
+	const cancelPendingWork = () => {
+		updateGeneration++;
+		if (timer !== null) {
+			clearTimeout(timer);
+			timer = null;
+		}
+		pendingCode = null;
+		pendingTokenLines = void 0;
+		cancelScheduledTask();
+	};
+	const flush = () => {
+		timer = null;
+		if (!alive || !target || pendingCode == null) return;
+		const code = pendingCode;
+		const targetEl = target;
+		const tokenLines = pendingTokenLines;
+		const hasProvidedTokenLines = tokenLines !== void 0;
+		pendingCode = null;
+		pendingTokenLines = void 0;
+		const userOnResult = opts.onResult;
+		const taskGeneration = updateGeneration;
+		let taskId = -1;
+		let completedSynchronously = false;
+		const updateOpts = {
+			...opts,
+			appendOnlyFastPath: opts.appendOnlyFastPath ?? false,
+			onResult: (result) => {
+				completedSynchronously = true;
+				if (updateGeneration === taskGeneration && scheduledTaskId === taskId) scheduledTaskId = null;
+				if (updateGeneration === taskGeneration) {
+					lastCode = code;
+					lastUpdateUsedProvidedTokenLines = hasProvidedTokenLines;
+				}
+				callScheduledOnResult(userOnResult, result);
+			}
+		};
+		taskId = globalTokenUpdateScheduler.schedule(targetEl, highlighter$1, code, updateOpts, tokenLines, () => alive && target === targetEl && updateGeneration === taskGeneration);
+		if (!completedSynchronously) scheduledTaskId = taskId;
+	};
+	const scheduleFlush = () => {
+		const throttleMs = normalizeDelayMs(opts.throttleMs);
+		if (timer !== null) {
+			clearTimeout(timer);
+			timer = null;
+		}
+		if (throttleMs <= 0) {
+			flush();
+			return;
+		}
+		timer = setTimeout(flush, throttleMs);
+	};
+	return {
+		update: (code, tokenLines) => {
+			if (!alive || !target) return "noop";
+			if (isRenderedCodeUnchanged(code, tokenLines !== void 0)) {
+				cancelPendingWork();
+				callScheduledOnResult(opts.onResult, "noop");
+				return "noop";
+			}
+			updateGeneration++;
+			cancelScheduledTask();
+			pendingCode = code;
+			pendingTokenLines = cloneTokenLines(tokenLines);
+			scheduleFlush();
+			return "noop";
+		},
+		reset: () => {
+			if (!alive || !target) return;
+			cancelPendingWork();
+			target.innerHTML = "";
+			clearContainerRenderState(target);
+			lastCode = null;
+			lastUpdateUsedProvidedTokenLines = false;
+		},
+		cancel: cancelPendingWork,
+		dispose: () => {
+			alive = false;
+			cancelPendingWork();
+			target = null;
+			lastCode = null;
+			lastUpdateUsedProvidedTokenLines = false;
+		}
+	};
+}
+
+//#endregion
+//#region src/utils/render-scheduler.ts
+const highQueue = [];
+const normalQueue = [];
+let rafId = null;
+let frameToken = 0;
+let cancelScheduledFrame = null;
+let paused = false;
+let TIME_BUDGET = 8;
+function setTimeBudget(ms) {
+	if (typeof ms === "number" && Number.isFinite(ms) && ms >= 0) TIME_BUDGET = ms;
+}
+function getTimeBudget() {
+	return TIME_BUDGET;
+}
+function isPaused() {
+	return paused;
+}
+function getQueueLength() {
+	return highQueue.length + normalQueue.length;
+}
+function pause() {
+	paused = true;
+	cancelFrame();
+}
+function resume() {
+	if (!paused) return;
+	paused = false;
+	ensureFrame();
+}
+function now() {
+	return globalThis.performance?.now ? globalThis.performance.now() : Date.now();
+}
+function hasQueuedJobs() {
+	return highQueue.length > 0 || normalQueue.length > 0;
+}
+function shiftQueuedJob() {
+	return highQueue.shift() ?? normalQueue.shift();
+}
+function removeQueuedJob(job) {
+	let idx = highQueue.indexOf(job);
+	if (idx >= 0) {
+		highQueue.splice(idx, 1);
+		return true;
+	}
+	idx = normalQueue.indexOf(job);
+	if (idx >= 0) {
+		normalQueue.splice(idx, 1);
+		return true;
+	}
+	return false;
+}
+function clearQueues() {
+	highQueue.length = 0;
+	normalQueue.length = 0;
+}
+function getFrameScheduler() {
+	const candidates = [globalThis, typeof window !== "undefined" ? window : null].filter(Boolean);
+	for (const owner of candidates) if (typeof owner.requestAnimationFrame === "function" && typeof owner.cancelAnimationFrame === "function") return {
+		request: (cb) => owner.requestAnimationFrame(cb),
+		cancel: (id) => owner.cancelAnimationFrame(id)
+	};
+	return {
+		request: (cb) => setTimeout(() => cb(now()), 16),
+		cancel: (id) => clearTimeout(id)
+	};
+}
+function cancelFrame() {
+	if (rafId == null) return;
+	const id = rafId;
+	const cancel = cancelScheduledFrame;
+	rafId = null;
+	frameToken++;
+	cancelScheduledFrame = null;
+	try {
+		cancel?.(id);
+	} catch {}
+}
+function ensureFrame() {
+	if (rafId != null) return;
+	if (paused) return;
+	if (!hasQueuedJobs()) return;
+	const scheduler = getFrameScheduler();
+	const token = ++frameToken;
+	let ranSynchronously = false;
+	const run = () => {
+		if (token !== frameToken) return;
+		ranSynchronously = true;
+		runFrame();
+	};
+	try {
+		cancelScheduledFrame = scheduler.cancel;
+		const id = scheduler.request(run);
+		if (ranSynchronously) return;
+		rafId = id;
+	} catch {
+		if (ranSynchronously) return;
+		const fallbackToken = ++frameToken;
+		const fallbackRun = () => {
+			if (fallbackToken !== frameToken) return;
+			ranSynchronously = true;
+			runFrame();
+		};
+		rafId = setTimeout(fallbackRun, 16);
+		cancelScheduledFrame = (id) => clearTimeout(id);
+	}
+}
+function runFrame() {
+	rafId = null;
+	cancelScheduledFrame = null;
+	if (paused) return;
+	const start = now();
+	while (hasQueuedJobs()) {
+		const job = shiftQueuedJob();
+		try {
+			job();
+		} catch (e) {
+			console.error("render-scheduler job error", e);
+		}
+		if (paused) break;
+		if (now() - start >= TIME_BUDGET) break;
+	}
+	if (!paused && hasQueuedJobs()) ensureFrame();
+}
+/**
+* Schedule a render job to be executed within the time-budgeted rAF loop.
+* Returns a function to cancel the scheduled job if it hasn't run yet.
+*/
+function scheduleRenderJob(job, options) {
+	const priority = options?.priority ?? "normal";
+	let cancelled = false;
+	const wrappedJob = () => {
+		if (!cancelled) job();
+	};
+	if (priority === "high") highQueue.push(wrappedJob);
+	else normalQueue.push(wrappedJob);
+	ensureFrame();
+	return () => {
+		if (cancelled) return;
+		cancelled = true;
+		if (removeQueuedJob(wrappedJob)) {
+			if (!hasQueuedJobs()) cancelFrame();
+		}
+	};
+}
+/**
+* Run a job immediately, bypassing the scheduler. Use sparingly for very high
+* priority operations.
+*/
+function runImmediate(job) {
+	job();
+}
+/**
+* Drain the queue by running all pending jobs immediately, bypassing the
+* per-frame time budget. Use with caution — this can block the main thread.
+*/
+function drain() {
+	cancelFrame();
+	while (hasQueuedJobs()) {
+		const job = shiftQueuedJob();
+		try {
+			job();
+		} catch {}
+	}
+}
+/**
+* Clear all pending jobs and cancel the next frame. Used for cleanup.
+*/
+function clearAll() {
+	clearQueues();
+	cancelFrame();
+}
+
+//#endregion
+//#region src/utils/restore-priority.ts
+/**
+* Restore a set of render items prioritizing visible elements.
+*
+* Behavior:
+* - immediately schedules visible items with high priority
+* - staggers non-visible items in batches to avoid flooding the scheduler
+*
+* Returns a cancel function to abort scheduling of remaining background jobs.
+*/
+function restoreWithVisibilityPriority(items, opts = {}) {
+	const batchSize = Math.max(1, opts.batchSize ?? 6);
+	const staggerMs = Math.max(1, opts.staggerMs ?? 30);
+	const visible = [];
+	const hidden = [];
+	for (const it of items) {
+		const rect = it.el.getBoundingClientRect();
+		const ih = globalThis.innerHeight ?? 0;
+		if (rect.bottom >= 0 && rect.top <= ih) visible.push(it);
+		else hidden.push(it);
+	}
+	pause();
+	for (const v of visible) scheduleRenderJob(() => {
+		try {
+			v.render();
+		} catch {}
+	}, { priority: "high" });
+	resume();
+	if (opts.drainVisible) drain();
+	let cancelled = false;
+	const timers = [];
+	for (let i = 0; i < hidden.length; i += batchSize) {
+		const batch = hidden.slice(i, i + batchSize);
+		const delay = Math.floor(i / batchSize) * staggerMs;
+		const t = setTimeout(() => {
+			if (cancelled) return;
+			for (const b of batch) scheduleRenderJob(() => {
+				try {
+					b.render();
+				} catch {}
+			}, { priority: "normal" });
+		}, delay);
+		timers.push(t);
+	}
+	return () => {
+		cancelled = true;
+		for (const t of timers) clearTimeout(t);
+	};
+}
+
+//#endregion
+//#region src/utils/shared-intersection-observer.ts
+const callbacks = /* @__PURE__ */ new WeakMap();
+let observer = null;
+function ensureObserver() {
+	if (observer) return observer;
+	if (typeof window === "undefined" || !window.IntersectionObserver) return null;
+	observer = new IntersectionObserver((entries) => {
+		for (const entry of entries) {
+			const cb = callbacks.get(entry.target);
+			if (cb) try {
+				cb(!!entry.isIntersecting, entry);
+			} catch {}
+		}
+	}, {
+		root: null,
+		threshold: 0
+	});
+	return observer;
+}
+function observeElement(el, cb) {
+	const obs = ensureObserver();
+	callbacks.set(el, cb);
+	if (obs) obs.observe(el);
+	return () => {
+		callbacks.delete(el);
+		if (obs) obs.unobserve(el);
+	};
+}
+
+//#endregion
+//#region src/utils/shiki-stream-cached-renderer.ts
+let shikiStreamTokenizerConstructorPromise = null;
+function loadShikiStreamTokenizerConstructor() {
+	shikiStreamTokenizerConstructorPromise ??= import("shiki-stream").then((mod) => mod.ShikiStreamTokenizer).catch((error) => {
+		shikiStreamTokenizerConstructorPromise = null;
+		throw error;
+	});
+	return shikiStreamTokenizerConstructorPromise;
+}
+function tokensToLines(tokens) {
+	const lines = [[]];
+	let pendingCR = false;
+	const appendContent = (token, content) => {
+		if (!content) return;
+		lines[lines.length - 1].push(content === token.content ? token : {
+			...token,
+			content
+		});
+	};
+	for (const token of tokens) {
+		let content = token.content;
+		if (!content) continue;
+		if (pendingCR) {
+			pendingCR = false;
+			if (content.charCodeAt(0) === 10) {
+				lines.push([]);
+				content = content.slice(1);
+				if (!content) continue;
+			}
+		}
+		let start = 0;
+		for (let i = 0; i < content.length; i++) {
+			const ch = content.charCodeAt(i);
+			if (ch !== 10 && ch !== 13) continue;
+			appendContent(token, content.slice(start, i));
+			if (ch === 13) {
+				if (i + 1 < content.length && content.charCodeAt(i + 1) === 10) {
+					lines.push([]);
+					i++;
+				} else if (i === content.length - 1) pendingCR = true;
+				start = i + 1;
+				continue;
+			}
+			lines.push([]);
+			start = i + 1;
+		}
+		appendContent(token, content.slice(start));
+	}
+	return lines;
+}
+/**
+* Renderer that reuses shiki-stream's tokenizer (grammarState-aware) to avoid
+* re-tokenizing stable prefixes when code arrives incrementally.
+*
+* API mirrors createShikiStreamRenderer: updateCode(lang?), setTheme, dispose.
+*/
+function createShikiStreamCachedRenderer(container, options) {
+	let currentCode = "";
+	let currentLang = options.lang;
+	let currentTheme = options.theme ?? "vitesse-dark";
+	let highlighter$1 = null;
+	let tokenizer = null;
+	let tokenBuffer = [];
+	let tokenBufferRevision = -1;
+	let tokenizerRevision = -1;
+	let tokenizerLang;
+	let tokenizerTheme;
+	let updater = null;
+	const useRaf = options.scheduleInRaf ?? true;
+	let scheduled = false;
+	let cancelScheduledRender = null;
+	let renderJobSeq = 0;
+	let pendingRender = null;
+	let disposed = false;
+	let unregisterObserver = null;
+	let isVisible = false;
+	let opChain = Promise.resolve();
+	const getHighlightLangs = (lang = currentLang) => {
+		const optionLangs = options.langs?.length ? options.langs : void 0;
+		const baseLangs = optionLangs ?? defaultLanguages;
+		if (!lang || lang === "plaintext" || baseLangs.includes(lang)) return optionLangs;
+		return [...baseLangs, lang];
+	};
+	const ensureHighlighter = async (lang = currentLang) => {
+		if (disposed) return;
+		const nextHighlighter = await registerHighlight({
+			langs: getHighlightLangs(lang),
+			themes: options.themes
+		});
+		if (disposed) return;
+		highlighter$1 = nextHighlighter;
+	};
+	const hasLoadedTheme = (theme) => {
+		if (!highlighter$1) return false;
+		const anyHl = highlighter$1;
+		if (typeof anyHl.getTheme !== "function") return false;
+		try {
+			return !!anyHl.getTheme(theme);
+		} catch {
+			return false;
+		}
+	};
+	const ensureThemeLoaded = async (theme, lang = currentLang) => {
+		if (!theme || disposed) return;
+		if (!highlighter$1) await ensureHighlighter(lang);
+		if (disposed || !highlighter$1) return;
+		if (hasLoadedTheme(theme)) return;
+		const nextHighlighter = await registerHighlight({
+			langs: getHighlightLangs(lang),
+			themes: [theme]
+		});
+		if (!disposed) highlighter$1 = nextHighlighter;
+	};
+	const getCurrentHighlighterRevision = () => {
+		return highlighter$1 ? getHighlighterRevision(highlighter$1) : -1;
+	};
+	const ensureTokenizer = async () => {
+		if (!highlighter$1) await ensureHighlighter(currentLang);
+		if (disposed || !highlighter$1) return;
+		const revision = getCurrentHighlighterRevision();
+		const lang = currentLang ?? "plaintext";
+		const theme = currentTheme;
+		if (tokenizer && tokenizerRevision === revision && tokenizerLang === lang && tokenizerTheme === theme) return;
+		tokenizer?.clear();
+		tokenizer = null;
+		tokenizerRevision = -1;
+		tokenizerLang = void 0;
+		tokenizerTheme = void 0;
+		const Tokenizer = await loadShikiStreamTokenizerConstructor();
+		if (disposed || !highlighter$1) return;
+		const activeRevision = getCurrentHighlighterRevision();
+		tokenizer = new Tokenizer({
+			highlighter: highlighter$1,
+			lang,
+			theme
+		});
+		tokenizerRevision = activeRevision;
+		tokenizerLang = lang;
+		tokenizerTheme = theme;
+	};
+	const enqueue = (task) => {
+		const next = opChain.then(task, task);
+		opChain = next.then(() => void 0, () => void 0);
+		return next;
+	};
+	const clearTokenBuffer = () => {
+		tokenBuffer = [];
+		tokenBufferRevision = getCurrentHighlighterRevision();
+	};
+	const resetTokenizer = () => {
+		tokenizer?.clear();
+		tokenizer = null;
+		tokenizerRevision = -1;
+		tokenizerLang = void 0;
+		tokenizerTheme = void 0;
+	};
+	const isStaleTokenizerResult = (activeTokenizer, activeRevision) => {
+		return disposed || tokenizer !== activeTokenizer || tokenizerRevision !== activeRevision || getCurrentHighlighterRevision() !== activeRevision;
+	};
+	const cancelPendingRender = () => {
+		renderJobSeq++;
+		if (cancelScheduledRender) {
+			cancelScheduledRender();
+			cancelScheduledRender = null;
+		}
+		scheduled = false;
+		pendingRender = null;
+		updater?.cancel?.();
+	};
+	const scheduleCancelableRenderJob = (job, priority) => {
+		const seq = ++renderJobSeq;
+		let ranSynchronously = false;
+		const cancel = scheduleRenderJob(() => {
+			if (renderJobSeq !== seq) return;
+			ranSynchronously = true;
+			cancelScheduledRender = null;
+			job();
+		}, { priority });
+		if (renderJobSeq === seq) cancelScheduledRender = ranSynchronously ? null : cancel;
+	};
+	if (typeof window !== "undefined" && container) unregisterObserver = observeElement(container, (v) => {
+		isVisible = v;
+	});
+	if (typeof options.timeBudget === "number" && Number.isFinite(options.timeBudget) && options.timeBudget >= 0) setTimeBudget(options.timeBudget);
+	const getUpdaterOptions = () => ({
+		lang: currentLang ?? "plaintext",
+		theme: currentTheme,
+		preClass: options.preClass,
+		codeClass: options.codeClass,
+		lineClass: options.lineClass,
+		showLineNumbers: options.showLineNumbers,
+		startingLineNumber: options.startingLineNumber,
+		tokenCache: options.tokenCache,
+		tokenCacheMaxEntries: options.tokenCacheMaxEntries,
+		htmlCache: options.htmlCache,
+		htmlCacheMaxEntries: options.htmlCacheMaxEntries,
+		styleRoot: options.styleRoot,
+		tokenStyleMode: options.tokenStyleMode,
+		compareMode: options.compareMode,
+		skipSameCode: options.skipSameCode,
+		appendOnlyFastPath: false,
+		throttleMs: options.throttleMs,
+		onResult: options.onResult
+	});
+	const reinitUpdater = () => {
+		updater?.dispose();
+		if (disposed || !highlighter$1) return;
+		updater = (useRaf ? createScheduledTokenIncrementalUpdater : createTokenIncrementalUpdater)(container, highlighter$1, getUpdaterOptions());
+	};
+	const scheduleRender = (code, tokenLines) => {
+		if (disposed) return;
+		pendingRender = {
+			code,
+			tokenLines
+		};
+		if (!useRaf) {
+			if (!updater) return;
+			const render = pendingRender;
+			pendingRender = null;
+			if (render) updater.update(render.code, render.tokenLines);
+			return;
+		}
+		if (scheduled) return;
+		scheduled = true;
+		scheduleCancelableRenderJob(() => {
+			scheduled = false;
+			if (disposed || !updater || !pendingRender) return;
+			const render = pendingRender;
+			pendingRender = null;
+			updater.update(render.code, render.tokenLines);
+		}, isVisible ? "high" : "normal");
+	};
+	const scheduleRetokenizeFallback = (code) => {
+		if (disposed) return;
+		resetTokenizer();
+		clearTokenBuffer();
+		scheduleRender(code);
+	};
+	const normalizeCodeText = (value) => value.replace(/\r/g, "");
+	const getBufferedCodeText = () => {
+		let text = "";
+		for (const token of tokenBuffer) text += token.content;
+		return text;
+	};
+	const bufferedTokensMatchCode = (code) => {
+		if (!highlighter$1 || tokenBufferRevision !== getHighlighterRevision(highlighter$1)) return false;
+		return normalizeCodeText(getBufferedCodeText()) === normalizeCodeText(code);
+	};
+	const scheduleBufferedRender = (code) => {
+		if (!bufferedTokensMatchCode(code)) {
+			clearTokenBuffer();
+			scheduleRender(code);
+			return;
+		}
+		scheduleRender(code, tokensToLines(tokenBuffer));
+	};
+	const updateCode = (code, lang) => enqueue(async () => {
+		if (disposed) return;
+		const nextLang = lang ?? currentLang;
+		const langChanged = nextLang !== currentLang;
+		if (!(code !== currentCode) && !langChanged && updater) {
+			cancelPendingRender();
+			scheduleBufferedRender(code);
+			return;
+		}
+		const prevCode = currentCode;
+		currentCode = code;
+		cancelPendingRender();
+		if (!highlighter$1 || langChanged) {
+			currentLang = nextLang;
+			await ensureHighlighter(nextLang);
+			await ensureThemeLoaded(currentTheme, nextLang);
+			if (disposed) return;
+			resetTokenizer();
+			clearTokenBuffer();
+			reinitUpdater();
+		} else if (!updater) reinitUpdater();
+		await ensureTokenizer();
+		if (disposed || !tokenizer || !updater) return;
+		const canAppend = !langChanged && options.useGrammarState !== false && bufferedTokensMatchCode(prevCode) && !!prevCode && code.startsWith(prevCode);
+		if (!canAppend) {
+			tokenizer.clear();
+			clearTokenBuffer();
+		}
+		const chunk = canAppend ? code.slice(prevCode.length) : code;
+		const activeTokenizer = tokenizer;
+		const activeRevision = tokenizerRevision;
+		const { stable, unstable, recall } = await activeTokenizer.enqueue(chunk);
+		if (isStaleTokenizerResult(activeTokenizer, activeRevision)) {
+			scheduleRetokenizeFallback(code);
+			return;
+		}
+		if (canAppend && recall > 0) tokenBuffer.splice(Math.max(0, tokenBuffer.length - recall));
+		else if (!canAppend) clearTokenBuffer();
+		tokenBuffer.push(...stable ?? [], ...unstable ?? []);
+		tokenBufferRevision = activeRevision;
+		scheduleBufferedRender(code);
+	});
+	const setTheme = (theme) => enqueue(async () => {
+		if (disposed) return;
+		if (!theme || theme === currentTheme) return;
+		cancelPendingRender();
+		await ensureThemeLoaded(theme, currentLang);
+		if (disposed) return;
+		currentTheme = theme;
+		resetTokenizer();
+		clearTokenBuffer();
+		reinitUpdater();
+		if (!currentCode) {
+			scheduleBufferedRender(currentCode);
+			return;
+		}
+		await ensureTokenizer();
+		const activeTokenizer = tokenizer;
+		if (disposed || !activeTokenizer || !updater) return;
+		const activeRevision = tokenizerRevision;
+		const { stable, unstable } = await activeTokenizer.enqueue(currentCode);
+		if (isStaleTokenizerResult(activeTokenizer, activeRevision)) {
+			scheduleRetokenizeFallback(currentCode);
+			return;
+		}
+		tokenBuffer = [...stable ?? [], ...unstable ?? []];
+		tokenBufferRevision = activeRevision;
+		scheduleBufferedRender(currentCode);
+	});
+	const dispose = () => {
+		disposed = true;
+		cancelPendingRender();
+		updater?.dispose();
+		updater = null;
+		resetTokenizer();
+		tokenBuffer = [];
+		tokenBufferRevision = -1;
+		if (unregisterObserver) {
+			unregisterObserver();
+			unregisterObserver = null;
+		}
+	};
+	const getState = () => ({
+		code: currentCode,
+		lang: currentLang,
+		theme: currentTheme,
+		tokenCount: tokenBuffer.length
+	});
+	return {
+		updateCode,
+		setTheme,
+		dispose,
+		getState
+	};
+}
+
+//#endregion
+//#region src/utils/shiki-stream-renderer.ts
+function createShikiStreamRenderer(container, options) {
+	let currentCode = "";
+	let currentLang = options.lang;
+	let currentTheme = options.theme ?? "vitesse-dark";
+	let highlighter$1 = null;
+	let updater = null;
+	const useRaf = options.scheduleInRaf ?? true;
+	let scheduled = false;
+	let cancelScheduledRender = null;
+	let renderJobSeq = 0;
+	let disposed = false;
+	let unregisterObserver = null;
+	let isVisible = false;
+	let opChain = Promise.resolve();
+	const getHighlightLangs = (lang = currentLang) => {
+		const optionLangs = options.langs?.length ? options.langs : void 0;
+		const baseLangs = optionLangs ?? defaultLanguages;
+		if (!lang || lang === "plaintext" || baseLangs.includes(lang)) return optionLangs;
+		return [...baseLangs, lang];
+	};
+	const cancelPendingRender = () => {
+		renderJobSeq++;
+		if (cancelScheduledRender) {
+			cancelScheduledRender();
+			cancelScheduledRender = null;
+		}
+		scheduled = false;
+		updater?.cancel?.();
+	};
+	const scheduleCancelableRenderJob = (job, priority) => {
+		const seq = ++renderJobSeq;
+		let ranSynchronously = false;
+		const cancel = scheduleRenderJob(() => {
+			if (renderJobSeq !== seq) return;
+			ranSynchronously = true;
+			cancelScheduledRender = null;
+			job();
+		}, { priority });
+		if (renderJobSeq === seq) cancelScheduledRender = ranSynchronously ? null : cancel;
+	};
+	const ensureHighlighter = async (lang = currentLang) => {
+		if (disposed) return;
+		const nextHighlighter = await registerHighlight({
+			langs: getHighlightLangs(lang),
+			themes: options.themes
+		});
+		if (disposed) return;
+		highlighter$1 = nextHighlighter;
+	};
+	const hasLoadedTheme = (theme) => {
+		if (!highlighter$1) return false;
+		const anyHl = highlighter$1;
+		if (typeof anyHl.getTheme !== "function") return false;
+		try {
+			return !!anyHl.getTheme(theme);
+		} catch {
+			return false;
+		}
+	};
+	const ensureThemeLoaded = async (theme, lang = currentLang) => {
+		if (!theme || disposed) return;
+		if (!highlighter$1) await ensureHighlighter(lang);
+		if (disposed || !highlighter$1) return;
+		if (hasLoadedTheme(theme)) return;
+		const nextHighlighter = await registerHighlight({
+			langs: getHighlightLangs(lang),
+			themes: [theme]
+		});
+		if (!disposed) highlighter$1 = nextHighlighter;
+	};
+	const enqueue = (task) => {
+		const next = opChain.then(task, task);
+		opChain = next.then(() => void 0, () => void 0);
+		return next;
+	};
+	if (typeof window !== "undefined" && container) unregisterObserver = observeElement(container, (v) => {
+		isVisible = v;
+	});
+	if (typeof options.timeBudget === "number" && Number.isFinite(options.timeBudget) && options.timeBudget >= 0) setTimeBudget(options.timeBudget);
+	const getUpdaterOptions = () => ({
+		lang: currentLang ?? "plaintext",
+		theme: currentTheme,
+		preClass: options.preClass,
+		codeClass: options.codeClass,
+		lineClass: options.lineClass,
+		showLineNumbers: options.showLineNumbers,
+		startingLineNumber: options.startingLineNumber,
+		tokenCache: options.tokenCache,
+		tokenCacheMaxEntries: options.tokenCacheMaxEntries,
+		htmlCache: options.htmlCache,
+		htmlCacheMaxEntries: options.htmlCacheMaxEntries,
+		styleRoot: options.styleRoot,
+		tokenStyleMode: options.tokenStyleMode,
+		compareMode: options.compareMode,
+		skipSameCode: options.skipSameCode,
+		appendOnlyFastPath: false,
+		throttleMs: options.throttleMs,
+		onResult: options.onResult
+	});
+	const reinitUpdater = () => {
+		updater?.dispose();
+		if (disposed || !highlighter$1) return;
+		updater = (useRaf ? createScheduledTokenIncrementalUpdater : createTokenIncrementalUpdater)(container, highlighter$1, getUpdaterOptions());
+	};
+	const scheduleRender = () => {
+		if (disposed) return;
+		if (!useRaf) {
+			if (!updater) return;
+			updater.update(currentCode);
+			return;
+		}
+		if (scheduled) return;
+		scheduled = true;
+		scheduleCancelableRenderJob(() => {
+			scheduled = false;
+			if (disposed || !updater) return;
+			updater.update(currentCode);
+		}, isVisible ? "high" : "normal");
+	};
+	const updateCode = (code, lang) => enqueue(async () => {
+		if (disposed) return;
+		const nextLang = lang ?? currentLang;
+		const langChanged = nextLang !== currentLang;
+		currentCode = code;
+		cancelPendingRender();
+		if (!highlighter$1 || langChanged) {
+			currentLang = nextLang;
+			await ensureHighlighter(nextLang);
+			await ensureThemeLoaded(currentTheme, nextLang);
+			if (disposed) return;
+			reinitUpdater();
+		} else if (!updater) reinitUpdater();
+		scheduleRender();
+	});
+	const setTheme = (theme) => enqueue(async () => {
+		if (disposed) return;
+		if (!theme || theme === currentTheme) return;
+		cancelPendingRender();
+		await ensureThemeLoaded(theme, currentLang);
+		if (disposed) return;
+		currentTheme = theme;
+		reinitUpdater();
+		scheduleRender();
+	});
+	const dispose = () => {
+		disposed = true;
+		cancelPendingRender();
+		updater?.dispose();
+		updater = null;
+		if (unregisterObserver) {
+			unregisterObserver();
+			unregisterObserver = null;
+		}
+	};
+	const getState = () => ({
+		code: currentCode,
+		lang: currentLang,
+		theme: currentTheme
+	});
+	return {
+		updateCode,
+		setTheme,
+		dispose,
+		getState
+	};
+}
+
+//#endregion
+export { clearAll, createScheduledTokenIncrementalUpdater, createShikiStreamCachedRenderer, createShikiStreamRenderer, createTokenIncrementalUpdater, defaultLanguages, defaultThemes, disposeHighlighter, drain, getQueueLength, getTimeBudget, isPaused, pause, registerHighlight, renderCodeWithTokens, restoreWithVisibilityPriority, resume, runImmediate, scheduleRenderJob, setTimeBudget, updateCodeTokensIncremental };
+//# sourceMappingURL=index.js.map

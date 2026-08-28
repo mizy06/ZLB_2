@@ -241,6 +241,7 @@ class QwenProviderPolicyTDDTests(unittest.IsolatedAsyncioTestCase):
             session_cache=True,
             max_attempts=1,
             reasoning_effort="low",
+            max_output_tokens=24_000,
             timeout_seconds=90,
         )
 
@@ -266,6 +267,7 @@ class QwenProviderPolicyTDDTests(unittest.IsolatedAsyncioTestCase):
             request["json"]["reasoning"],
             {"effort": "low"},
         )
+        self.assertEqual(request["json"]["max_output_tokens"], 24_000)
         response_input = request["json"]["input"]
         self.assertEqual(len(response_input), 2)
         image_blocks = response_input[0]["content"]
@@ -283,6 +285,7 @@ class QwenProviderPolicyTDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(policy["image_count"], 2)
         self.assertFalse(policy["previous_response_id_present"])
         self.assertTrue(policy["session_cache_enabled"])
+        self.assertEqual(policy["max_output_tokens"], 24_000)
         self.assertEqual(
             records[0]["details"]["usage"]["input_tokens_details"][
                 "cached_tokens"
@@ -450,6 +453,41 @@ class QwenProviderPolicyTDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["thinking_budget"], 1024)
         self.assertNotIn("reasoning_effort", payload)
+
+    def test_qwen_omits_disabled_thinking_budget(self) -> None:
+        client = QwenClient(_settings())
+
+        payload = client._chat_payload(
+            model="qwen3.8-max",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=2400,
+            max_completion_tokens=2400,
+            json_mode=True,
+            thinking_budget=0,
+        )
+
+        self.assertNotIn("thinking_budget", payload)
+
+    def test_non_qwen_keeps_explicit_disabled_thinking_budget(self) -> None:
+        client = OpenAICompatibleClient(
+            settings=_settings(),
+            api_key="ordinary-key",
+            base_url="https://ordinary.invalid/v1",
+            provider_name="ordinary",
+            api_key_env_name="ORDINARY_API_KEY",
+            temperature=0.2,
+        )
+
+        payload = client._chat_payload(
+            model="ordinary-model",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=2400,
+            max_completion_tokens=2400,
+            json_mode=True,
+            thinking_budget=0,
+        )
+
+        self.assertEqual(payload["thinking_budget"], 0)
 
     def test_thinking_budget_and_reasoning_effort_are_mutually_exclusive(
         self,

@@ -37,7 +37,7 @@ import { useIsMobile } from './composables/useIsMobile';
 import { openDialogCount } from './composables/dialogStack';
 import type { SwarmMember } from './composables/swarmGroups';
 import ServerAuthDialog from './components/ServerAuthDialog.vue';
-import { initServerAuth, onAuthRequired } from './api/daemon/serverAuth';
+import { onMindmapAuthRequired } from './api/mindmapAuth';
 import type { AppConfig, ThinkingLevel } from './api/types';
 import { commitLevel, effectiveThinkingLevel, segmentsFor } from './lib/modelThinking';
 import { stripSkillPrefix } from './lib/slashCommands';
@@ -48,21 +48,13 @@ import InternalBuildBanner from './components/InternalBuildBanner.vue';
 import { isMacosDesktop } from './lib/desktopFlag';
 import BrandMark from './components/BrandMark.vue';
 
-// Hydrate the server-transport credential (fragment token or localStorage)
-// BEFORE the client connects, so the first REST/WS calls already carry it.
-initServerAuth();
-// Stays false until the server actually rejects us with 401/40101. Starting
-// from "no credential ⇒ prompt" flashed the token dialog for a frame in
-// `--dangerous-bypass-auth` mode, before /meta had advertised the bypass.
+// The public workbench uses a local account session cookie. Keep the dialog
+// closed until a protected API call confirms that this browser is signed out.
 const authRequired = ref(false);
 let offAuthRequired: (() => void) | null = null;
 
 const client = useKimiWebClient();
-// When the server runs with `--dangerous-bypass-auth`, `/meta` advertises it
-// and we skip the token prompt entirely — there is no credential to enter.
-const showServerAuth = computed(
-  () => !client.dangerousBypassAuth.value && authRequired.value,
-);
+const showServerAuth = computed(() => authRequired.value);
 provide('resolveImage', client.resolveImageUrl);
 // Live swarm member roster for the inline AgentSwarm tool card. Sourced from the
 // AppTask store so the card shows each subagent's live phase; on refresh the
@@ -106,10 +98,9 @@ const authLogoRef = ref<HTMLButtonElement | null>(null);
 const { showAuthGate, blinkAuthLogo } = useAuthGate({ client, authLogoRef });
 
 
-// Static page title (app name only). The session title and workspace name are
-// intentionally excluded so the tab title stays stable. Prefixes an animated
-// spinner while the agent is running so activity is visible at a glance.
-usePageTitle({ running, showAuthGate });
+// Static page title (app name only). The session title, workspace name, and
+// activity indicator are intentionally excluded so browser tabs stay stable.
+usePageTitle({ showAuthGate });
 
 // The /thinking slash command has no popover anchor, so it steps to the next
 // segment for the active model (effort models cycle through their declared
@@ -134,9 +125,10 @@ const statusPanelThinking = computed<ThinkingLevel>(() => {
   return effectiveThinkingLevel(model, client.thinking.value);
 });
 
-// First-run onboarding (language + welcome greeting). Shown until the user
-// finishes it once; re-openable from the settings popover.
-const showOnboarding = ref(!client.onboarded.value);
+// The main interface is the first-run experience. Keep the legacy onboarding
+// dialog available from Settings for users who explicitly reopen preferences,
+// but never block a new account behind it.
+const showOnboarding = ref(false);
 function completeOnboarding(): void {
   client.setOnboarded(true);
   showOnboarding.value = false;
@@ -168,13 +160,10 @@ function syncAppHeight(): void {
 }
 
 onMounted(() => {
-  // Register the 401 listener before the first requests go out, so a token
-  // rejection during the initial load() can never be missed.
-  offAuthRequired = onAuthRequired(() => {
+  // Register before the first protected request so an expired account session
+  // can never leave the app showing another account's cached state.
+  offAuthRequired = onMindmapAuthRequired(() => {
     authRequired.value = true;
-    // The server now demands a token, so any cached "bypass" state from a
-    // previous mode is stale — drop it so the token prompt can show.
-    client.clearDangerousBypassAuth();
   });
   void client.load();
   loadSidebarCollapsed();
@@ -748,7 +737,6 @@ function openPr(url: string): void {
       :upload-image="client.uploadImage"
       :working="client.working.value"
       :starting="client.isStartingFirstPrompt.value"
-      :fast-moon="client.fastMoon.value"
       :file-reload-key="client.activeSessionId.value"
       :session-loading="client.sessionLoading.value"
       :compaction="client.compaction.value"

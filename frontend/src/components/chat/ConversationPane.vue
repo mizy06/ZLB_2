@@ -53,7 +53,6 @@ const props = defineProps<{
   /** True while the empty-composer first prompt is being created + submitted.
    *  Drives the empty-session "starting conversation…" loading state. */
   starting?: boolean;
-  fastMoon?: boolean;
   /** Mobile shell: compact chrome. */
   mobile?: boolean;
   /** True while switching sessions and the turns array is not yet loaded. */
@@ -1294,7 +1293,6 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :turns="turns"
               :turn-active="turnActive"
               :working="working"
-              :fast-moon="fastMoon"
               :session-loading="sessionLoading"
               :compaction="compaction"
               :has-more-messages="hasMoreMessages"

@@ -1,0 +1,478 @@
+//#region src/parse/global_state.ts
+const FOOTNOTE_DEF_RE = /(?:^|\n)[ \t]{0,3}\[\^[^\]\n]+\]:/m;
+const ABBR_DEF_RE = /(?:^|\n)[ \t]{0,3}\*\[[^\]\n]+\]:/m;
+const GLOBAL_STATE_ENV_KEYS = [
+	"references",
+	"footnotes",
+	"abbreviations",
+	"abbr",
+	"abbrs"
+];
+const GLOBAL_STATE_ENV_MARKER = Symbol.for("markdown-it-ts.global-state");
+const hasOwn = Object.prototype.hasOwnProperty;
+/**
+* Scanner equivalent of the former reference-definition regex
+* `(?:^|\n)[ \t]{0,3}\[(?!\^)(?:\\[\s\S]|[^\]\\[])+\][ \t]*:` without a
+* backtracking regex.
+*
+* The reference-definition pattern is expensive to run on large documents
+* (nested alternation over the whole source). This scanner walks the source
+* with native `indexOf` and only examines `[` characters that sit at a line
+* start with up to 3 spaces of indent, which is exactly the pattern shape.
+*/
+function hasReferenceDefinition(src) {
+	const len = src.length;
+	let searchFrom = 0;
+	while (searchFrom < len) {
+		const lb = src.indexOf("[", searchFrom);
+		if (lb === -1) return false;
+		let indent = 0;
+		let prev = lb - 1;
+		while (prev >= 0 && src.charCodeAt(prev) !== 10) {
+			const ch = src.charCodeAt(prev);
+			if (ch === 32 || ch === 9) {
+				indent++;
+				prev--;
+				continue;
+			}
+			break;
+		}
+		if ((prev < 0 || src.charCodeAt(prev) === 10) && indent <= 3 && src.charCodeAt(lb + 1) !== 94) {
+			let pos = lb + 1;
+			if (pos >= len || src.charCodeAt(pos) === 93) {
+				searchFrom = lb + 1;
+				continue;
+			}
+			while (pos < len) {
+				const ch = src.charCodeAt(pos);
+				if (ch === 93) {
+					let p = pos + 1;
+					while (p < len && (src.charCodeAt(p) === 32 || src.charCodeAt(p) === 9)) p++;
+					if (p < len && src.charCodeAt(p) === 58) return true;
+					break;
+				}
+				if (ch === 91) break;
+				if (ch === 92) {
+					pos += 2;
+					continue;
+				}
+				pos++;
+			}
+		}
+		searchFrom = lb + 1;
+	}
+	return false;
+}
+function isGlobalMarkdownStateReason(value) {
+	return value === "reference-definition" || value === "footnote-definition" || value === "abbreviation-definition";
+}
+function isPlainObject(value) {
+	if (!value || typeof value !== "object") return false;
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+function cloneSnapshotValue(value) {
+	if (Array.isArray(value)) return value.map((item) => cloneSnapshotValue(item));
+	if (isPlainObject(value)) {
+		const out = {};
+		for (const key of Object.keys(value)) out[key] = cloneSnapshotValue(value[key]);
+		return out;
+	}
+	return value;
+}
+function ownKeys(value) {
+	if (Array.isArray(value)) return value.map((_, index) => String(index));
+	if (isPlainObject(value)) return Object.keys(value);
+	return [];
+}
+function snapshotValueEquals(left, right) {
+	if (Array.isArray(left) || Array.isArray(right)) {
+		if (!Array.isArray(left) || !Array.isArray(right)) return false;
+		if (left.length !== right.length) return false;
+		for (let i = 0; i < left.length; i++) if (!snapshotValueEquals(left[i], right[i])) return false;
+		return true;
+	}
+	if (isPlainObject(left) || isPlainObject(right)) {
+		if (!isPlainObject(left) || !isPlainObject(right)) return false;
+		const leftKeys = Object.keys(left);
+		const rightKeys = Object.keys(right);
+		if (leftKeys.length !== rightKeys.length) return false;
+		for (const key of leftKeys) if (!hasOwn.call(right, key) || !snapshotValueEquals(left[key], right[key])) return false;
+		return true;
+	}
+	return Object.is(left, right);
+}
+function getSnapshotKeyValue(value, key) {
+	if (Array.isArray(value)) return value[Number(key)];
+	if (isPlainObject(value)) return value[key];
+}
+function restoreSnapshotValue(target, snapshot) {
+	if (Array.isArray(target) && Array.isArray(snapshot)) {
+		target.length = snapshot.length;
+		for (let i = 0; i < snapshot.length; i++) target[i] = cloneSnapshotValue(snapshot[i]);
+		return target;
+	}
+	if (isPlainObject(target) && isPlainObject(snapshot)) {
+		for (const key of Object.keys(target)) if (!hasOwn.call(snapshot, key)) delete target[key];
+		for (const key of Object.keys(snapshot)) target[key] = cloneSnapshotValue(snapshot[key]);
+		return target;
+	}
+	return cloneSnapshotValue(snapshot);
+}
+function resetOwnedSnapshotValue(env, key, entry) {
+	const ownedKeys = entry.ownedKeys ?? [];
+	const target = env[key];
+	if (isPlainObject(target) || Array.isArray(target)) {
+		const snapshotKeys = new Set(ownKeys(entry.value));
+		for (const ownedKey of ownedKeys) if (entry.existed && snapshotKeys.has(ownedKey)) target[ownedKey] = cloneSnapshotValue(getSnapshotKeyValue(entry.value, ownedKey));
+		else delete target[ownedKey];
+		if (!entry.existed && ownKeys(target).length === 0) delete env[key];
+		return;
+	}
+	if (entry.existed) env[key] = cloneSnapshotValue(entry.value);
+	else delete env[key];
+}
+function getMarker(env) {
+	const value = env[GLOBAL_STATE_ENV_MARKER];
+	if (isGlobalMarkdownStateReason(value)) return {
+		reason: value,
+		snapshot: {}
+	};
+	if (value && typeof value === "object" && isGlobalMarkdownStateReason(value.reason) && value.snapshot && typeof value.snapshot === "object") return value;
+	return null;
+}
+function setMarker(env, marker) {
+	Object.defineProperty(env, GLOBAL_STATE_ENV_MARKER, {
+		value: marker,
+		enumerable: false,
+		configurable: true,
+		writable: true
+	});
+}
+function detectGlobalMarkdownState(src) {
+	if (!src) return null;
+	if (!src.includes("]:") && !src.includes("*[")) return null;
+	if (FOOTNOTE_DEF_RE.test(src)) return "footnote-definition";
+	if (ABBR_DEF_RE.test(src)) return "abbreviation-definition";
+	if (hasReferenceDefinition(src)) return "reference-definition";
+	return null;
+}
+function getKnownGlobalMarkdownState(env) {
+	return getMarker(env)?.reason ?? null;
+}
+function runWithKnownGlobalMarkdownState(env, reason, run) {
+	if (getKnownGlobalMarkdownState(env)) resetKnownGlobalMarkdownState(env);
+	if (!reason) return run();
+	markKnownGlobalMarkdownState(env, reason);
+	try {
+		const result = run();
+		finalizeKnownGlobalMarkdownState(env);
+		return result;
+	} catch (error) {
+		resetKnownGlobalMarkdownState(env);
+		throw error;
+	}
+}
+function markKnownGlobalMarkdownState(env, reason) {
+	try {
+		resetKnownGlobalMarkdownState(env);
+		const snapshot = {};
+		for (const key of GLOBAL_STATE_ENV_KEYS) snapshot[key] = hasOwn.call(env, key) ? {
+			existed: true,
+			value: cloneSnapshotValue(env[key])
+		} : { existed: false };
+		setMarker(env, {
+			reason,
+			snapshot
+		});
+	} catch {}
+}
+function finalizeKnownGlobalMarkdownState(env) {
+	const marker = getMarker(env);
+	if (!marker) return;
+	for (const key of GLOBAL_STATE_ENV_KEYS) {
+		const entry = marker.snapshot[key];
+		if (!entry) continue;
+		entry.ownedKeys = [];
+		const after = env[key];
+		if (!isPlainObject(after) && !Array.isArray(after)) continue;
+		const beforeKeys = new Set(ownKeys(entry.existed ? entry.value : void 0));
+		entry.ownedKeys = ownKeys(after).filter((name) => {
+			if (!beforeKeys.has(name)) return true;
+			return !snapshotValueEquals(after[name], getSnapshotKeyValue(entry.value, name));
+		});
+	}
+}
+function resetKnownGlobalMarkdownState(env) {
+	const marker = getMarker(env);
+	if (!marker) return;
+	for (const key of GLOBAL_STATE_ENV_KEYS) {
+		const entry = marker.snapshot[key];
+		if (!entry) {
+			delete env[key];
+			continue;
+		}
+		if (entry.ownedKeys) {
+			resetOwnedSnapshotValue(env, key, entry);
+			continue;
+		}
+		if (entry.existed) env[key] = restoreSnapshotValue(env[key], entry.value);
+		else delete env[key];
+	}
+	delete env[GLOBAL_STATE_ENV_MARKER];
+}
+
+//#endregion
+//#region src/parse/strategy_diagnostics.ts
+const MDTS_DIAGNOSTICS = Symbol.for("markdown-it-ts.diagnostics");
+function getDiagnosticsStore(env, create) {
+	if (!env) return void 0;
+	try {
+		const existing = env[MDTS_DIAGNOSTICS];
+		if (existing && typeof existing === "object") return existing;
+		if (!create) return void 0;
+		const diagnostics = {};
+		env[MDTS_DIAGNOSTICS] = diagnostics;
+		return diagnostics;
+	} catch {
+		return;
+	}
+}
+function clearParseDiagnostics(env) {
+	if (!env) return;
+	try {
+		const diagnostics = env[MDTS_DIAGNOSTICS];
+		if (diagnostics && typeof diagnostics === "object") {
+			delete diagnostics.strategy;
+			delete diagnostics.chunk;
+			delete diagnostics.unbounded;
+			delete diagnostics.editable;
+			delete diagnostics.stockFast;
+		}
+	} catch {}
+}
+function beginParseDiagnostics(env) {
+	clearParseDiagnostics(env);
+}
+function setChunkDiagnostics(env, info) {
+	const diagnostics = getDiagnosticsStore(env, true);
+	if (!diagnostics) return;
+	diagnostics.chunk = info;
+}
+
+//#endregion
+//#region src/stream/chunked.ts
+const DEFAULTS = {
+	maxChunkChars: 1e4,
+	maxChunkLines: 200,
+	fenceAware: true,
+	maxChunks: void 0,
+	fallbackOnGlobalState: true
+};
+/**
+* Chunk a markdown document on reasonably safe boundaries (blank-line separated)
+* and parse each chunk separately, then merge token streams with line map offsets.
+*
+* @experimental Markdown is not always chunk-local. The default path falls back
+* to a full parse for known document-level state and unsafe chunk boundaries;
+* disabling those fallbacks can produce output that differs from full parsing.
+*/
+function chunkedParse(md, src, env = {}, opts) {
+	beginParseDiagnostics(env);
+	const options = {
+		...DEFAULTS,
+		...opts || {}
+	};
+	const currentGlobalStateReason = detectGlobalMarkdownState(src);
+	if (options.fallbackOnGlobalState !== false && currentGlobalStateReason) {
+		setChunkDiagnostics(env, {
+			count: 1,
+			fallback: true,
+			fallbackReason: currentGlobalStateReason,
+			globalStateDetected: currentGlobalStateReason,
+			maxChunkChars: options.maxChunkChars,
+			maxChunkLines: options.maxChunkLines
+		});
+		return runWithKnownGlobalMarkdownState(env, currentGlobalStateReason, () => {
+			return md.core.parse(src, env, md).tokens;
+		});
+	}
+	let ranges = splitIntoChunkRanges(src, options);
+	if (options.maxChunks && ranges.length > options.maxChunks) ranges = rebalanceChunkRanges(ranges, options.maxChunks);
+	if (hasUnsafeChunkBoundary(src, ranges)) {
+		setChunkDiagnostics(env, {
+			count: 1,
+			fallback: true,
+			fallbackReason: "unsafe-chunk-boundary",
+			maxChunkChars: options.maxChunkChars,
+			maxChunkLines: options.maxChunkLines
+		});
+		return runWithKnownGlobalMarkdownState(env, currentGlobalStateReason, () => {
+			return md.core.parse(src, env, md).tokens;
+		});
+	}
+	let lineOffset = 0;
+	const out = [];
+	setChunkDiagnostics(env, {
+		count: ranges.length,
+		maxChunkChars: options.maxChunkChars,
+		maxChunkLines: options.maxChunkLines,
+		globalStateDetected: currentGlobalStateReason || void 0,
+		globalStateFallbackDisabled: options.fallbackOnGlobalState === false && !!currentGlobalStateReason
+	});
+	return runWithKnownGlobalMarkdownState(env, currentGlobalStateReason, () => {
+		for (let i = 0; i < ranges.length; i++) {
+			const range = ranges[i];
+			const ch = src.slice(range.start, range.end);
+			const tokens = md.core.parse(ch, env, md).tokens;
+			if (lineOffset !== 0 && tokens.length) shiftTokenLines(tokens, lineOffset);
+			appendTokens(out, tokens);
+			lineOffset += range.lineCount;
+		}
+		return out;
+	});
+}
+/**
+* Split text into chunks by blank lines without breaking fenced code blocks.
+* Keeps chunk sizes under maxChunkChars/maxChunkLines where possible.
+*/
+function splitIntoChunks(src, opts) {
+	const ranges = splitIntoChunkRanges(src, opts);
+	const chunks = new Array(ranges.length);
+	for (let i = 0; i < ranges.length; i++) chunks[i] = src.slice(ranges[i].start, ranges[i].end);
+	return chunks;
+}
+function splitIntoChunkRanges(src, opts, final = true) {
+	const chunks = [];
+	let charCount = 0;
+	let lineCount = 0;
+	let chunkStart = 0;
+	let chunkLines = 0;
+	let sinceBlankLines = 0;
+	let sinceBlankChars = 0;
+	let inFence = null;
+	function flush(end) {
+		if (end <= chunkStart) return;
+		chunks.push({
+			start: chunkStart,
+			end,
+			lineCount: chunkLines
+		});
+		chunkStart = end;
+		charCount = 0;
+		lineCount = 0;
+		chunkLines = 0;
+	}
+	for (let lineStart = 0; lineStart < src.length;) {
+		let lineEnd = src.indexOf("\n", lineStart);
+		let lineEndWithNl = lineEnd;
+		if (lineEnd === -1) {
+			lineEnd = src.length;
+			lineEndWithNl = src.length;
+		} else lineEndWithNl = lineEnd + 1;
+		const blank = isBlankLine(src, lineStart, lineEnd);
+		if (opts.fenceAware) {
+			let p = lineStart;
+			while (p < lineEnd) {
+				const c = src.charCodeAt(p);
+				if (c === 32 || c === 9) p++;
+				else break;
+			}
+			const ch = src[p];
+			if (ch === "`" || ch === "~") {
+				let q = p;
+				while (q < lineEnd && src[q] === ch) q++;
+				const runLen = q - p;
+				if (runLen >= 3) {
+					if (!inFence) inFence = {
+						marker: ch,
+						length: runLen
+					};
+					else if (inFence.marker === ch && runLen >= inFence.length) inFence = null;
+				}
+			}
+		}
+		const lineWithNlLen = lineEndWithNl - lineStart;
+		charCount += lineWithNlLen;
+		lineCount += 1;
+		chunkLines += 1;
+		if (blank) {
+			sinceBlankLines = 0;
+			sinceBlankChars = 0;
+		} else {
+			sinceBlankLines += 1;
+			sinceBlankChars += lineWithNlLen;
+		}
+		const atBlankBoundary = blank;
+		if ((charCount >= opts.maxChunkChars || lineCount >= opts.maxChunkLines) && !inFence) if (atBlankBoundary) flush(lineEndWithNl);
+		else {
+			const maxSinceBlankLines = Math.max(10, Math.floor(opts.maxChunkLines * .5));
+			const maxSinceBlankChars = Math.max(opts.maxChunkChars, 8e3);
+			if (sinceBlankLines >= maxSinceBlankLines || sinceBlankChars >= maxSinceBlankChars) flush(lineEndWithNl);
+		}
+		lineStart = lineEndWithNl;
+	}
+	if (final) flush(src.length);
+	return chunks;
+}
+function hasUnsafeChunkBoundary(src, ranges, options = { rangesCoverWholeSource: true }) {
+	const limit = options.rangesCoverWholeSource ? ranges.length - 1 : ranges.length;
+	for (let i = 0; i < limit; i++) if (!endsAtBlankLine(src, ranges[i].end)) return true;
+	return false;
+}
+function endsAtBlankLine(src, end) {
+	if (end <= 0 || end > src.length || src.charCodeAt(end - 1) !== 10) return false;
+	let lineStart = end - 2;
+	while (lineStart >= 0 && src.charCodeAt(lineStart) !== 10) lineStart--;
+	for (let i = lineStart + 1; i < end - 1; i++) {
+		const ch = src.charCodeAt(i);
+		if (ch !== 32 && ch !== 9 && ch !== 13) return false;
+	}
+	return true;
+}
+function shiftTokenLines(tokens, offset) {
+	if (offset === 0) return;
+	const stack = [];
+	for (let i = tokens.length - 1; i >= 0; i--) stack.push(tokens[i]);
+	while (stack.length) {
+		const t = stack.pop();
+		if (t.map) {
+			t.map[0] += offset;
+			t.map[1] += offset;
+		}
+		if (t.children) for (let i = t.children.length - 1; i >= 0; i--) stack.push(t.children[i]);
+	}
+}
+function appendTokens(out, tokens) {
+	for (let i = 0; i < tokens.length; i++) out.push(tokens[i]);
+}
+function rebalanceChunkRanges(chunks, maxChunks) {
+	if (chunks.length <= maxChunks) return chunks;
+	const out = [];
+	let index = 0;
+	for (let group = 0; group < maxChunks; group++) {
+		const groupsLeft = maxChunks - group;
+		const chunksLeft = chunks.length - index;
+		const take = Math.ceil(chunksLeft / groupsLeft);
+		const slice = chunks.slice(index, index + take);
+		let lineCount = 0;
+		for (let i = 0; i < slice.length; i++) lineCount += slice[i].lineCount;
+		out.push({
+			start: slice[0].start,
+			end: slice[slice.length - 1].end,
+			lineCount
+		});
+		index += take;
+	}
+	return out;
+}
+function isBlankLine(src, start, end) {
+	for (let i = start; i < end; i++) {
+		const ch = src.charCodeAt(i);
+		if (ch !== 32 && ch !== 9 && ch !== 13) return false;
+	}
+	return true;
+}
+
+//#endregion
+export { chunkedParse, hasUnsafeChunkBoundary, splitIntoChunkRanges, splitIntoChunks };

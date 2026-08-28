@@ -32,7 +32,7 @@ export default {
   daemon: 'Daemon',
   backendTitle: 'Backend {backend} · {endpoint} — click to switch',
   noSessions: 'No conversations yet',
-  showMore: 'Load {count} more conversations',
+  showMore: 'Load more conversations',
   showLess: 'Show less',
   showAll: 'Show {count} more conversations',
   loadingMore: 'Loading…',

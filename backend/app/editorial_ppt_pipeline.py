@@ -27,7 +27,11 @@ from .architecture_schemas import (
     default_mindmap_loop,
 )
 from .blackboard import SQLiteBlackboard
-from .config import settings
+from .config import (
+    model_context_window_tokens,
+    model_max_input_tokens,
+    settings,
+)
 from .editorial_patch import (
     EditorialIssueDecision,
     EditorialPatch,
@@ -46,6 +50,7 @@ from .editorial_ppt_prompts import (
     GLOBAL_EDITOR_REVISION_PROMPT,
     MULTILEVEL_STRUCTURE_REVIEWER_PROMPT,
     PRUNING_REVIEWER_PROMPT,
+    VISUAL_CONTEXT_COMPACTOR_PROMPT,
 )
 from .mindmap_engine.schemas import EvidenceRef, RenderResponse, RenderedPage
 from .human_loop import (
@@ -53,7 +58,12 @@ from .human_loop import (
     build_human_guidance,
     human_guidance_text,
 )
-from .mindmap_engine.visuals import render_document, resolve_asset_path
+from .editorial_input import build_editorial_input_bundle
+from .mindmap_engine.visuals import (
+    render_document,
+    render_documents,
+    resolve_asset_path,
+)
 from .model_provider import (
     ModelCallContext,
     ModelProviderError,
@@ -109,11 +119,22 @@ EXPERIMENT_WARNING = (
     "实验模式：全局总编先通读整份 PPT 生成初稿，"
     "再根据内容遗漏、剪枝和多级结构审校意见迭代修订。"
 )
+EDITORIAL_TEXT_CONTEXT_PROMPT = (
+    "你是课程思维导图构建流水线的文本总编。"
+    "当前输入由带来源边界的文本文档组成；只依据这些文本事实生成结构化导图，"
+    "不要假设存在图片、幻灯片或未提供的视觉证据。"
+)
 
 _BLOCKING_SEVERITIES = {"blocker", "major"}
 _SEVERITY_ORDER = {"blocker": 0, "major": 1, "minor": 2}
 _EDITORIAL_RENDER_CACHE_VERSION = "editorial-render-cache-v1"
 _EDITORIAL_RESPONSE_SESSION_VERSION = "editorial-response-session-v1"
+_CONTEXT_COMPACTION_THRESHOLD = 0.85
+_CONTEXT_COMPACTION_TARGET = 0.30
+_MAX_DIRECT_VISUAL_PAGES = 32
+_VISUAL_CONTEXT_BATCH_SIZE = 12
+_MAX_EDITORIAL_OUTPUT_TOKENS = 32_000
+_COMPLETE_GRAPH_LENGTH_RETRY_INCREMENT = 8_000
 _CONTENT_ACTIONS = {
     "add_node",
     "add_to_definition",
@@ -224,6 +245,36 @@ class EditorialRevisionOutput(BaseModel):
     decisions: list[EditorialIssueDecision] = Field(max_length=48)
 
 
+class EditorialVisualEvidence(BaseModel):
+    source_slides: list[int] = Field(min_length=1, max_length=_VISUAL_CONTEXT_BATCH_SIZE)
+    content: str = Field(min_length=2, max_length=300)
+
+    @field_validator("source_slides")
+    @classmethod
+    def normalize_source_slides(cls, value: list[int]) -> list[int]:
+        if any(slide < 1 for slide in value):
+            raise ValueError("source_slides must contain positive slide numbers")
+        return sorted(set(value))
+
+    @field_validator("content")
+    @classmethod
+    def strip_content(cls, value: str) -> str:
+        return value.strip()
+
+
+class EditorialVisualContextPacket(BaseModel):
+    summary: str = Field(min_length=2, max_length=800)
+    evidence: list[EditorialVisualEvidence] = Field(
+        min_length=1,
+        max_length=_VISUAL_CONTEXT_BATCH_SIZE,
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def strip_summary(cls, value: str) -> str:
+        return value.strip()
+
+
 def editorial_ppt_enabled() -> bool:
     return (
         os.getenv("MINDMAP_PIPELINE_MODE", "").strip().casefold()
@@ -252,6 +303,23 @@ def _responses_reasoning_effort(thinking_budget: int) -> str:
     if thinking_budget <= 12000:
         return "xhigh"
     return "max"
+
+
+def _length_retry_prompt(user_prompt: str) -> str:
+    return (
+        user_prompt
+        + "\n\n【必须从头完整重写】上一轮响应因输出长度限制被截断。"
+        "请从头返回一份完整、可解析且最后以 `}` 结束的 JSON 对象；"
+        "不要续写半截内容。若空间紧张，优先压缩非关键 definition 和重复补充，"
+        "但不得省略任何必填字段。"
+    )
+
+
+def _is_length_truncation(error: Exception) -> bool:
+    return (
+        isinstance(error, ModelProviderError)
+        and "输出长度限制被截断" in str(error)
+    )
 
 
 def _cached_tokens(usage: dict[str, Any]) -> int:
@@ -410,45 +478,184 @@ def _cached_image_task_prompt(
     )
 
 
+def _editorial_task_prompt(
+    role_prompt: str,
+    task_prompt: str,
+    *,
+    has_visuals: bool,
+) -> str:
+    if has_visuals:
+        return _cached_image_task_prompt(role_prompt, task_prompt)
+    return (
+        role_prompt
+        + "\n\n本次文本任务输入（来源边界优先）：\n"
+        + task_prompt
+    )
+
+
 def _draft_user_prompt(
     filename: str,
     slide_count: int,
     max_depth: int,
     human_guidance: dict[str, Any] | None = None,
     document_manifest: list[dict[str, Any]] | None = None,
+    input_mode: str = "visual",
+    text_context: str = "",
 ) -> str:
     doc_header = f"文件名：{filename}\n"
     if document_manifest and len(document_manifest) > 1:
         doc_lines = [
-            f"  - 文档 {i+1}：《{doc['filename']}》，包含第 {doc['start_slide']} 到第 {doc['end_slide']} 页幻灯片（vision_id: slide_{doc['start_slide']:04d} ~ slide_{doc['end_slide']:04d}）"
+            (
+                f"  - 文档 {i+1}：《{doc['filename']}》，"
+                f"{doc.get('file_type', 'document')}，"
+                + (
+                    f"包含第 {doc['start_slide']} 到第 {doc['end_slide']} "
+                    f"页（vision_id: slide_{doc['start_slide']:04d} ~ "
+                    f"slide_{doc['end_slide']:04d}）"
+                    if doc.get("start_slide") and doc.get("end_slide")
+                    else (
+                        f"包含 {doc.get('block_count', 0)} 个文本单元"
+                        if doc.get("input_kind") == "text"
+                        else "没有可用的视觉页码范围"
+                    )
+                )
+            )
             for i, doc in enumerate(document_manifest)
         ]
         doc_header = (
             f"输入多文档总数：{len(document_manifest)} 份\n"
-            f"各文档幻灯片范围：\n" + "\n".join(doc_lines) + "\n"
+            f"各文档输入范围：\n" + "\n".join(doc_lines) + "\n"
         )
+    source_header = (
+        f"输入模式：{input_mode}。"
+        "有视觉页时，source_slides 使用全局视觉页码；"
+        "纯文本输入时，source_slides 使用文本单元序号。\n"
+    )
+    source_context = (
+        "\n输入源文本（按文档边界提供，只能作为事实依据）：\n"
+        + text_context[:120_000]
+        if text_context.strip()
+        else ""
+    )
     return (
         f"{doc_header}"
-        f"幻灯片总数：{slide_count}\n"
+        + source_header
+        + f"幻灯片总数：{slide_count}\n"
         f"允许的最大树深度：{max_depth}\n"
-        "后续图片按 vision_id=slide_0001 到最后一页排列，包含了所有文档的全部内容。"
+        "后续图片按 vision_id=slide_0001 到最后一页排列，包含了所有可用视觉文档的内容。"
         "source_slides 必须使用 vision_id 对应的数字页码。\n"
-        "请通读全部图片，综合多份文档的内容脉络与交叉知识点，建立 editorial_brief，再生成统一完整的全局初稿。"
+        "请综合所有文档的内容脉络与交叉知识点，建立 editorial_brief，再生成统一完整的全局初稿。"
         "不要计算覆盖率，不要为了引用每一页而制造节点。\n"
         f"JSON Schema：{_schema_json(EditorialMindMap)}"
+        + source_context
         + human_guidance_text(human_guidance)
     )
 
 
+def _source_context_suffix(
+    *,
+    input_mode: str,
+    text_context: str,
+) -> str:
+    if not text_context.strip():
+        return (
+            f"\n输入模式：{input_mode}。"
+            "当前任务没有可提取的文本上下文，视觉页是唯一事实依据。\n"
+        )
+    return (
+        f"\n输入模式：{input_mode}。"
+        "以下是按原始文件隔离的文本事实；不要跨边界改写或覆盖来源：\n"
+        f"{text_context[:120_000]}\n"
+    )
+
+
 CONTEXT_COMPACTOR_SYSTEM_PROMPT = """你是课程思维导图构建流水线的上下文压缩器（Context Compactor）。
-当前多轮审稿与修订的上下文使用量已达到 85% 高水位阈值。请按照行业标准惯例，对之前的多轮审稿讨论、修改决策记录以及中间推理进行高保真总结与压缩。
+当前多轮审稿与修订的上下文使用量已达到高水位阈值。请对之前的多轮审稿讨论、修改决策记录以及中间推理进行高保真总结与压缩。
 
 硬性要求：
 1. 提取前序各轮审稿（主编、内容遗漏、剪枝、多级结构）已达成的核心修改结论与共识。
 2. 保留当前最新思维导图树结构的关键骨架与要点。
 3. 列出尚未解决或需要在后续轮次继续关注的重点遗留问题。
 4. 输出精炼、高信息密度的压缩摘要，便于后续审稿模型在紧凑的上下文中继续精修。
-5. 只输出纯文本总结或结构化摘要，不要输出任何多余寒暄。"""
+5. 只输出一个 JSON 对象，格式为 {"summary":"..."}, 不要输出任何多余寒暄。"""
+
+
+def _deterministic_context_summary(
+    *,
+    current: EditorialMindMap,
+    decisions: Sequence[EditorialIssueDecision],
+    issues: Sequence[EditorialReviewIssue],
+) -> str:
+    """Keep the current graph and unresolved work usable if the model is unavailable."""
+    nodes = [
+        {
+            "id": node.id,
+            "name": node.name,
+            "parent_id": node.parent_id,
+            "source_slides": node.source_slides,
+        }
+        for node in current.nodes
+    ]
+    payload = {
+        "title": current.title,
+        "nodes": nodes,
+        "recent_decisions": [
+            decision.model_dump(mode="json") for decision in decisions[-24:]
+        ],
+        "open_issues": [
+            issue.model_dump(mode="json") for issue in issues[-16:]
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _visual_context_compactor_user_prompt(
+    *,
+    source_slides: Sequence[int],
+    document_manifest: Sequence[dict[str, Any]],
+) -> str:
+    payload = {
+        "source_slides": list(source_slides),
+        "document_manifest": list(document_manifest),
+        "output_contract": (
+            "evidence 必须覆盖这批 source_slides 中所有有知识价值的页面；"
+            "低价值页仍需通过 source_slides 保留可追溯性。"
+        ),
+    }
+    return (
+        "请阅读本批原始视觉页面，并输出视觉证据包。\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\nJSON Schema："
+        + _schema_json(EditorialVisualContextPacket)
+    )
+
+
+def _compacted_visual_source_text(
+    *,
+    packets: Sequence[EditorialVisualContextPacket],
+    text_context: str,
+    target_tokens: int,
+) -> str:
+    packet_text = json.dumps(
+        [packet.model_dump(mode="json") for packet in packets],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    text_budget_chars = max(
+        4_000,
+        target_tokens * 4 - len(packet_text) - 4_000,
+    )
+    return (
+        "以下是由全部视觉页分批直读、并保留 source_slides 的证据包。"
+        "它是当前超长视觉输入的事实上下文；不得猜测未被证据支持的细节。\n"
+        + packet_text
+        + (
+            "\n以下是按原始文件隔离的补充文本事实：\n"
+            + text_context[:text_budget_chars]
+            if text_context.strip()
+            else ""
+        )
+    )
 
 
 async def _compact_editorial_context(
@@ -461,7 +668,10 @@ async def _compact_editorial_context(
     filename: str,
     current_tokens: int,
     max_tokens: int,
+    output_tokens: int,
     human_guidance: dict[str, Any] | None = None,
+    document_manifest: Sequence[dict[str, Any]] = (),
+    text_context: str = "",
 ) -> tuple[str, int]:
     user_prompt = (
         f"【当前上下文用量预警】当前 Token 占用已达 {current_tokens}，超过 85% 阈值。\n"
@@ -469,24 +679,35 @@ async def _compact_editorial_context(
         f"当前最新思维导图节点数：{len(current.nodes)}，根节点：{getattr(current, "title", "课程核心")}\n"
         f"已做出的审稿决策数：{len(decisions)}\n"
         f"待关注或历史审稿问题：{[i.model_dump(mode='json') for i in issues[-15:]]}\n"
+        f"输入文档清单：{json.dumps(list(document_manifest), ensure_ascii=False)}\n"
+        f"文本事实摘要：{text_context[:12_000]}\n"
         "请按照行业标准惯例，将上述历史审稿与推理上下文高度压缩精简，形成精炼的阶段性审稿共识纪要。"
     )
     try:
-        response = await client.chat.completions.create(
+        response = await client.complete_json(
             model=model,
-            messages=[
-                {"role": "system", "content": CONTEXT_COMPACTOR_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=2000,
-            temperature=0.1,
+            system_prompt=CONTEXT_COMPACTOR_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            max_tokens=output_tokens,
+            max_completion_tokens=output_tokens,
         )
-        summary = response.choices[0].message.content or "上下文已按行业惯例压缩，保留核心审稿共识与当前图结构。"
+        summary = str(response.get("summary") or "").strip()
+        if not summary:
+            raise ModelProviderError("上下文压缩器没有返回 summary")
     except Exception as exc:
-        summary = f"上下文已触发自动压缩保护（降至行业安全水位）：{exc}"
+        summary = _deterministic_context_summary(
+            current=current,
+            decisions=decisions,
+            issues=issues,
+        )
+        summary = (
+            "模型压缩器暂不可用，已保留确定性图谱/决策摘要："
+            + summary
+            + f"；原因：{exc}"
+        )
 
     # Target 30% of max context window (industry convention)
-    target_tokens = int(max_tokens * 0.30)
+    target_tokens = int(max_tokens * _CONTEXT_COMPACTION_TARGET)
     return summary, target_tokens
 
 
@@ -607,6 +828,344 @@ def _patch_repair_user_prompt(
     return (
         "图片标签与 source_slides 使用相同页码语义。"
         "请修复失败 Patch；当前导图尚未应用任何失败操作。\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\nJSON Schema："
+        + _schema_json(EditorialPatch)
+    )
+
+
+def _fallback_editorial_brief(
+    previous_result: MindMapResult,
+) -> EditorialBrief:
+    title = (
+        previous_result.document.title.strip()
+        or previous_result.document.filename.strip()
+        or "当前学习主题"
+    )
+    return EditorialBrief(
+        learning_goal=f"系统理解{title}的核心知识结构。",
+        audience="需要复习和整理知识的学习者",
+        organizing_principle=(
+            "沿用现有导图的有效层级，并根据用户意见进行最小必要修订。"
+        ),
+        level_semantics=[
+            "根节点表示学习主题",
+            "一级节点表示主要知识分区",
+            "下级节点表示可独立学习的概念、原理或步骤",
+        ],
+        importance_policy=(
+            "保留定义、原理、条件、步骤、风险和关键辨析等学习主线内容。"
+        ),
+        pruning_policy=(
+            "删除重复、行政和装饰内容，将次要补充信息保留在相关定义中。"
+        ),
+    )
+
+
+def _editorial_brief_from_previous_result(
+    previous_result: MindMapResult,
+) -> EditorialBrief:
+    stored_brief = previous_result.run_manifest.get("editorial_brief")
+    if isinstance(stored_brief, dict):
+        try:
+            return EditorialBrief.model_validate(stored_brief)
+        except ValueError:
+            pass
+    return _fallback_editorial_brief(previous_result)
+
+
+def _prior_document_manifest(
+    previous_result: MindMapResult,
+) -> list[dict[str, Any]]:
+    candidates = (
+        previous_result.run_manifest.get("document_manifest"),
+        previous_result.document.parse_metadata.get("documents"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            return [
+                dict(item)
+                for item in candidate
+                if isinstance(item, dict)
+            ]
+    return []
+
+
+def _rendered_from_previous_result(
+    *,
+    blackboard: SQLiteBlackboard,
+    previous_result: MindMapResult,
+) -> tuple[RenderResponse, bool]:
+    checkpoint = blackboard.load_checkpoint(
+        previous_result.run_id,
+        "editorial_render",
+    )
+    if isinstance(checkpoint, dict):
+        try:
+            rendered = RenderResponse.model_validate(
+                checkpoint.get("rendered")
+            )
+            return rendered, True
+        except ValueError:
+            pass
+
+    pages = [
+        RenderedPage(
+            asset_id=asset.asset_id,
+            render_id=asset.render_id,
+            filename=asset.filename,
+            url=asset.url,
+            page=asset.source_slide or asset.source_page or index,
+            width=asset.width or 0,
+            height=asset.height or 0,
+        )
+        for index, asset in enumerate(
+            (
+                asset
+                for asset in previous_result.assets
+                if asset.visual_kind == "full_slide"
+            ),
+            start=1,
+        )
+    ]
+    return (
+        RenderResponse(
+            render_id=pages[0].render_id if pages else "",
+            filename=previous_result.document.filename,
+            pages=sorted(pages, key=lambda item: item.page),
+            native_visuals=[
+                asset
+                for asset in previous_result.assets
+                if asset.visual_kind != "full_slide"
+            ],
+        ),
+        False,
+    )
+
+
+def _prior_response_images(
+    *,
+    blackboard: SQLiteBlackboard,
+    previous_result: MindMapResult,
+) -> list[tuple[str, str]]:
+    checkpoint = blackboard.load_checkpoint(
+        previous_result.run_id,
+        "editorial_response_images",
+    )
+    if not isinstance(checkpoint, dict):
+        return []
+    raw_images = checkpoint.get("images")
+    if not isinstance(raw_images, list):
+        return []
+    images: list[tuple[str, str]] = []
+    for item in raw_images:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if label and url:
+            images.append((label, url))
+    return images
+
+
+def _prior_response_session(
+    *,
+    blackboard: SQLiteBlackboard,
+    previous_result: MindMapResult,
+    model: str,
+) -> str | None:
+    checkpoint = blackboard.load_checkpoint(
+        previous_result.run_id,
+        "editorial_response_session",
+    )
+    if not isinstance(checkpoint, dict):
+        return None
+    response_id = str(checkpoint.get("current_response_id") or "").strip()
+    if not response_id:
+        return None
+    chain = checkpoint.get("chain")
+    if not isinstance(chain, list):
+        return None
+    matching = next(
+        (
+            item
+            for item in reversed(chain)
+            if isinstance(item, dict)
+            and item.get("response_id") == response_id
+        ),
+        None,
+    )
+    if not isinstance(matching, dict):
+        return None
+    if str(matching.get("model") or "").strip() != model:
+        return None
+    return response_id
+
+
+def _source_slides_from_previous_node(node: MindMapNode) -> list[int]:
+    slides: list[int] = []
+
+    def add_unit_id(unit_id: str) -> None:
+        prefix, separator, suffix = unit_id.rpartition("_")
+        if (
+            separator
+            and prefix in {"slide", "text"}
+            and suffix.isdigit()
+            and int(suffix) >= 1
+        ):
+            slides.append(int(suffix))
+
+    for unit_id in (
+        *node.support_unit_ids,
+        *node.explicit_evidence_unit_ids,
+    ):
+        add_unit_id(unit_id)
+    for evidence in node.evidence:
+        if evidence.slide is not None and evidence.slide >= 1:
+            slides.append(evidence.slide)
+        add_unit_id(evidence.unit_id)
+    return sorted(set(slides)) or [1]
+
+
+def _reconstruct_editorial_mindmap(
+    previous_result: MindMapResult,
+) -> EditorialMindMap:
+    allowed_roles = {
+        "root",
+        "topic",
+        "concept",
+        "definition",
+        "principle",
+        "formula",
+        "step",
+        "example",
+        "warning",
+        "visual",
+    }
+    prior_nodes = previous_result.nodes
+    if not prior_nodes:
+        raise ValueError("上一版导图没有可用于定向修订的节点。")
+
+    editor_id_by_canonical: dict[str, str] = {}
+    used_editor_ids: set[str] = set()
+    for index, node in enumerate(prior_nodes, start=1):
+        candidate = (
+            node.temp_ids[0].strip()
+            if node.temp_ids and node.temp_ids[0].strip()
+            else node.id
+        )
+        if (
+            len(candidate) > 96
+            or candidate in used_editor_ids
+        ):
+            candidate = f"legacy_{index:04d}_{hashlib.sha1(node.id.encode()).hexdigest()[:10]}"
+        editor_id_by_canonical[node.id] = candidate
+        used_editor_ids.add(candidate)
+
+    parent_by_child = {
+        edge.target: edge.source
+        for edge in previous_result.tree_edges
+        if edge.target in editor_id_by_canonical
+        and edge.source in editor_id_by_canonical
+    }
+    nodes: list[SingleShotNode] = []
+    for node in prior_nodes:
+        is_root = node.id == previous_result.root_id
+        raw_role = str(node.type or node.role).strip().casefold()
+        if raw_role == "branch_topic":
+            raw_role = "topic"
+        if raw_role not in allowed_roles:
+            raw_role = str(node.role).strip().casefold()
+        if raw_role == "branch_topic":
+            raw_role = "topic"
+        if raw_role not in allowed_roles:
+            raw_role = "concept"
+        if is_root:
+            raw_role = "root"
+        elif raw_role == "root":
+            raw_role = "concept"
+        parent_canonical_id = parent_by_child.get(node.id, node.parent_id)
+        nodes.append(
+            SingleShotNode(
+                id=editor_id_by_canonical[node.id],
+                name=node.name,
+                role=raw_role,
+                definition=node.definition,
+                parent_id=(
+                    None
+                    if is_root
+                    else editor_id_by_canonical.get(parent_canonical_id)
+                ),
+                source_slides=_source_slides_from_previous_node(node),
+                confidence=node.confidence,
+            )
+        )
+
+    root = next((node for node in nodes if node.parent_id is None), None)
+    title = (
+        previous_result.document.title.strip()
+        or (root.name if root is not None else "")
+        or "当前学习主题"
+    )
+    return EditorialMindMap(
+        title=title,
+        editorial_brief=_editorial_brief_from_previous_result(
+            previous_result
+        ),
+        nodes=nodes,
+    )
+
+
+def _human_refinement_issue(
+    *,
+    instruction: str,
+    current: EditorialMindMap,
+) -> EditorialReviewIssue:
+    root = next(node for node in current.nodes if node.parent_id is None)
+    digest = hashlib.sha256(instruction.encode("utf-8")).hexdigest()[:16]
+    return EditorialReviewIssue(
+        id=f"human_refinement:{digest}",
+        issue_type="human_refinement",
+        severity="major",
+        scope="global",
+        affected_node_ids=[root.id],
+        source_slides=[],
+        diagnosis=f"用户要求：{instruction[:560]}",
+        why_it_matters=(
+            "这是对已生成导图的直接修改意见，应在不违背来源事实的前提下"
+            "由全局总编定向处理。"
+        ),
+        suggested_action="manual_review",
+    )
+
+
+def _human_refinement_patch_user_prompt(
+    *,
+    filename: str,
+    slide_count: int,
+    current: EditorialMindMap,
+    instruction: str,
+    issue: EditorialReviewIssue,
+    human_guidance: dict[str, Any] | None = None,
+) -> str:
+    payload = attach_human_guidance(
+        {
+            "revision_type": "human_direct_patch",
+            "filename": filename,
+            "slide_count": slide_count,
+            "user_instruction": instruction,
+            "current_mindmap": current.model_dump(mode="json"),
+            "human_refinement_issue": issue.model_dump(mode="json"),
+        },
+        human_guidance,
+    )
+    return (
+        "这是用户对已经生成的导图提出的定向修改，不是新的初稿任务，也"
+        "不是审稿循环。请仅处理这条直接用户意见。\n"
+        "只输出一个最小增量 EditorialPatch：必须恰好为 "
+        "human_refinement_issue.id 返回一个 decision；保留未修改节点的"
+        "稳定 id、内容与层级；不得输出完整 mindmap；所有新增或改写的课程"
+        "事实仍须由页面或文本来源支持。\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\nJSON Schema："
         + _schema_json(EditorialPatch)
@@ -920,7 +1479,7 @@ def _content_units(
     document: ParsedDocument,
     rendered: RenderResponse,
 ) -> list[ContentUnit]:
-    return [
+    visual_units = [
         ContentUnit(
             id=f"slide_{page.page:04d}",
             document_id=document.document_id,
@@ -941,6 +1500,25 @@ def _content_units(
         )
         for page in sorted(rendered.pages, key=lambda item: item.page)
     ]
+    text_units = [
+        ContentUnit(
+            id=f"text_{index:04d}",
+            document_id=document.document_id,
+            kind="text",
+            importance=0.65,
+            status="merged",
+            text=block.text,
+            evidence_excerpt=block.text[:240],
+            page=block.page,
+            slide=block.slide,
+            visual_action="unclassified",
+            summary=block.heading or "文本来源",
+            knowledge_score=0.65,
+        )
+        for index, block in enumerate(document.blocks, start=1)
+        if block.text.strip()
+    ]
+    return [*visual_units, *text_units]
 
 
 def _decision_records(
@@ -949,6 +1527,7 @@ def _decision_records(
     decisions: Sequence[EditorialIssueDecision],
     issue_by_id: dict[str, EditorialReviewIssue],
     canonical_id: dict[str, str],
+    evidence_prefix: str = "slide",
 ) -> list[DecisionRecord]:
     now = datetime.now(UTC).isoformat()
     records: list[DecisionRecord] = []
@@ -964,7 +1543,10 @@ def _decision_records(
         subject_id = canonical_id.get(raw_subject_id, raw_subject_id)
         subject_type = "node" if subject_id != run_id else "run"
         evidence_ids = (
-            [f"slide_{slide:04d}" for slide in issue.source_slides]
+            [
+                f"{evidence_prefix}_{slide:04d}"
+                for slide in issue.source_slides
+            ]
             if issue
             else []
         )
@@ -1015,6 +1597,11 @@ def _result_from_output(
 ) -> MindMapResult:
     root = next(node for node in output.nodes if node.parent_id is None)
     page_by_number = {page.page: page for page in rendered.pages}
+    text_by_number = {
+        index: block
+        for index, block in enumerate(document.blocks, start=1)
+    }
+    evidence_prefix = "slide" if page_by_number else "text"
     canonical_id = {
         node.id: (
             f"node_{index:04d}_"
@@ -1032,17 +1619,33 @@ def _result_from_output(
             "branch_topic" if depths[node.id] == 1 else node.role
         )
         support_unit_ids = [
-            f"slide_{slide:04d}" for slide in node.source_slides
-        ]
-        evidence = [
-            EvidenceRef(
-                unit_id=f"slide_{slide:04d}",
-                excerpt=f"整页视觉依据：幻灯片 {slide}",
-                slide=slide,
-                asset_id=page_by_number[slide].asset_id,
-            )
+            f"{evidence_prefix}_{slide:04d}"
             for slide in node.source_slides
         ]
+        evidence: list[EvidenceRef] = []
+        for slide in node.source_slides:
+            page = page_by_number.get(slide)
+            if page is not None:
+                evidence.append(
+                    EvidenceRef(
+                        unit_id=f"slide_{slide:04d}",
+                        excerpt=f"整页视觉依据：页面 {slide}",
+                        slide=slide,
+                        asset_id=page.asset_id,
+                    )
+                )
+                continue
+            block = text_by_number.get(slide)
+            evidence.append(
+                EvidenceRef(
+                    unit_id=f"text_{slide:04d}",
+                    excerpt=(
+                        block.text[:240]
+                        if block is not None
+                        else f"文本单元 {slide}"
+                    ),
+                )
+            )
         nodes.append(
             MindMapNode(
                 id=canonical_id[node.id],
@@ -1191,6 +1794,7 @@ def _result_from_output(
             decisions=decisions,
             issue_by_id=issue_by_id,
             canonical_id=canonical_id,
+            evidence_prefix="slide" if rendered.pages else "text",
         ),
         mode=mode,
         extraction_mode="qwen",
@@ -1231,18 +1835,20 @@ async def run_editorial_ppt_pipeline(
 ) -> MindMapResult:
     all_paths = file_paths or ([file_path] if file_path is not None else [])
     if not all_paths:
-        raise ValueError("全局总编视觉流水线未收到有效文件路径。")
-    all_filenames = filenames or ([filename] if filename is not None else [p.name for p in all_paths])
-    for _p in all_paths:
-        if _p.suffix.lower() != ".pptx":
-            raise ValueError(f"全局总编视觉流水线仅支持 PPTX 文件，收到 {_p.name}。")
-    primary_filename = filename or (" & ".join(all_filenames[:2]) + (f" 等{len(all_paths)}份文档" if len(all_paths) > 2 else ""))
+        raise ValueError("editorial 流水线未收到有效文件路径。")
+    all_filenames = filenames or (
+        [filename] if filename is not None else [p.name for p in all_paths]
+    )
+    primary_filename = filename or (
+        " & ".join(all_filenames[:2])
+        + (f" 等{len(all_paths)}份文档" if len(all_paths) > 2 else "")
+    )
     filename = primary_filename
     file_path = all_paths[0]
     if provider != "qwen":
-        raise ValueError("全局总编视觉流水线仅支持 Qwen 多模态模型。")
+        raise ValueError("editorial 流水线仅支持 Qwen 模型。")
     if not use_ai:
-        raise ValueError("全局总编视觉流水线必须启用 AI。")
+        raise ValueError("editorial 流水线必须启用 AI。")
 
     human_guidance = build_human_guidance(
         user_instruction,
@@ -1264,6 +1870,11 @@ async def run_editorial_ppt_pipeline(
         max_revisions = len(effective_loop.rounds)
         review_round_budget = len(effective_loop.rounds)
         vision_model = effective_loop.rounds[0].editor_model
+        if not any(
+            round_config.reviewer_models()
+            for round_config in effective_loop.rounds
+        ):
+            max_revisions = 0
     else:
         configured_max_revisions = _bounded_int(
             "MINDMAP_EDITORIAL_MAX_REVISIONS",
@@ -1288,6 +1899,20 @@ async def run_editorial_ppt_pipeline(
             ]
         )
         vision_model = legacy_vision_model
+    visual_context_compactor_model = (
+        os.getenv(
+            "MINDMAP_EDITORIAL_VISUAL_COMPACTOR_MODEL",
+            "",
+        ).strip()
+        or "qwen3-vl-flash"
+    )
+    context_compactor_model = (
+        os.getenv(
+            "MINDMAP_EDITORIAL_CONTEXT_COMPACTOR_MODEL",
+            "",
+        ).strip()
+        or "qwen3.8-flash"
+    )
     max_depth = _bounded_int(
         "MINDMAP_EDITORIAL_MAX_DEPTH",
         6,
@@ -1297,6 +1922,39 @@ async def run_editorial_ppt_pipeline(
     patch_revisions_enabled = _env_flag(
         "MINDMAP_EDITORIAL_PATCH_REVISIONS",
         default=False,
+    )
+    human_direct_refinement = previous_result is not None
+    input_bundle = (
+        None
+        if human_direct_refinement
+        else await asyncio.to_thread(
+            build_editorial_input_bundle,
+            all_paths,
+            all_filenames,
+        )
+    )
+    prior_document_manifest = (
+        _prior_document_manifest(previous_result)
+        if previous_result is not None
+        else []
+    )
+    input_mode = (
+        str(
+            previous_result.run_manifest.get(
+                "input_mode",
+                previous_result.document.parse_metadata.get(
+                    "input_mode",
+                    "visual",
+                ),
+            )
+        )
+        if previous_result is not None
+        else input_bundle.input_mode
+    )
+    document_manifest_seed = (
+        prior_document_manifest
+        if previous_result is not None
+        else input_bundle.document_manifest
     )
     full_rewrite_fallback_enabled = (
         patch_revisions_enabled
@@ -1312,36 +1970,59 @@ async def run_editorial_ppt_pipeline(
     )
     if custom_loop:
         model_call_budget = 1 + sum(
-            len(round_config.reviewer_models()) + calls_per_revision
+            len(round_config.reviewer_models())
+            + (calls_per_revision if round_config.reviewer_models() else 0)
             for round_config in effective_loop.rounds
         )
     else:
         model_call_budget = (
             1 + review_round_budget * 3 + max_revisions * calls_per_revision
         )
+    if human_direct_refinement:
+        # One direct Patch plus one schema-repair attempt; never redraft/review.
+        model_call_budget = 2
     run_manifest = {
         **(blackboard.load_run_manifest(task_id) or {}),
         "pipeline_mode": PIPELINE_MODE,
         "architecture": ARCHITECTURE_NAME,
+        "refinement_mode": (
+            "human_direct_patch"
+            if human_direct_refinement
+            else "initial_generation"
+        ),
+        "input_mode": input_mode,
+        "document_manifest": document_manifest_seed,
         "model_call_budget": model_call_budget,
         "global_editor_owns_graph": True,
         "coverage_metric_enabled": False,
-        "review_roles": [
-            "content_omission",
-            "pruning",
-            "multilevel_structure",
-        ],
+        "review_roles": (
+            []
+            if human_direct_refinement
+            else [
+                "content_omission",
+                "pruning",
+                "multilevel_structure",
+            ]
+        ),
         "loop_config": effective_loop.model_dump(mode="json"),
         "loop_configurable": custom_loop,
-        "max_editorial_revisions": max_revisions,
-        "max_editorial_review_rounds": review_round_budget,
+        "max_editorial_revisions": (
+            1 if human_direct_refinement else max_revisions
+        ),
+        "max_editorial_review_rounds": (
+            0 if human_direct_refinement else review_round_budget
+        ),
         "blocking_terminal_review": False,
-        "patch_revisions_enabled": patch_revisions_enabled,
+        "patch_revisions_enabled": (
+            patch_revisions_enabled or human_direct_refinement
+        ),
         "patch_revision_repair_attempts": (
-            1 if patch_revisions_enabled else 0
+            1
+            if patch_revisions_enabled or human_direct_refinement
+            else 0
         ),
         "patch_revision_full_rewrite_fallback": (
-            full_rewrite_fallback_enabled
+            full_rewrite_fallback_enabled and not human_direct_refinement
         ),
         "image_context_cache_enabled": True,
         "image_context_cache_policy": (
@@ -1351,10 +2032,14 @@ async def run_editorial_ppt_pipeline(
         "convergence_policy": "history-aware-stable-issue-v1",
         "patch_execution_policy": (
             "transactional-anchor-v1"
-            if patch_revisions_enabled
+            if patch_revisions_enabled or human_direct_refinement
             else "disabled"
         ),
         "prompt_sha256": EDITORIAL_PROMPT_SHA256,
+        "visual_context_compactor_model": visual_context_compactor_model,
+        "context_compactor_model": context_compactor_model,
+        "complete_graph_length_retry_limit": 1,
+        "complete_graph_length_retry_count": 0,
     }
     run_id = blackboard.start_run(
         run_id=f"run_{uuid.uuid4().hex[:16]}",
@@ -1363,15 +2048,68 @@ async def run_editorial_ppt_pipeline(
         manifest=run_manifest,
     )
 
-    await progress("render", 10, "正在准备整份 PPT 的全部幻灯片")
+    await progress(
+        (
+            "editorial_revision"
+            if human_direct_refinement
+            else (
+                "render"
+                if input_bundle.visual_sources
+                else "context_preparing"
+            )
+        ),
+        10,
+        (
+            "正在复用上一版导图与已保存上下文"
+            if human_direct_refinement
+            else (
+                "正在准备全部视觉页面与文本上下文"
+                if input_bundle.visual_sources
+                else "正在准备文本上下文"
+            )
+        ),
+    )
     render_dpi = _bounded_int(
         "MINDMAP_EDITORIAL_RENDER_DPI",
         120,
         minimum=96,
         maximum=240,
     )
-    document_manifest: list[dict[str, Any]] = []
-    if len(all_paths) == 1:
+    document_manifest: list[dict[str, Any]] = [
+        dict(item) for item in document_manifest_seed
+    ]
+    visual_paths = (
+        [source.path for source in input_bundle.visual_sources]
+        if input_bundle is not None
+        else []
+    )
+    visual_filenames = (
+        [source.filename for source in input_bundle.visual_sources]
+        if input_bundle is not None
+        else []
+    )
+    refinement_render_checkpoint_hit = False
+    if human_direct_refinement:
+        document = previous_result.document.model_copy(
+            update={"filename": primary_filename}
+        )
+        rendered, refinement_render_checkpoint_hit = (
+            _rendered_from_previous_result(
+                blackboard=blackboard,
+                previous_result=previous_result,
+            )
+        )
+        source_digest = str(
+            previous_result.run_manifest.get("source_sha256") or ""
+        )
+        render_input_hash = source_digest or (
+            f"prior_graph_v{previous_result.graph_version}"
+        )
+        render_cache_hit = True
+        render_cache_source_run_id = previous_result.run_id
+        if not document_manifest:
+            document_manifest = _prior_document_manifest(previous_result)
+    elif len(all_paths) == 1 and visual_paths:
         source_digest = await asyncio.to_thread(_file_sha256, file_path)
         render_input_hash = _render_cache_input_hash(
             source_digest=source_digest,
@@ -1403,79 +2141,116 @@ async def run_editorial_ppt_pipeline(
             render_cache_hit = True
             await progress("render_cache", 18, "已复用相同 PPT 的完整渲染结果")
         document_manifest = [{
-            "filename": filename,
+            **document_manifest[0],
+            "filename": all_filenames[0],
             "start_slide": 1,
             "end_slide": len(rendered.pages),
             "page_count": len(rendered.pages),
         }]
-    else:
-        all_rendered_pages = []
-        all_native_visuals = []
-        all_warnings = []
-        document_manifest = []
-        current_slide_idx = 1
-        digests = []
-        for p_item, fn_item in zip(all_paths, all_filenames, strict=False):
-            d = await asyncio.to_thread(_file_sha256, p_item)
-            digests.append(d)
-            doc_render = await asyncio.to_thread(
-                render,
-                p_item,
-                fn_item,
-                settings.mindmap_data_dir,
-                settings.asset_public_base_url,
-                settings.asset_access_token,
-                max_pages=None,
-                pdf_dpi=render_dpi,
-            )
-            doc_page_count = len(doc_render.pages)
-            for pg in doc_render.pages:
-                relabeled = RenderedPage(
-                    asset_id=pg.asset_id,
-                    render_id=pg.render_id,
-                    filename=pg.filename,
-                    url=pg.url,
-                    page=len(all_rendered_pages) + 1,
-                    width=getattr(pg, "width", 0),
-                    height=getattr(pg, "height", 0),
-                )
-                all_rendered_pages.append(relabeled)
-            all_native_visuals.extend(doc_render.native_visuals)
-            all_warnings.extend(doc_render.warnings)
-            document_manifest.append({
-                "filename": fn_item,
-                "start_slide": current_slide_idx,
-                "end_slide": current_slide_idx + doc_page_count - 1,
-                "page_count": doc_page_count,
-            })
-            current_slide_idx += doc_page_count
-
-        merged_render_id = all_rendered_pages[0].render_id if all_rendered_pages else task_id
-        rendered = RenderResponse(
-            render_id=merged_render_id,
-            filename=primary_filename,
-            pages=all_rendered_pages,
-            native_visuals=all_native_visuals,
-            warnings=all_warnings,
+    elif visual_paths:
+        digests = [
+            await asyncio.to_thread(_file_sha256, path)
+            for path in all_paths
+        ]
+        rendered = await asyncio.to_thread(
+            render_documents,
+            visual_paths,
+            visual_filenames,
+            settings.mindmap_data_dir,
+            settings.asset_public_base_url,
+            settings.asset_access_token,
+            max_pages=None,
+            pdf_dpi=render_dpi,
         )
         source_digest = hashlib.sha256("::".join(digests).encode()).hexdigest()
         render_input_hash = source_digest
         render_cache_hit = False
         render_cache_source_run_id = None
+        collection_manifest = (
+            settings.mindmap_data_dir
+            / "assets"
+            / rendered.render_id
+            / "manifest.json"
+        )
+        collection_documents: list[dict[str, Any]] = []
+        if collection_manifest.exists():
+            try:
+                collection_documents = json.loads(
+                    collection_manifest.read_text(encoding="utf-8")
+                ).get("documents", [])
+            except (OSError, ValueError):
+                collection_documents = []
+        visual_index = 0
+        for item in document_manifest:
+            if item.get("input_kind") != "visual":
+                continue
+            source_info = (
+                collection_documents[visual_index]
+                if visual_index < len(collection_documents)
+                else {}
+            )
+            start = source_info.get("global_page_start")
+            end = source_info.get("global_page_end")
+            item.update(
+                {
+                    "start_slide": start,
+                    "end_slide": end,
+                    "page_count": source_info.get(
+                        "page_count",
+                        item.get("page_count", 0),
+                    ),
+                }
+            )
+            visual_index += 1
+    else:
+        rendered = RenderResponse(
+            render_id="",
+            filename=primary_filename,
+            pages=[],
+            native_visuals=[],
+            warnings=[],
+        )
+        source_digest = hashlib.sha256(
+            "::".join(
+                await asyncio.gather(
+                    *(
+                        asyncio.to_thread(_file_sha256, path)
+                        for path in all_paths
+                    )
+                )
+            ).encode()
+        ).hexdigest()
+        render_input_hash = source_digest
+        render_cache_hit = False
+        render_cache_source_run_id = None
 
-    if not rendered.pages:
-        raise RuntimeError("PPTX 没有成功渲染出任何幻灯片。")
-    document = _document_shell(
-        file_path,
-        filename,
-        len(rendered.pages),
-        digest=source_digest,
-    )
+    if (
+        not human_direct_refinement
+        and not rendered.pages
+        and not input_bundle.has_text_context
+    ):
+        raise RuntimeError(
+            "输入文档既没有成功渲染的视觉页面，也没有可用文本上下文。"
+        )
+    if not human_direct_refinement:
+        document = input_bundle.document.model_copy(
+            update={"filename": primary_filename}
+        )
     run_manifest.update(
         {
             "render_cache_hit": render_cache_hit,
             "render_cache_source_run_id": render_cache_source_run_id,
+            "refinement_render_reused": human_direct_refinement,
+            "refinement_render_checkpoint_hit": (
+                refinement_render_checkpoint_hit
+            ),
             "document_manifest": document_manifest,
+            "input_mode": input_mode,
+            "text_context_available": (
+                bool(document.blocks)
+                if human_direct_refinement
+                else input_bundle.has_text_context
+            ),
         }
     )
     blackboard.update_run(
@@ -1496,7 +2271,8 @@ async def run_editorial_ppt_pipeline(
         },
     )
 
-    await progress("encode", 24, "正在准备可缓存的全量幻灯片图片")
+    if not human_direct_refinement:
+        await progress("encode", 24, "正在准备可缓存的全量幻灯片图片")
     image_max_edge = _bounded_int(
         "MINDMAP_EDITORIAL_IMAGE_MAX_EDGE",
         1280,
@@ -1509,15 +2285,22 @@ async def run_editorial_ppt_pipeline(
         minimum=50,
         maximum=95,
     )
-    prepared_image_files = await asyncio.to_thread(
-        _prepare_slide_image_files,
-        rendered,
-        settings.mindmap_data_dir,
-        env_prefix="MINDMAP_EDITORIAL",
-        max_edge=image_max_edge,
-        jpeg_quality=jpeg_quality,
+    prepared_image_files = (
+        await asyncio.to_thread(
+            _prepare_slide_image_files,
+            rendered,
+            settings.mindmap_data_dir,
+            env_prefix="MINDMAP_EDITORIAL",
+            max_edge=image_max_edge,
+            jpeg_quality=jpeg_quality,
+        )
+        if rendered.pages and not human_direct_refinement
+        else []
     )
-    slide_count = len(prepared_image_files)
+    slide_count = len(rendered.pages) or len(prepared_image_files) or max(
+        len(document.blocks),
+        1,
+    )
     run_manifest.update(
         {
             "editorial_image_max_edge": image_max_edge,
@@ -1526,15 +2309,11 @@ async def run_editorial_ppt_pipeline(
     )
     configured_draft_tokens = _bounded_int(
         "MINDMAP_EDITORIAL_DRAFT_MAX_OUTPUT_TOKENS",
-        14000,
+        24_000,
         minimum=3000,
-        maximum=32000,
+        maximum=_MAX_EDITORIAL_OUTPUT_TOKENS,
     )
-    draft_tokens = (
-        min(configured_draft_tokens, 9000)
-        if custom_loop or mode == "standard"
-        else configured_draft_tokens
-    )
+    draft_tokens = configured_draft_tokens
     configured_review_tokens = _bounded_int(
         "MINDMAP_EDITORIAL_REVIEW_MAX_OUTPUT_TOKENS",
         12000,
@@ -1553,9 +2332,21 @@ async def run_editorial_ppt_pipeline(
     )
     revision_tokens = _bounded_int(
         "MINDMAP_EDITORIAL_REVISION_MAX_OUTPUT_TOKENS",
-        14000,
+        24_000,
         minimum=3000,
-        maximum=32000,
+        maximum=_MAX_EDITORIAL_OUTPUT_TOKENS,
+    )
+    visual_context_compactor_tokens = _bounded_int(
+        "MINDMAP_EDITORIAL_VISUAL_COMPACTOR_MAX_OUTPUT_TOKENS",
+        2_200,
+        minimum=512,
+        maximum=4_000,
+    )
+    context_compactor_tokens = _bounded_int(
+        "MINDMAP_EDITORIAL_CONTEXT_COMPACTOR_MAX_OUTPUT_TOKENS",
+        2_000,
+        minimum=512,
+        maximum=4_000,
     )
     configured_patch_tokens = _bounded_int(
         "MINDMAP_EDITORIAL_PATCH_MAX_OUTPUT_TOKENS",
@@ -1604,6 +2395,12 @@ async def run_editorial_ppt_pipeline(
             "review_max_output_tokens": review_tokens,
             "content_review_max_output_tokens": content_review_tokens,
             "patch_max_output_tokens": patch_tokens,
+            "visual_context_compactor_max_output_tokens": (
+                visual_context_compactor_tokens
+            ),
+            "context_compactor_max_output_tokens": (
+                context_compactor_tokens
+            ),
         }
     )
     timeout_seconds = _bounded_int(
@@ -1614,7 +2411,21 @@ async def run_editorial_ppt_pipeline(
     )
     runtime_client = client or QwenClient(settings)
     model_calls: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = (
+        [
+            "本轮定向修改复用了上一版导图、渲染资产和模型上下文；"
+            "未重新渲染原始文档。"
+        ]
+        if human_direct_refinement
+        else list(input_bundle.warnings)
+    )
+    if not human_direct_refinement:
+        warnings.extend(
+            warning
+            for source in input_bundle.sources
+            if source.parsed is not None
+            for warning in source.parsed.warnings
+        )
     degraded_components: list[str] = []
     responses_requested = _env_flag(
         "MINDMAP_EDITORIAL_RESPONSES_ENABLED",
@@ -1626,15 +2437,76 @@ async def run_editorial_ppt_pipeline(
         minimum=1,
         maximum=32,
     )
+    max_context_tokens = model_context_window_tokens(
+        effective_loop.rounds[0].editor_model
+    )
+    max_input_tokens = model_max_input_tokens(
+        effective_loop.rounds[0].editor_model,
+        thinking_enabled=editor_thinking_budget > 0,
+    )
+    context_compaction_trigger_tokens = int(
+        max_input_tokens * _CONTEXT_COMPACTION_THRESHOLD
+    )
+    context_compaction_target_tokens = int(
+        max_input_tokens * _CONTEXT_COMPACTION_TARGET
+    )
+    initial_estimate = (
+        max(
+            0,
+            int(previous_result.run_manifest.get("context_tokens") or 0),
+        )
+        if previous_result is not None
+        else (
+            len(prepared_image_files) * 1200
+            + max(2000, len(input_bundle.text_context) // 4)
+        )
+    )
+    source_precompression_required = bool(
+        not human_direct_refinement
+        and prepared_image_files
+        and (
+            initial_estimate
+            >= context_compaction_trigger_tokens
+            or len(prepared_image_files) > _MAX_DIRECT_VISUAL_PAGES
+        )
+    )
     response_images: list[tuple[str, str]] = []
+    resumed_response_id = (
+        _prior_response_session(
+            blackboard=blackboard,
+            previous_result=previous_result,
+            model=effective_loop.rounds[0].editor_model,
+        )
+        if previous_result is not None
+        else None
+    )
     responses_active = bool(
         responses_requested
+        and not source_precompression_required
+        and (
+            prepared_image_files
+            if not human_direct_refinement
+            else resumed_response_id
+        )
         and getattr(runtime_client, "supports_responses", False)
         and getattr(runtime_client, "supports_temporary_uploads", False)
         and hasattr(runtime_client, "complete_response_json")
         and hasattr(runtime_client, "upload_temporary_files")
     )
-    if responses_active:
+    if human_direct_refinement:
+        response_images = _prior_response_images(
+            blackboard=blackboard,
+            previous_result=previous_result,
+        )
+        if not resumed_response_id:
+            responses_active = bool(
+                responses_requested
+                and response_images
+                and getattr(runtime_client, "supports_responses", False)
+                and getattr(runtime_client, "supports_temporary_uploads", False)
+                and hasattr(runtime_client, "complete_response_json")
+            )
+    elif responses_active:
         await progress("upload", 29, "正在上传一次性稳定幻灯片 URL")
         try:
             response_images = list(
@@ -1687,9 +2559,31 @@ async def run_editorial_ppt_pipeline(
     if response_images:
         images = list(response_images)
         image_transport = "dashscope_temporary_oss"
+    elif human_direct_refinement:
+        images = []
+        image_transport = "reused_model_context"
     else:
-        images = await get_encoded_images()
-        image_transport = "inline_data_url_fallback"
+        images = await get_encoded_images() if prepared_image_files else []
+        image_transport = (
+            "inline_data_url_fallback" if images else "text_only"
+        )
+    model_text_context = (
+        ""
+        if human_direct_refinement
+        else input_bundle.text_context
+    )
+    source_context_suffix = _source_context_suffix(
+        input_mode=input_mode,
+        text_context=model_text_context,
+    ) + (
+        "\n稳定文档清单："
+        + json.dumps(
+            document_manifest,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
     run_manifest.update(
         {
             "responses_api_requested": responses_requested,
@@ -1697,6 +2591,28 @@ async def run_editorial_ppt_pipeline(
             "responses_session_cache_requested": responses_requested,
             "editorial_image_transport": image_transport,
             "editorial_upload_concurrency": upload_concurrency,
+            "text_context_chars": len(model_text_context),
+            "visual_page_count": len(rendered.pages),
+            "initial_context_tokens_estimate": initial_estimate,
+            "model_context_window_tokens": max_context_tokens,
+            "model_max_input_tokens": max_input_tokens,
+            "context_compaction_trigger_tokens": (
+                context_compaction_trigger_tokens
+            ),
+            "context_compaction_target_tokens": (
+                context_compaction_target_tokens
+            ),
+            "source_precompression_required": source_precompression_required,
+            "visual_context_batch_size": _VISUAL_CONTEXT_BATCH_SIZE,
+            "refinement_context_reused": human_direct_refinement,
+            "refinement_response_session_resumed": bool(
+                resumed_response_id
+            ),
+            "refinement_response_asset_fallback": bool(
+                human_direct_refinement
+                and not resumed_response_id
+                and response_images
+            ),
         }
     )
 
@@ -1705,10 +2621,17 @@ async def run_editorial_ppt_pipeline(
     response_cached_tokens_total = 0
     response_chain_reset_count = 0
     response_chat_fallback_count = 0
-    root_response_id: str | None = None
-    current_response_id: str | None = None
+    root_response_id: str | None = resumed_response_id
+    current_response_id: str | None = resumed_response_id
     response_model_by_id: dict[str, str] = {}
     latest_response_by_model: dict[str, str] = {}
+    if resumed_response_id:
+        response_model_by_id[
+            resumed_response_id
+        ] = effective_loop.rounds[0].editor_model
+        latest_response_by_model[
+            effective_loop.rounds[0].editor_model
+        ] = resumed_response_id
 
     def checkpoint_response_session() -> None:
         blackboard.checkpoint(
@@ -1727,7 +2650,6 @@ async def run_editorial_ppt_pipeline(
             },
         )
 
-    max_context_tokens: int = 131072
     current_context_tokens: int = 0
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
@@ -1763,39 +2685,75 @@ async def run_editorial_ppt_pipeline(
         except Exception:
             pass
 
-    initial_estimate = len(prepared_image_files) * 1200 + 2000
     await update_context_tracking(estimated_tokens=initial_estimate)
 
-    async def check_and_compact_context_if_needed(current_graph: EditorialMindMap, decisions_list: list, issues_list: list) -> bool:
-        nonlocal current_context_tokens, responses_active, root_response_id, latest_response_by_model
-        usage_pct = current_context_tokens / max_context_tokens if max_context_tokens > 0 else 0.0
-        if usage_pct >= 0.85:
+    context_graph: EditorialMindMap | None = None
+    context_decisions: list[EditorialIssueDecision] = []
+    context_issues: list[EditorialReviewIssue] = []
+
+    async def check_and_compact_context_if_needed() -> bool:
+        nonlocal current_context_tokens
+        nonlocal responses_active
+        nonlocal root_response_id
+        nonlocal current_response_id
+        nonlocal source_context_suffix
+        usage_pct = (
+            current_context_tokens / max_context_tokens
+            if max_context_tokens > 0
+            else 0.0
+        )
+        if (
+            context_graph is not None
+            and current_context_tokens
+            >= context_compaction_trigger_tokens
+        ):
             tokens_before = current_context_tokens
+            if model_output is not None:
+                await model_output(
+                    {
+                        "kind": "compaction_started",
+                        "trigger": "auto",
+                    }
+                )
             summary, tokens_after = await _compact_editorial_context(
                 client=runtime_client,
-                model=effective_loop.rounds[0].editor_model,
-                current=current_graph,
-                decisions=decisions_list,
-                issues=issues_list,
+                model=context_compactor_model,
+                current=context_graph,
+                decisions=context_decisions,
+                issues=context_issues,
                 filename=primary_filename,
                 current_tokens=tokens_before,
-                max_tokens=max_context_tokens,
+                max_tokens=max_input_tokens,
+                output_tokens=context_compactor_tokens,
                 human_guidance=human_guidance,
+                document_manifest=document_manifest,
+                text_context=input_bundle.text_context,
             )
             current_context_tokens = tokens_after
             responses_active = False
+            root_response_id = None
+            current_response_id = None
             latest_response_by_model.clear()
+            source_context_suffix += (
+                "\n阶段性审稿上下文压缩纪要：\n"
+                + summary[:12_000]
+                + "\n"
+            )
             if model_output is not None:
                 await model_output({
                     "kind": "compaction",
-                    "tokensBefore": tokens_before,
-                    "tokensAfter": tokens_after,
-                    "summary": summary,
+                        "tokensBefore": tokens_before,
+                        "tokensAfter": tokens_after,
+                        "max_context_tokens": max_context_tokens,
+                        "summary": summary,
                     "trigger": "auto",
                 })
             await update_context_tracking()
             warnings.append(
-                f"[context_compacted] 上下文用量达到 85% ({tokens_before}/{max_context_tokens})，已自动通过 Qwen3.8-max 压缩至行业惯例量 ({tokens_after} Tokens)。"
+                "[context_compacted] 上下文用量达到模型安全输入水位 "
+                f"({tokens_before}/{context_compaction_trigger_tokens}"
+                f"，窗口 {max_context_tokens})，已压缩至 "
+                f"{tokens_after} Tokens。"
             )
             return True
         return False
@@ -1809,8 +2767,13 @@ async def run_editorial_ppt_pipeline(
         method: Callable[..., Awaitable[Any]],
         kwargs: dict[str, Any],
     ) -> Any:
+        if not role.startswith("source_context_compactor"):
+            await check_and_compact_context_if_needed()
         model_calls.append(role)
-        if model_output is not None:
+        publish_model_activity = not role.startswith(
+            "source_context_compactor"
+        )
+        if model_output is not None and publish_model_activity:
             await model_output(
                 {
                     "kind": "model_start",
@@ -1841,7 +2804,7 @@ async def run_editorial_ppt_pipeline(
         try:
             result = await method(**kwargs)
         except Exception as exc:
-            if model_output is not None:
+            if model_output is not None and publish_model_activity:
                 await model_output(
                     {
                         "kind": "model_error",
@@ -1860,9 +2823,13 @@ async def run_editorial_ppt_pipeline(
         else:
             prompt_chars = len(str(kwargs.get("user_prompt") or kwargs.get("prompt") or ""))
             result_chars = len(str(result or ""))
-            est_tokens = max(1200, (prompt_chars + result_chars) // 2 + len(prepared_image_files) * 800)
+            image_count = len(kwargs.get("images") or ())
+            est_tokens = max(
+                1200,
+                (prompt_chars + result_chars) // 2 + image_count * 800,
+            )
             await update_context_tracking(estimated_tokens=est_tokens)
-        if model_output is not None:
+        if model_output is not None and publish_model_activity:
             await model_output(
                 {
                     "kind": "model_complete",
@@ -1886,10 +2853,26 @@ async def run_editorial_ppt_pipeline(
         user_prompt: str,
         selected_images: Sequence[tuple[str, str]],
         max_tokens: int,
-        thinking_budget: int,
+        thinking_budget: int | None,
         cache_static_images: bool = False,
         accept_complete_json_on_length: bool = False,
     ) -> dict[str, Any]:
+        request_kwargs: dict[str, Any] = {
+            "model": selected_model,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "images": selected_images,
+            "cache_static_images": cache_static_images,
+            "max_tokens": max_tokens,
+            "max_completion_tokens": max_tokens + (thinking_budget or 0),
+            "max_attempts": 1,
+            "timeout_seconds": timeout_seconds,
+            "accept_complete_json_on_length": (
+                accept_complete_json_on_length
+            ),
+        }
+        if thinking_budget is not None:
+            request_kwargs["thinking_budget"] = thinking_budget
         with model_call_context(
             ModelCallContext(
                 run_id=run_id,
@@ -1905,21 +2888,7 @@ async def run_editorial_ppt_pipeline(
                 selected_model=selected_model,
                 round_number=round_number,
                 method=runtime_client.complete_multi_image_json,
-                kwargs={
-                    "model": selected_model,
-                    "system_prompt": system_prompt,
-                    "user_prompt": user_prompt,
-                    "images": selected_images,
-                    "cache_static_images": cache_static_images,
-                    "max_tokens": max_tokens,
-                    "max_completion_tokens": max_tokens + thinking_budget,
-                    "max_attempts": 1,
-                    "thinking_budget": thinking_budget,
-                    "timeout_seconds": timeout_seconds,
-                    "accept_complete_json_on_length": (
-                        accept_complete_json_on_length
-                    ),
-                },
+                kwargs=request_kwargs,
             )
 
     async def complete_response(
@@ -1932,6 +2901,7 @@ async def run_editorial_ppt_pipeline(
         user_prompt: str,
         selected_images: Sequence[tuple[str, str]],
         previous_response_id: str | None,
+        max_tokens: int,
         thinking_budget: int,
         input_ids: Sequence[str] = (),
         accept_complete_json_on_length: bool = False,
@@ -1968,6 +2938,7 @@ async def run_editorial_ppt_pipeline(
                     "reasoning_effort": _responses_reasoning_effort(
                         thinking_budget
                     ),
+                    "max_output_tokens": max_tokens + thinking_budget,
                     "timeout_seconds": timeout_seconds,
                     "accept_complete_json_on_length": (
                         accept_complete_json_on_length
@@ -2048,6 +3019,7 @@ async def run_editorial_ppt_pipeline(
         fallback_images: Sequence[tuple[str, str]],
         max_tokens: int,
         thinking_budget: int,
+        text_input_ids: Sequence[str] = (),
         cache_static_images: bool = False,
         accept_complete_json_on_length: bool = False,
     ) -> tuple[dict[str, Any], str | None]:
@@ -2056,6 +3028,23 @@ async def run_editorial_ppt_pipeline(
         nonlocal response_chat_fallback_count
         nonlocal responses_active
         nonlocal root_response_id
+
+        if not fallback_images and not (
+            responses_active and session_parent_id is not None
+        ):
+            payload = await complete_text(
+                role=role,
+                stage=stage,
+                selected_model=selected_model,
+                round_number=round_number,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                input_ids=text_input_ids,
+                max_tokens=max_tokens,
+                thinking_budget=thinking_budget,
+                accept_complete_json_on_length=accept_complete_json_on_length,
+            )
+            return payload, None
 
         if responses_active:
             compatible_parent_id = (
@@ -2080,6 +3069,7 @@ async def run_editorial_ppt_pipeline(
                     user_prompt=user_prompt,
                     selected_images=selected_images,
                     previous_response_id=compatible_parent_id,
+                    max_tokens=max_tokens,
                     thinking_budget=thinking_budget,
                     input_ids=[
                         label for label, _ in fallback_images
@@ -2109,6 +3099,7 @@ async def run_editorial_ppt_pipeline(
                             user_prompt=user_prompt,
                             selected_images=response_images,
                             previous_response_id=None,
+                            max_tokens=max_tokens,
                             thinking_budget=thinking_budget,
                             input_ids=[
                                 label for label, _ in fallback_images
@@ -2135,7 +3126,14 @@ async def run_editorial_ppt_pipeline(
                 responses_active = False
 
         response_chat_fallback_count += 1
-        real_fallback_images = await get_encoded_images()
+        real_fallback_images = (
+            list(images) if images else await get_encoded_images()
+        )
+        if len(real_fallback_images) > _MAX_DIRECT_VISUAL_PAGES:
+            raise ModelProviderError(
+                "Responses 调用失败后，视觉输入仍超过兼容 Chat 的安全页数；"
+                "必须先完成源材料上下文压缩。"
+            )
         payload = await complete_images(
             role=f"{role}_chat_fallback",
             stage=f"{stage}_chat_fallback",
@@ -2154,28 +3152,529 @@ async def run_editorial_ppt_pipeline(
         checkpoint_response_session()
         return payload, None
 
-    await progress("editorial_draft", 34, "全局总编正在通读 PPT 并生成第一版")
-    draft_payload, _ = await complete_visual_role(
+    async def retry_complete_graph_output(
+        *,
+        role: str,
+        stage: str,
+        selected_model: str,
+        round_number: int,
+        user_prompt: str,
+        max_tokens: int,
+        invoke: Callable[[str, str, str, int], Awaitable[Any]],
+    ) -> Any:
+        try:
+            return await invoke(role, stage, user_prompt, max_tokens)
+        except ModelProviderError as exc:
+            if not _is_length_truncation(exc):
+                raise
+            length_error = exc
+
+        retry_tokens = min(
+            max_tokens + _COMPLETE_GRAPH_LENGTH_RETRY_INCREMENT,
+            _MAX_EDITORIAL_OUTPUT_TOKENS,
+        )
+        if retry_tokens <= max_tokens:
+            raise length_error
+
+        retry_stage = f"{stage}_length_retry"
+        retry_role = f"{role}_length_retry"
+        run_manifest["complete_graph_length_retry_count"] = (
+            int(run_manifest["complete_graph_length_retry_count"]) + 1
+        )
+        warnings.append(
+            f"{stage} 的完整导图输出被长度限制截断，"
+            f"正在以 {retry_tokens} Tokens 从头重试。"
+        )
+        blackboard.checkpoint(
+            run_id,
+            retry_stage,
+            {
+                "retry_reason": "output_length",
+                "model": selected_model,
+                "previous_max_output_tokens": max_tokens,
+                "retry_max_output_tokens": retry_tokens,
+            },
+        )
+        return await invoke(
+            retry_role,
+            retry_stage,
+            _length_retry_prompt(user_prompt),
+            retry_tokens,
+        )
+
+    async def precompact_visual_source_if_needed() -> bool:
+        nonlocal current_context_tokens
+        nonlocal current_response_id
+        nonlocal image_transport
+        nonlocal images
+        nonlocal model_text_context
+        nonlocal responses_active
+        nonlocal root_response_id
+        nonlocal source_context_suffix
+
+        if not source_precompression_required or not images:
+            return False
+
+        source_images = list(images)
+        batch_count = (
+            len(source_images) + _VISUAL_CONTEXT_BATCH_SIZE - 1
+        ) // _VISUAL_CONTEXT_BATCH_SIZE
+        if model_output is not None:
+            await model_output(
+                {
+                    "kind": "compaction_started",
+                    "trigger": "preflight_visual",
+                }
+            )
+
+        batch_specs = [
+            (
+                batch_index,
+                source_images[
+                    start : start + _VISUAL_CONTEXT_BATCH_SIZE
+                ],
+            )
+            for batch_index, start in enumerate(
+                range(0, len(source_images), _VISUAL_CONTEXT_BATCH_SIZE),
+                start=1,
+            )
+        ]
+
+        async def compact_visual_batch(
+            batch_index: int,
+            batch_images: list[tuple[str, str]],
+        ) -> tuple[EditorialVisualContextPacket, str | None]:
+            source_slides = [
+                int(label.rsplit("_", 1)[-1])
+                for label, _ in batch_images
+            ]
+            try:
+                payload = await complete_images(
+                    role="source_context_compactor",
+                    stage=f"context_compaction_source_{batch_index}",
+                    selected_model=visual_context_compactor_model,
+                    round_number=0,
+                    system_prompt=VISUAL_CONTEXT_COMPACTOR_PROMPT,
+                    user_prompt=_visual_context_compactor_user_prompt(
+                        source_slides=source_slides,
+                        document_manifest=document_manifest,
+                    ),
+                    selected_images=batch_images,
+                    max_tokens=visual_context_compactor_tokens,
+                    thinking_budget=None,
+                )
+                packet = EditorialVisualContextPacket.model_validate(payload)
+                allowed_slides = set(source_slides)
+                if any(
+                    not set(evidence.source_slides).issubset(allowed_slides)
+                    for evidence in packet.evidence
+                ):
+                    raise ValueError(
+                        "视觉证据包引用了当前批次以外的 source_slides"
+                    )
+                return packet, None
+            except (ModelProviderError, ValueError) as exc:
+                warning = (
+                    f"第 {batch_index}/{batch_count} 批视觉证据压缩失败，"
+                    f"已保留页码并继续：{exc}"
+                )
+                return (
+                    EditorialVisualContextPacket(
+                        summary=(
+                            f"第 {source_slides[0]} 至 {source_slides[-1]} 页"
+                            "视觉证据提取未完成。"
+                        ),
+                        evidence=[
+                            EditorialVisualEvidence(
+                                source_slides=source_slides,
+                                content=(
+                                    "该批原图在上下文压缩阶段未能生成可用文字证据；"
+                                    "后续不得据此虚构具体事实。"
+                                ),
+                            )
+                        ],
+                    ),
+                    warning,
+                )
+
+        batch_results = await asyncio.gather(
+            *(
+                compact_visual_batch(batch_index, batch_images)
+                for batch_index, batch_images in batch_specs
+            )
+        )
+        packets: list[EditorialVisualContextPacket] = []
+        for packet, warning in batch_results:
+            packets.append(packet)
+            if warning is not None:
+                warnings.append(warning)
+
+        tokens_before = current_context_tokens
+        target_tokens = context_compaction_target_tokens
+        model_text_context = _compacted_visual_source_text(
+            packets=packets,
+            text_context=input_bundle.text_context,
+            target_tokens=target_tokens,
+        )
+        tokens_after = min(
+            target_tokens,
+            max(2_000, len(model_text_context) // 4),
+        )
+        source_context_suffix = _source_context_suffix(
+            input_mode=input_bundle.input_mode,
+            text_context=model_text_context,
+        ) + (
+            "\n稳定文档清单："
+            + json.dumps(
+                document_manifest,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        current_context_tokens = tokens_after
+        responses_active = False
+        root_response_id = None
+        current_response_id = None
+        latest_response_by_model.clear()
+        images = []
+        image_transport = "compacted_visual_evidence"
+        summary = (
+            f"已将 {len(source_images)} 页视觉资料分为 {len(packets)} 批"
+            "直读并压缩为带 source_slides 的证据包。"
+        )
+        blackboard.checkpoint(
+            run_id,
+            "editorial_visual_context_packets",
+            {
+                "batch_size": _VISUAL_CONTEXT_BATCH_SIZE,
+                "page_count": len(source_images),
+                "packets": [packet.model_dump(mode="json") for packet in packets],
+            },
+        )
+        run_manifest.update(
+            {
+                "editorial_image_transport": image_transport,
+                "source_context_compacted": True,
+                "source_context_packet_count": len(packets),
+                "source_context_tokens_before": tokens_before,
+                "source_context_tokens_after": tokens_after,
+            }
+        )
+        if model_output is not None:
+            await model_output(
+                {
+                    "kind": "compaction",
+                    "tokensBefore": tokens_before,
+                    "tokensAfter": tokens_after,
+                    "max_context_tokens": max_context_tokens,
+                    "summary": summary,
+                    "trigger": "preflight_visual",
+                }
+            )
+        await update_context_tracking()
+        warnings.append(
+            "[context_compacted] 首轮视觉上下文在主编调用前已压缩："
+            f"{tokens_before}/{context_compaction_trigger_tokens}"
+            f"（窗口 {max_context_tokens}） -> {tokens_after} Tokens。"
+        )
+        return True
+
+    if not human_direct_refinement:
+        await precompact_visual_source_if_needed()
+
+    if previous_result is not None:
+        current = _reconstruct_editorial_mindmap(previous_result)
+        refinement_issue = _human_refinement_issue(
+            instruction=user_instruction,
+            current=current,
+        )
+        context_graph = current
+        context_issues[:] = [refinement_issue]
+        refinement_max_depth = max(
+            max_depth,
+            max(_depths(current).values(), default=0),
+        )
+        await progress(
+            "editorial_revision",
+            52,
+            "全局总编正在根据修改意见定向 Patch 当前思维导图",
+        )
+        patch_payload: dict[str, Any] = {}
+        patch_error: Exception | None = None
+        patch_attempt_count = 1
+        patch_repair_count = 0
+        try:
+            patch_payload, _ = await complete_visual_role(
+                role="global_editor_human_patch",
+                stage="editorial_human_patch",
+                selected_model=effective_loop.rounds[0].editor_model,
+                round_number=1,
+                system_prompt=(
+                    EDITORIAL_IMAGE_CONTEXT_PROMPT
+                    if images or current_response_id is not None
+                    else EDITORIAL_TEXT_CONTEXT_PROMPT
+                ),
+                user_prompt=_editorial_task_prompt(
+                    GLOBAL_EDITOR_PATCH_PROMPT,
+                    _human_refinement_patch_user_prompt(
+                        filename=filename,
+                        slide_count=slide_count,
+                        current=current,
+                        instruction=user_instruction,
+                        issue=refinement_issue,
+                        human_guidance=human_guidance,
+                    )
+                    + source_context_suffix,
+                    has_visuals=bool(
+                        images or current_response_id is not None
+                    ),
+                ),
+                session_parent_id=current_response_id,
+                fallback_images=images,
+                max_tokens=patch_tokens,
+                thinking_budget=patch_thinking_budget,
+                text_input_ids=[
+                    f"text_{index:04d}"
+                    for index, _ in enumerate(document.blocks, start=1)
+                ],
+                cache_static_images=True,
+            )
+            blackboard.checkpoint(
+                run_id,
+                "editorial_human_patch_raw",
+                patch_payload,
+            )
+            current, revision_patch, revision_effects = _apply_revision_patch(
+                current=current,
+                payload=patch_payload,
+                issues=[refinement_issue],
+                slide_count=slide_count,
+                max_depth=refinement_max_depth,
+            )
+        except (ModelProviderError, ValueError) as exc:
+            patch_error = exc
+            blackboard.checkpoint(
+                run_id,
+                "editorial_human_patch_error",
+                {"error": str(exc)},
+            )
+
+        if patch_error is not None and patch_payload:
+            patch_repair_count = 1
+            await progress(
+                "editorial_revision",
+                70,
+                "全局总编正在修复未通过校验的定向 Patch",
+            )
+            try:
+                repair_payload, _ = await complete_visual_role(
+                    role="global_editor_human_patch_repair",
+                    stage="editorial_human_patch_repair",
+                    selected_model=effective_loop.rounds[0].editor_model,
+                    round_number=1,
+                    system_prompt=GLOBAL_EDITOR_PATCH_REPAIR_PROMPT,
+                    user_prompt=_patch_repair_user_prompt(
+                        filename=filename,
+                        slide_count=slide_count,
+                        revision_round=1,
+                        current=current,
+                        issues=[refinement_issue],
+                        failed_patch=patch_payload,
+                        validation_error=str(patch_error),
+                        human_guidance=human_guidance,
+                    )
+                    + source_context_suffix,
+                    session_parent_id=current_response_id,
+                    fallback_images=images,
+                    max_tokens=patch_tokens,
+                    thinking_budget=patch_thinking_budget,
+                    text_input_ids=[
+                        f"text_{index:04d}"
+                        for index, _ in enumerate(document.blocks, start=1)
+                    ],
+                    cache_static_images=True,
+                )
+                blackboard.checkpoint(
+                    run_id,
+                    "editorial_human_patch_repair_raw",
+                    repair_payload,
+                )
+                (
+                    current,
+                    revision_patch,
+                    revision_effects,
+                ) = _apply_revision_patch(
+                    current=current,
+                    payload=repair_payload,
+                    issues=[refinement_issue],
+                    slide_count=slide_count,
+                    max_depth=refinement_max_depth,
+                )
+                patch_error = None
+            except (ModelProviderError, ValueError) as exc:
+                patch_error = exc
+                blackboard.checkpoint(
+                    run_id,
+                    "editorial_human_patch_repair_error",
+                    {"error": str(exc)},
+                )
+
+        if patch_error is not None:
+            raise RuntimeError(
+                "全局总编的定向 Patch 未通过校验，已保留上一有效图版本："
+                f"{patch_error}"
+            ) from patch_error
+
+        graph_changed = (
+            _mindmap_fingerprint(
+                _reconstruct_editorial_mindmap(previous_result)
+            )
+            != _mindmap_fingerprint(current)
+        )
+        decisions = list(revision_patch.decisions)
+        context_decisions[:] = decisions
+        context_graph = current
+        issue_by_id = {refinement_issue.id: refinement_issue}
+        # This synthetic issue records a user's explicit change request, not a
+        # remaining content/structure defect. Its decision belongs in the
+        # audit trail but must not make the returned graph fail a review gate.
+        final_issues: list[EditorialReviewIssue] = []
+        blackboard.checkpoint(
+            run_id,
+            "editorial_graph_human_patch",
+            {
+                "mindmap": current,
+                "decisions": decisions,
+                "graph_changed": graph_changed,
+                "patch_effects": revision_effects.model_dump(mode="json"),
+                "unresolved_issues": final_issues,
+            },
+        )
+        await progress(
+            "finalize",
+            95,
+            "正在重新渲染并保存定向修改后的思维导图",
+        )
+        final_manifest = {
+            **run_manifest,
+            "refinement_mode": "human_direct_patch",
+            "base_graph_version": previous_result.graph_version,
+            "actual_editorial_revisions": 1,
+            "actual_editorial_review_rounds": 0,
+            "terminal_review_performed": False,
+            "convergence_reason": "human_direct_patch",
+            "historical_issue_count": 1,
+            "patch_attempt_count": patch_attempt_count,
+            "patch_repair_count": patch_repair_count,
+            "patch_full_rewrite_fallback_count": 0,
+            "patch_failed_preserve_count": 0,
+            "patch_graph_changed": graph_changed,
+            "human_refinement_decision": decisions[0].decision,
+            "responses_api_final_active": responses_active,
+            "responses_chain_length": len(response_chain),
+            "responses_cache_hit_count": response_cache_hit_count,
+            "responses_cached_tokens_total": response_cached_tokens_total,
+            "responses_chain_reset_count": response_chain_reset_count,
+            "responses_chat_fallback_count": response_chat_fallback_count,
+        }
+        result = _result_from_output(
+            task_id=task_id,
+            run_id=run_id,
+            mode=mode,
+            document=document,
+            rendered=rendered,
+            output=current,
+            model=vision_model,
+            model_call_count=len(model_calls),
+            run_manifest=final_manifest,
+            warnings=warnings,
+            degraded_components=degraded_components,
+            final_issues=final_issues,
+            decisions=decisions,
+            issue_by_id=issue_by_id,
+        )
+        blackboard.save_content_units(run_id, result.content_units)
+        blackboard.save_node_claims(run_id, result.nodes)
+        blackboard.save_decision_records(run_id, result.decision_records)
+        version = blackboard.save_graph_version(run_id, result)
+        result = result.model_copy(update={"graph_version": version})
+        blackboard.update_run(
+            run_id,
+            status="completed",
+            stage="complete",
+            degraded_components=result.degraded_components,
+        )
+        await progress(
+            "complete",
+            100,
+            "全局总编已完成定向 Patch 并重新渲染思维导图",
+        )
+        return result
+
+    await progress(
+        "editorial_draft",
+        34,
+        (
+            "全局总编正在通读视觉页面与文本上下文并生成第一版"
+            if input_bundle.text_context
+            else "全局总编正在通读视觉页面并生成第一版"
+        ),
+    )
+    draft_system_prompt = (
+        EDITORIAL_IMAGE_CONTEXT_PROMPT
+        if images
+        else EDITORIAL_TEXT_CONTEXT_PROMPT
+    )
+    draft_user_prompt = _editorial_task_prompt(
+        GLOBAL_EDITOR_DRAFT_PROMPT,
+        _draft_user_prompt(
+            primary_filename,
+            slide_count,
+            max_depth,
+            human_guidance,
+            document_manifest=document_manifest,
+            input_mode=input_bundle.input_mode,
+            text_context=model_text_context,
+        ),
+        has_visuals=bool(images),
+    )
+
+    async def invoke_draft(
+        role: str,
+        stage: str,
+        user_prompt: str,
+        max_tokens: int,
+    ) -> tuple[dict[str, Any], str | None]:
+        return await complete_visual_role(
+            role=role,
+            stage=stage,
+            selected_model=effective_loop.rounds[0].editor_model,
+            round_number=0,
+            system_prompt=draft_system_prompt,
+            user_prompt=user_prompt,
+            session_parent_id=None,
+            fallback_images=images,
+            max_tokens=max_tokens,
+            thinking_budget=editor_thinking_budget,
+            text_input_ids=[
+                f"text_{index:04d}"
+                for index, _ in enumerate(
+                    input_bundle.document.blocks,
+                    start=1,
+                )
+            ],
+            cache_static_images=True,
+        )
+
+    draft_payload, _ = await retry_complete_graph_output(
         role="global_editor_draft",
         stage="editorial_draft",
         selected_model=effective_loop.rounds[0].editor_model,
         round_number=0,
-        system_prompt=EDITORIAL_IMAGE_CONTEXT_PROMPT,
-        user_prompt=_cached_image_task_prompt(
-            GLOBAL_EDITOR_DRAFT_PROMPT,
-            _draft_user_prompt(
-                primary_filename,
-                slide_count,
-                max_depth,
-                human_guidance,
-                document_manifest=document_manifest,
-            ),
-        ),
-        session_parent_id=None,
-        fallback_images=images,
+        user_prompt=draft_user_prompt,
         max_tokens=draft_tokens,
-        thinking_budget=editor_thinking_budget,
-        cache_static_images=True,
+        invoke=invoke_draft,
     )
     blackboard.checkpoint(run_id, "editorial_draft_raw", draft_payload)
     current = _validate_mindmap(
@@ -2185,9 +3684,10 @@ async def run_editorial_ppt_pipeline(
     )
     blackboard.checkpoint(run_id, "editorial_graph_v1", current)
 
-    decisions: list[EditorialIssueDecision] = []
+    context_graph = current
+    decisions = context_decisions
     issue_by_id: dict[str, EditorialReviewIssue] = {}
-    final_issues: list[EditorialReviewIssue] = []
+    final_issues = context_issues
     revision_count = 0
     review_round_count = 0
     patch_attempt_count = 0
@@ -2222,7 +3722,7 @@ async def run_editorial_ppt_pipeline(
             current=current,
             historical_review_items=historical_review_items,
             human_guidance=human_guidance,
-        )
+        ) + source_context_suffix
         response_id: str | None = None
         try:
             if use_images:
@@ -2254,6 +3754,13 @@ async def run_editorial_ppt_pipeline(
                         if cached_image_role
                         else reviewer_thinking_budget
                     ),
+                    text_input_ids=[
+                        f"text_{index:04d}"
+                        for index, _ in enumerate(
+                            input_bundle.document.blocks,
+                            start=1,
+                        )
+                    ],
                     cache_static_images=cached_image_role,
                     accept_complete_json_on_length=True,
                 )
@@ -2265,7 +3772,16 @@ async def run_editorial_ppt_pipeline(
                     round_number=review_round,
                     system_prompt=prompt,
                     user_prompt=user_prompt,
-                    input_ids=[node.id for node in current.nodes],
+                    input_ids=[
+                        *[node.id for node in current.nodes],
+                        *[
+                            f"text_{index:04d}"
+                            for index, _ in enumerate(
+                                input_bundle.document.blocks,
+                                start=1,
+                            )
+                        ],
+                    ],
                     max_tokens=review_tokens,
                     thinking_budget=reviewer_thinking_budget,
                     accept_complete_json_on_length=True,
@@ -2299,9 +3815,19 @@ async def run_editorial_ppt_pipeline(
                 None,
             )
 
-    for review_round in range(1, review_round_budget + 1):
+    review_round_configs = (
+        effective_loop.rounds
+        if any(
+            round_config.reviewer_models()
+            for round_config in effective_loop.rounds
+        )
+        else []
+    )
+    if not review_round_configs:
+        convergence_reason = "single_agent_validated"
+    for review_round in range(1, len(review_round_configs) + 1):
         review_round_count = review_round
-        round_config = effective_loop.rounds[review_round - 1]
+        round_config = review_round_configs[review_round - 1]
         reviewer_prompts: dict[ReviewerRole, str] = {
             "content_omission": CONTENT_OMISSION_REVIEWER_PROMPT,
             "pruning": PRUNING_REVIEWER_PROMPT,
@@ -2327,7 +3853,7 @@ async def run_editorial_ppt_pipeline(
                     selected_model=selected_model,
                     prompt=reviewer_prompts[role],
                     review_round=review_round,
-                    use_images=(role == "content_omission"),
+                    use_images=(role == "content_omission" and bool(images)),
                     session_parent_id=(
                         review_parent_response_id
                         if role == "content_omission"
@@ -2346,7 +3872,7 @@ async def run_editorial_ppt_pipeline(
             ),
             None,
         )
-        final_issues = _aggregate_issues(reports)
+        final_issues[:] = _aggregate_issues(reports)
         issue_by_id.update({issue.id: issue for issue in final_issues})
         blackboard.checkpoint(
             run_id,
@@ -2401,34 +3927,69 @@ async def run_editorial_ppt_pipeline(
                 user_prompt: str,
                 max_tokens: int,
                 thinking_budget: int,
+                retry_on_length: bool = False,
             ) -> dict[str, Any]:
-                nonlocal revision_session_parent_id
-                if responses_active or revision_images:
-                    payload, response_id = await complete_visual_role(
-                        role=role,
-                        stage=stage,
+                async def invoke(
+                    attempt_role: str,
+                    attempt_stage: str,
+                    attempt_prompt: str,
+                    attempt_max_tokens: int,
+                ) -> dict[str, Any]:
+                    nonlocal revision_session_parent_id
+                    if responses_active or revision_images:
+                        payload, response_id = await complete_visual_role(
+                            role=attempt_role,
+                            stage=attempt_stage,
+                            selected_model=round_config.editor_model,
+                            round_number=review_round,
+                            system_prompt=system_prompt,
+                            user_prompt=attempt_prompt,
+                            session_parent_id=revision_session_parent_id,
+                            fallback_images=revision_images or images,
+                            max_tokens=attempt_max_tokens,
+                            thinking_budget=thinking_budget,
+                            text_input_ids=[
+                                f"text_{index:04d}"
+                                for index, _ in enumerate(
+                                    input_bundle.document.blocks,
+                                    start=1,
+                                )
+                            ],
+                        )
+                        if response_id is not None:
+                            revision_session_parent_id = response_id
+                        return payload
+                    return await complete_text(
+                        role=attempt_role,
+                        stage=attempt_stage,
                         selected_model=round_config.editor_model,
                         round_number=review_round,
                         system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        session_parent_id=revision_session_parent_id,
-                        fallback_images=revision_images or images,
-                        max_tokens=max_tokens,
+                        user_prompt=attempt_prompt,
+                        input_ids=[
+                            *[issue.id for issue in blocking],
+                            *[
+                                f"text_{index:04d}"
+                                for index, _ in enumerate(
+                                    input_bundle.document.blocks,
+                                    start=1,
+                                )
+                            ],
+                        ],
+                        max_tokens=attempt_max_tokens,
                         thinking_budget=thinking_budget,
                     )
-                    if response_id is not None:
-                        revision_session_parent_id = response_id
-                    return payload
-                return await complete_text(
+
+                if not retry_on_length:
+                    return await invoke(role, stage, user_prompt, max_tokens)
+                return await retry_complete_graph_output(
                     role=role,
                     stage=stage,
                     selected_model=round_config.editor_model,
                     round_number=review_round,
-                    system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    input_ids=[issue.id for issue in blocking],
                     max_tokens=max_tokens,
-                    thinking_budget=thinking_budget,
+                    invoke=invoke,
                 )
 
             patch_attempted = patch_revisions_enabled and bool(blocking)
@@ -2441,7 +4002,7 @@ async def run_editorial_ppt_pipeline(
                     current=current,
                     issues=blocking,
                     human_guidance=human_guidance,
-                )
+                ) + source_context_suffix
                 patch_error: Exception | None = None
                 try:
                     patch_payload = await call_revision_model(
@@ -2489,7 +4050,7 @@ async def run_editorial_ppt_pipeline(
                         failed_patch=patch_payload,
                         validation_error=str(patch_error),
                         human_guidance=human_guidance,
-                    )
+                    ) + source_context_suffix
                     try:
                         repair_payload = await call_revision_model(
                             role="global_editor_patch_repair",
@@ -2545,7 +4106,7 @@ async def run_editorial_ppt_pipeline(
                         degraded_components.append(
                             "editorial_patch_revision"
                         )
-                        final_issues = list(blocking)
+                        final_issues[:] = list(blocking)
                         convergence_reason = (
                             "patch_revision_failed_preserved_previous"
                         )
@@ -2566,6 +4127,7 @@ async def run_editorial_ppt_pipeline(
                         "独立全局复核。若当前图无需修改，请原样返回 mindmap，"
                         "并返回空 decisions 数组；不得虚构 issue_id。"
                     )
+                revision_prompt += source_context_suffix
                 revision_payload = await call_revision_model(
                     role=(
                         "global_editor_revision_fallback"
@@ -2577,6 +4139,7 @@ async def run_editorial_ppt_pipeline(
                     user_prompt=revision_prompt,
                     max_tokens=revision_tokens,
                     thinking_budget=editor_thinking_budget,
+                    retry_on_length=True,
                 )
                 blackboard.checkpoint(
                     run_id,
@@ -2607,8 +4170,9 @@ async def run_editorial_ppt_pipeline(
                 != before_revision_fingerprint
             )
             current = revised_mindmap
+            context_graph = current
             decisions.extend(revision_decisions)
-            final_issues = _unresolved_after_revision(
+            final_issues[:] = _unresolved_after_revision(
                 blocking,
                 revision_decisions,
                 graph_changed=graph_changed,

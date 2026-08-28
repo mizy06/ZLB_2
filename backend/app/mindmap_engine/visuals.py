@@ -26,7 +26,7 @@ from .schemas import (
 
 
 IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".webp"}
-RENDER_TYPES = IMAGE_TYPES | {".pdf", ".pptx"}
+RENDER_TYPES = IMAGE_TYPES | {".pdf", ".pptx", ".docx"}
 VISUAL_DEGRADED_RENDER_BUDGET = "[visual_degraded:render_budget]"
 VISUAL_DEGRADED_RENDER_FAILURE = "[visual_degraded:render_failure]"
 VISUAL_DEGRADED_NATIVE_EXTRACTION = (
@@ -120,14 +120,14 @@ def _asset_fingerprint(path: Path) -> str:
 
 def _validate_normalized_bbox(bbox: list[float]) -> None:
     if len(bbox) != 4:
-        raise ValueError("bbox ???? [x, y, width, height]?")
+        raise ValueError("bbox 必须包含 [x, y, width, height]。")
     x, y, width, height = bbox
     if not all(math.isfinite(item) for item in bbox):
-        raise ValueError("bbox ??????????")
+        raise ValueError("bbox 不能包含非有限数值。")
     if x < 0 or y < 0 or width <= 0 or height <= 0:
-        raise ValueError("bbox ??????????????")
+        raise ValueError("bbox 坐标必须非负且宽高必须为正。")
     if x > 1 or y > 1 or x + width > 1 + 1e-9 or y + height > 1 + 1e-9:
-        raise ValueError("bbox ???????????????")
+        raise ValueError("bbox 必须完整位于归一化页面范围内。")
 
 
 def _asset_url(
@@ -186,7 +186,7 @@ def _render_pdf(
         return []
     pdftoppm = _find_command("pdftoppm")
     if not pdftoppm:
-        raise RuntimeError("??? pdftoppm????? PDF ???")
+        raise RuntimeError("未找到 pdftoppm，无法渲染 PDF 页面。")
 
     generated: list[tuple[int, Path]] = []
     if page_numbers is None:
@@ -229,7 +229,7 @@ def _render_pdf(
             source = prefix.with_suffix(".png")
             if not source.exists():
                 raise RuntimeError(
-                    f"pdftoppm ????? {page_number} ????"
+                    f"pdftoppm 没有生成第 {page_number} 页图片。"
                 )
             generated.append((page_number, source))
 
@@ -257,7 +257,7 @@ def _render_pdf(
             )
         )
     if not pages:
-        raise RuntimeError("pdftoppm ?????????")
+        raise RuntimeError("pdftoppm 没有生成页面图片。")
     return pages
 
 
@@ -272,7 +272,7 @@ def _render_pptx(
 ) -> list[RenderedPage]:
     soffice = _find_command("soffice", "libreoffice")
     if not soffice:
-        raise RuntimeError("??? LibreOffice????? PPTX ????")
+        raise RuntimeError("未找到 LibreOffice，无法渲染 PPTX 幻灯片。")
 
     _run_command(
         [
@@ -289,7 +289,7 @@ def _render_pptx(
     if not pdf_path.exists():
         pdf_candidates = list(render_dir.glob("*.pdf"))
         if not pdf_candidates:
-            raise RuntimeError("LibreOffice ???? PPTX ?? PDF?")
+            raise RuntimeError("LibreOffice 没有生成 PPTX 对应 PDF。")
         pdf_path = pdf_candidates[0]
     try:
         return _render_pdf(
@@ -339,7 +339,7 @@ def _crop_image(
         right = min(int((x + box_width) * width + pad_x), width)
         bottom = min(int((y + box_height) * height + pad_y), height)
         if right - left < 4 or bottom - top < 4:
-            raise ValueError("???????")
+            raise ValueError("裁剪区域过小。")
         cropped = image.crop((left, top, right, bottom)).convert("RGB")
         cropped.save(target, format="PNG")
         return cropped.size
@@ -367,7 +367,7 @@ def _chart_text(shape) -> str:
         if getattr(series, "name", None)
     ]
     if series_names:
-        parts.append("???" + "?".join(series_names))
+        parts.append("系列：" + "、".join(series_names))
     return "\n".join(parts)
 
 
@@ -434,16 +434,16 @@ def _extract_pptx_visuals(
                     except (OSError, ValueError) as exc:
                         warnings.append(
                             f"{VISUAL_DEGRADED_NATIVE_EXTRACTION} "
-                            f"??? {slide_number} ? {visual_kind} "
-                            f"?????{exc}"
+                            f"幻灯片 {slide_number} 的 {visual_kind} "
+                            f"裁剪失败：{exc}"
                         )
                         continue
                 else:
                     status = "needs_render"
                     warnings.append(
                         f"{VISUAL_DEGRADED_NATIVE_EXTRACTION} "
-                        f"??? {slide_number} ? {visual_kind} "
-                        "???????????????"
+                        f"幻灯片 {slide_number} 的 {visual_kind} "
+                        "缺少渲染页，已保留坐标元数据。"
                     )
 
             target_path = render_dir / filename if filename else None
@@ -469,15 +469,15 @@ def _extract_pptx_visuals(
             if canonical:
                 if canonical.source_slide == slide_number:
                     warnings.append(
-                        f"??? {slide_number} ? {visual_kind} ?????????"
-                        "?????????????"
+                        f"幻灯片 {slide_number} 的 {visual_kind} 与同页已有视觉资产"
+                        "感知重复，已跳过重复副本。"
                     )
                     if target_path:
                         target_path.unlink(missing_ok=True)
                     continue
                 warnings.append(
-                    f"??? {slide_number} ? {visual_kind} ????????????"
-                    f"??? {canonical.asset_id} ????????"
+                    f"幻灯片 {slide_number} 的 {visual_kind} 与已有视觉资产感知重复，"
+                    f"已复用 {canonical.asset_id} 并保留出现位置。"
                 )
                 if target_path:
                     target_path.unlink(missing_ok=True)
@@ -528,7 +528,9 @@ def render_document(
 ) -> RenderResponse:
     suffix = source_path.suffix.lower()
     if suffix not in RENDER_TYPES:
-        raise ValueError("??????? PDF?PPTX?PNG?JPG?JPEG ? WEBP?")
+        raise ValueError(
+            "视觉渲染仅支持 PDF、PPTX、DOCX、PNG、JPG、JPEG 或 WEBP。"
+        )
 
     render_id = uuid.uuid4().hex[:16]
     render_dir = data_root / "assets" / render_id
@@ -541,11 +543,11 @@ def render_document(
             return None
         selected = _select_page_numbers(total_pages, max(int(max_pages), 0))
         if len(selected) < total_pages:
-            labels = "?".join(str(page) for page in selected) or "?"
+            labels = "、".join(str(page) for page in selected) or "无"
             warnings.append(
                 f"{VISUAL_DEGRADED_RENDER_BUDGET} "
-                f"??? {total_pages} ????????? {max_pages} ??"
-                f"????? {labels} ???? {total_pages - len(selected)} ??"
+                f"文档共 {total_pages} 页，全页栅格预算为 {max_pages} 页；"
+                f"仅栅格化第 {labels} 页，跳过 {total_pages - len(selected)} 页。"
             )
         return selected
 
@@ -568,33 +570,73 @@ def render_document(
         except Exception as exc:
             warnings.append(
                 f"{VISUAL_DEGRADED_RENDER_FAILURE} "
-                f"PDF ???????{exc}"
+                f"PDF 页面渲染失败：{exc}"
             )
-    elif suffix == ".pptx":
+    elif suffix in {".pptx", ".docx"}:
         try:
             page_numbers = (
-                budgeted_page_numbers(
-                    len(Presentation(str(source_path)).slides)
-                )
-                if max_pages is not None
+                budgeted_page_numbers(len(Presentation(str(source_path)).slides))
+                if max_pages is not None and suffix == ".pptx"
                 else None
             )
             if page_numbers == []:
                 pages = []
             else:
-                pages = _render_pptx(
-                    source_path,
-                    render_dir,
-                    public_base_url,
-                    asset_token,
-                    render_id,
-                    page_numbers,
-                    max(int(pdf_dpi), 72),
-                )
+                if suffix == ".pptx":
+                    pages = _render_pptx(
+                        source_path,
+                        render_dir,
+                        public_base_url,
+                        asset_token,
+                        render_id,
+                        page_numbers,
+                        max(int(pdf_dpi), 72),
+                    )
+                else:
+                    soffice = _find_command("soffice", "libreoffice")
+                    if not soffice:
+                        raise RuntimeError(
+                            "未找到 LibreOffice，无法渲染 DOCX 页面。"
+                        )
+                    _run_command(
+                        [
+                            soffice,
+                            "--headless",
+                            "--convert-to",
+                            "pdf",
+                            "--outdir",
+                            str(render_dir),
+                            str(source_path),
+                        ]
+                    )
+                    pdf_path = render_dir / f"{source_path.stem}.pdf"
+                    if not pdf_path.exists():
+                        pdf_candidates = list(render_dir.glob("*.pdf"))
+                        if not pdf_candidates:
+                            raise RuntimeError(
+                                "LibreOffice 没有生成 DOCX 对应 PDF。"
+                            )
+                        pdf_path = pdf_candidates[0]
+                    if max_pages is not None:
+                        page_numbers = budgeted_page_numbers(
+                            _pdf_page_count(pdf_path)
+                        )
+                    try:
+                        pages = _render_pdf(
+                            pdf_path,
+                            render_dir,
+                            public_base_url,
+                            asset_token,
+                            render_id,
+                            page_numbers,
+                            max(int(pdf_dpi), 72),
+                        )
+                    finally:
+                        pdf_path.unlink(missing_ok=True)
         except Exception as exc:
             warnings.append(
                 f"{VISUAL_DEGRADED_RENDER_FAILURE} "
-                f"PPTX ????????{exc}"
+                f"{'PPTX' if suffix == '.pptx' else 'DOCX'} 整页渲染不可用：{exc}"
             )
     else:
         filename = f"page_0001{suffix}"
@@ -639,8 +681,22 @@ def render_document(
         native_visuals=native_visuals,
         warnings=list(dict.fromkeys(warnings)),
     )
+    response_payload = response.model_dump(mode="json")
+    response_payload["pages"] = [
+        {
+            **page,
+            "source_filename": original_filename,
+            "source_type": suffix.lstrip("."),
+            "source_local_page": page["page"],
+            "source_local_slide": (
+                page["page"] if suffix == ".pptx" else None
+            ),
+            "global_page": page["page"],
+        }
+        for page in response_payload["pages"]
+    ]
     manifest = {
-        **response.model_dump(mode="json"),
+        **response_payload,
         "source_type": suffix.lstrip("."),
         "pdf_dpi": max(int(pdf_dpi), 72),
     }
@@ -658,7 +714,7 @@ def _crop_context(
     render_dir = data_root / "assets" / request.render_id
     manifest_path = render_dir / "manifest.json"
     if not manifest_path.exists():
-        raise FileNotFoundError("??????????")
+        raise FileNotFoundError("视觉渲染任务不存在。")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     pages = {
         int(page["page"]): render_dir / page["filename"]
@@ -682,7 +738,7 @@ def _crop_visual_unit(
 ) -> VisualUnit:
     source = pages.get(region.page)
     if not source or not source.exists():
-        raise FileNotFoundError(f"? {region.page} ??????????")
+        raise FileNotFoundError(f"第 {region.page} 页的渲染图片不存在。")
     filename = f"crop_{index:04d}.png"
     target = render_dir / filename
     try:
@@ -770,20 +826,20 @@ def crop_regions_best_effort(
         except (FileNotFoundError, OSError, ValueError) as exc:
             results.append(None)
             warnings.append(
-                f"? {region.page} ??? {region.bbox} ?????{exc}"
+                f"第 {region.page} 页区域 {region.bbox} 裁剪失败：{exc}"
             )
     return results, warnings
 
 
 def resolve_asset_path(data_root: Path, render_id: str, filename: str) -> Path:
     if not render_id.isalnum():
-        raise FileNotFoundError("?????? ID?")
+        raise FileNotFoundError("非法视觉任务 ID。")
     if Path(filename).name != filename:
-        raise FileNotFoundError("????????")
+        raise FileNotFoundError("非法资产文件名。")
     render_dir = (data_root / "assets" / render_id).resolve()
     target = (render_dir / filename).resolve()
     if target.parent != render_dir or not target.is_file():
-        raise FileNotFoundError("????????")
+        raise FileNotFoundError("视觉资产不存在。")
     return target
 
 def render_documents(
@@ -796,7 +852,9 @@ def render_documents(
     pdf_dpi: int = 144,
 ) -> RenderResponse:
     if not source_paths:
-        raise ValueError("???????????")
+        raise ValueError("未提供任何待渲染文档。")
+    if len(source_paths) != len(original_filenames):
+        raise ValueError("输入路径与原始文件名数量不一致。")
     if len(source_paths) == 1:
         return render_document(
             source_paths[0],
@@ -808,39 +866,169 @@ def render_documents(
             pdf_dpi=pdf_dpi,
         )
 
+    collection_id = uuid.uuid4().hex[:16]
+    collection_dir = data_root / "assets" / collection_id
+    collection_dir.mkdir(parents=True, exist_ok=False)
     all_pages: list[RenderedPage] = []
     all_assets: list[VisualAsset] = []
     all_warnings: list[str] = []
+    documents: list[dict] = []
+    page_sources: list[dict] = []
 
-    global_page_number = 1
-    for doc_idx, (path, fname) in enumerate(zip(source_paths, original_filenames, strict=False)):
-        res = render_document(
-            path,
-            fname,
-            data_root=data_root,
-            public_base_url=public_base_url,
-            asset_token=asset_token,
-            max_pages=max_pages,
-            pdf_dpi=pdf_dpi,
-        )
-        all_warnings.extend(res.warnings)
-        all_assets.extend(res.native_visuals)
-
-        for page in res.pages:
-            relabeled_page = RenderedPage(
-                asset_id=page.asset_id,
-                render_id=page.render_id,
-                filename=page.filename,
-                url=page.url,
-                page=global_page_number,
-                width=getattr(page, "width", 0),
-                height=getattr(page, "height", 0),
+    try:
+        for doc_index, (path, fname) in enumerate(
+            zip(source_paths, original_filenames, strict=True),
+            start=1,
+        ):
+            res = render_document(
+                path,
+                fname,
+                data_root=data_root,
+                public_base_url=public_base_url,
+                asset_token=asset_token,
+                max_pages=max_pages,
+                pdf_dpi=pdf_dpi,
             )
-            all_pages.append(relabeled_page)
-            global_page_number += 1
+            source_dir = data_root / "assets" / res.render_id
+            all_warnings.extend(res.warnings)
+            page_start = len(all_pages) + 1
 
-    return RenderResponse(
-        pages=all_pages,
-        native_visuals=all_assets,
-        warnings=all_warnings,
-    )
+            def relocate(filename: str) -> str:
+                if not filename:
+                    return ""
+                target_name = f"doc_{doc_index:04d}_{filename}"
+                source = source_dir / filename
+                target = collection_dir / target_name
+                if source.exists() and source.is_file():
+                    shutil.copy2(source, target)
+                return target_name
+
+            for page in res.pages:
+                target_name = relocate(page.filename)
+                if not target_name or not (collection_dir / target_name).exists():
+                    all_warnings.append(
+                        f"{VISUAL_DEGRADED_RENDER_FAILURE} "
+                        f"{fname} 的页面资产未能聚合。"
+                    )
+                    continue
+                all_pages.append(
+                    RenderedPage(
+                        asset_id=f"doc_{doc_index:04d}_{page.asset_id}",
+                        render_id=collection_id,
+                        filename=target_name,
+                        url=_asset_url(
+                            collection_id,
+                            target_name,
+                            public_base_url,
+                            asset_token,
+                        ),
+                        page=len(all_pages) + 1,
+                        width=getattr(page, "width", 0),
+                        height=getattr(page, "height", 0),
+                    )
+                )
+                page_sources.append(
+                    {
+                        "asset_id": all_pages[-1].asset_id,
+                        "filename": target_name,
+                        "source_filename": fname,
+                        "source_type": path.suffix.lower().lstrip("."),
+                        "source_local_page": page.page,
+                        "source_local_slide": (
+                            page.page if path.suffix.lower() == ".pptx" else None
+                        ),
+                        "global_page": all_pages[-1].page,
+                    }
+                )
+
+            for asset in res.native_visuals:
+                target_name = relocate(asset.filename)
+                if target_name and (collection_dir / target_name).exists():
+                    all_assets.append(
+                        asset.model_copy(
+                            update={
+                                "asset_id": f"doc_{doc_index:04d}_{asset.asset_id}",
+                                "render_id": collection_id,
+                                "filename": target_name,
+                                "url": _asset_url(
+                                    collection_id,
+                                    target_name,
+                                    public_base_url,
+                                    asset_token,
+                                ),
+                            }
+                        )
+                    )
+                else:
+                    all_assets.append(
+                        asset.model_copy(
+                            update={
+                                "asset_id": f"doc_{doc_index:04d}_{asset.asset_id}",
+                                "render_id": collection_id,
+                                "filename": "",
+                                "url": "",
+                                "status": "metadata_only",
+                            }
+                        )
+                    )
+
+            page_end = len(all_pages)
+            documents.append(
+                {
+                    "index": doc_index,
+                    "filename": fname,
+                    "source_type": path.suffix.lower().lstrip("."),
+                    "render_id": res.render_id,
+                    "global_page_start": page_start if page_end >= page_start else None,
+                    "global_page_end": page_end if page_end >= page_start else None,
+                    "page_count": page_end - page_start + 1
+                    if page_end >= page_start
+                    else 0,
+                    "source_page_count": len(res.pages),
+                    "warnings": list(res.warnings),
+                }
+            )
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+        response = RenderResponse(
+            render_id=collection_id,
+            filename=" & ".join(original_filenames[:2])
+            + (
+                f" 等{len(original_filenames)}份文档"
+                if len(original_filenames) > 2
+                else ""
+            ),
+            pages=all_pages,
+            native_visuals=all_assets,
+            warnings=list(dict.fromkeys(all_warnings)),
+        )
+        response_payload = response.model_dump(mode="json")
+        response_payload["pages"] = [
+            {
+                **page,
+                **next(
+                    (
+                        source
+                        for source in page_sources
+                        if source["asset_id"] == page["asset_id"]
+                    ),
+                    {},
+                ),
+            }
+            for page in response_payload["pages"]
+        ]
+        manifest = {
+            **response_payload,
+            "source_type": "collection",
+            "documents": documents,
+            "page_sources": page_sources,
+            "pdf_dpi": max(int(pdf_dpi), 72),
+        }
+        (collection_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return response
+    except Exception:
+        shutil.rmtree(collection_dir, ignore_errors=True)
+        raise

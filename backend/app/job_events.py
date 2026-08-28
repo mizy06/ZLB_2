@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 JobEventKind = Literal[
     "status",
+    "agent_started",
+    "context_preparing",
     "model_start",
     "model_delta",
     "model_complete",
@@ -19,6 +21,7 @@ JobEventKind = Literal[
     "job_failed",
     "job_cancelled",
     "usage",
+    "compaction_started",
     "compaction",
 ]
 TERMINAL_EVENT_KINDS = {

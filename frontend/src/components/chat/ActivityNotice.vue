@@ -1,34 +1,76 @@
-<!-- apps/kimi-web/src/components/chat/ActivityNotice.vue -->
-<!-- Generic in-transcript "working on X" notice: a plain spinner plus a
-     body-sized label. Used for long-running session activities that are not a
-     chat turn (e.g. "Compacting context…"). Uses the plain Spinner primitive
-     (design-system §03/§06) — MoonSpinner is reserved for the chat "waiting
-     for the agent's first response" state. -->
 <script setup lang="ts">
-import Spinner from '../ui/Spinner.vue';
+import { computed } from 'vue';
 
-defineProps<{
+const props = defineProps<{
   label: string;
 }>();
+
+const characters = computed(() => Array.from(props.label));
 </script>
 
 <template>
-  <div class="activity-notice" role="status">
-    <span aria-hidden="true"><Spinner size="sm" /></span>
-    <span class="an-label">{{ label }}</span>
+  <div class="activity-notice" role="status" aria-live="polite">
+    <span class="sr-only">{{ label }}</span>
+    <span class="compaction-wave" aria-hidden="true">
+      <span
+        v-for="(character, index) in characters"
+        :key="`${character}-${index}`"
+        class="compaction-character"
+        :style="{ animationDelay: `${index * 75}ms` }"
+      >{{ character }}</span>
+    </span>
   </div>
 </template>
 
 <style scoped>
-/* Smaller than body text (text-sm) so the notice reads as lightweight
-   in-transcript chrome rather than a full turn. */
 .activity-notice {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 9px;
   align-self: flex-start;
   margin: 0;
   font: var(--text-sm)/var(--leading-normal) var(--font-ui);
   color: var(--color-text-muted);
+}
+
+.compaction-wave {
+  display: inline-flex;
+}
+
+.compaction-character {
+  animation: compaction-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes compaction-pulse {
+  0%,
+  100% {
+    opacity: 0.28;
+  }
+
+  42% {
+    opacity: 0.9;
+  }
+
+  66% {
+    opacity: 0.48;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compaction-character {
+    animation: none;
+    opacity: 0.72;
+  }
 }
 </style>

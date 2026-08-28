@@ -31,7 +31,7 @@ const notifyPermission = ref<string>(
   typeof Notification !== 'undefined' ? Notification.permission : 'denied',
 );
 
-const NOTIFICATION_ICON = '/favicon.ico';
+const NOTIFICATION_ICON = '/topomind-static.svg';
 
 /** Shared setter: disabling is instant; enabling requests OS permission first
     and stays off if the user blocks it. */

@@ -1,0 +1,201 @@
+import { BundledTheme, Highlighter, SpecialTheme, ThemeInput } from "shiki";
+
+//#region src/utils/highlight.d.ts
+type HighlightTheme = BundledTheme | SpecialTheme | ThemeInput;
+declare const defaultLanguages: string[];
+declare const defaultThemes: BundledTheme[];
+declare function registerHighlight(options?: {
+  themes?: HighlightTheme[];
+  langs?: string[];
+}): Promise<Highlighter>;
+declare function disposeHighlighter(): void;
+//#endregion
+//#region src/utils/token-style.d.ts
+type TokenStyleMode = 'inline' | 'class';
+type TokenStyleModeOption = TokenStyleMode | 'auto';
+//#endregion
+//#region src/utils/shiki-render.d.ts
+interface RenderOptions {
+  lang: string;
+  theme: string;
+  preClass?: string;
+  codeClass?: string;
+  lineClass?: string;
+  showLineNumbers?: boolean;
+  startingLineNumber?: number;
+  tokenCache?: boolean;
+  tokenCacheMaxEntries?: number;
+  htmlCache?: boolean;
+  htmlCacheMaxEntries?: number;
+  tokenLines?: ThemedToken[][];
+  styleRoot?: Node | null;
+  tokenStyleMode?: TokenStyleModeOption;
+}
+interface ThemedToken {
+  content: string;
+  color?: string;
+  fontStyle?: number;
+}
+declare function renderCodeWithTokens(highlighter: Highlighter, code: string, opts: RenderOptions): string;
+//#endregion
+//#region src/utils/incremental-tokens.d.ts
+type UpdateResult = 'incremental' | 'full' | 'noop';
+interface TokenIncrementalOptions extends Omit<RenderOptions, 'preClass' | 'codeClass' | 'lineClass'> {
+  preClass?: string;
+  codeClass?: string;
+  lineClass?: string;
+  /**
+   * Optional precomputed token lines. When provided, the highlighter will NOT
+   * be invoked and these tokens will be used directly (after padding to match
+   * the code's line count). Useful for callers that cache grammar state (e.g.,
+   * shiki-stream) and want to avoid re-tokenizing identical prefixes.
+   */
+  tokenLines?: ThemedToken[][];
+  onResult?: (result: UpdateResult) => void;
+  /**
+   * Compare mode for detecting the first diverged line.
+   * - 'signature' (default): compare a compact per-line signature
+   * - 'innerHTML': fallback to full innerHTML string comparison
+   */
+  compareMode?: 'signature' | 'innerHTML';
+  /**
+   * Skip tokenization when the input code is identical to the last update.
+   * Defaults to true for updater instances; direct calls are unaffected.
+   */
+  skipSameCode?: boolean;
+  /**
+   * Unsafe append-only fast path. When enabled and code is a strict prefix
+   * extension of the previous update, this skips per-line divergence checks.
+   * Defaults to false. Enable only when earlier token lines cannot change after
+   * appending new source text.
+   */
+  appendOnlyFastPath?: boolean;
+  /**
+   * Coalesce scheduled updates for this many milliseconds before rendering.
+   * Defaults to 0, i.e. no extra timeout-based throttling.
+   */
+  throttleMs?: number;
+}
+declare function updateCodeTokensIncremental(container: HTMLElement | null | undefined, highlighter: Highlighter, code: string, opts: TokenIncrementalOptions): UpdateResult;
+interface TokenIncrementalUpdater {
+  update: (code: string, tokenLines?: ThemedToken[][]) => UpdateResult;
+  reset: () => void;
+  cancel?: () => void;
+  dispose: () => void;
+}
+declare function createTokenIncrementalUpdater(container: HTMLElement | null | undefined, highlighter: Highlighter, opts: TokenIncrementalOptions): TokenIncrementalUpdater;
+declare function createScheduledTokenIncrementalUpdater(container: HTMLElement | null | undefined, highlighter: Highlighter, opts: TokenIncrementalOptions): TokenIncrementalUpdater;
+//#endregion
+//#region src/utils/render-scheduler.d.ts
+declare function setTimeBudget(ms: number): void;
+declare function getTimeBudget(): number;
+declare function isPaused(): boolean;
+declare function getQueueLength(): number;
+declare function pause(): void;
+declare function resume(): void;
+/**
+ * Schedule a render job to be executed within the time-budgeted rAF loop.
+ * Returns a function to cancel the scheduled job if it hasn't run yet.
+ */
+declare function scheduleRenderJob(job: () => void, options?: {
+  priority?: 'high' | 'normal';
+}): () => void;
+/**
+ * Run a job immediately, bypassing the scheduler. Use sparingly for very high
+ * priority operations.
+ */
+declare function runImmediate(job: () => void): void;
+/**
+ * Drain the queue by running all pending jobs immediately, bypassing the
+ * per-frame time budget. Use with caution — this can block the main thread.
+ */
+declare function drain(): void;
+/**
+ * Clear all pending jobs and cancel the next frame. Used for cleanup.
+ */
+declare function clearAll(): void;
+//#endregion
+//#region src/utils/restore-priority.d.ts
+interface RestoreItem {
+  el: Element;
+  render: () => void;
+}
+interface RestoreOptions {
+  batchSize?: number;
+  staggerMs?: number;
+  drainVisible?: boolean;
+}
+/**
+ * Restore a set of render items prioritizing visible elements.
+ *
+ * Behavior:
+ * - immediately schedules visible items with high priority
+ * - staggers non-visible items in batches to avoid flooding the scheduler
+ *
+ * Returns a cancel function to abort scheduling of remaining background jobs.
+ */
+declare function restoreWithVisibilityPriority(items: RestoreItem[], opts?: RestoreOptions): () => void;
+//#endregion
+//#region src/utils/shiki-stream-renderer.d.ts
+interface ShikiStreamRendererOptions {
+  lang?: string;
+  langs?: string[];
+  theme?: string;
+  themes?: any[];
+  scheduleInRaf?: boolean;
+  timeBudget?: number;
+  throttleMs?: number;
+  compareMode?: TokenIncrementalOptions['compareMode'];
+  skipSameCode?: boolean;
+  preClass?: string;
+  codeClass?: string;
+  lineClass?: string;
+  showLineNumbers?: boolean;
+  startingLineNumber?: number;
+  tokenCache?: boolean;
+  tokenCacheMaxEntries?: number;
+  htmlCache?: boolean;
+  htmlCacheMaxEntries?: number;
+  styleRoot?: Node | null;
+  tokenStyleMode?: TokenIncrementalOptions['tokenStyleMode'];
+  onResult?: TokenIncrementalOptions['onResult'];
+}
+declare function createShikiStreamRenderer(container: HTMLElement, options: ShikiStreamRendererOptions): {
+  updateCode: (code: string, lang?: string) => Promise<void>;
+  setTheme: (theme: string) => Promise<void>;
+  dispose: () => void;
+  getState: () => {
+    code: string;
+    lang: string | undefined;
+    theme: string;
+  };
+};
+//#endregion
+//#region src/utils/shiki-stream-cached-renderer.d.ts
+interface ShikiStreamCachedRendererOptions extends Omit<ShikiStreamRendererOptions, 'appendOnlyFastPath'> {
+  /**
+   * If true (default), attempt to reuse Shiki grammar state for appended
+   * content via shiki-stream. Set to false to always retokenize from scratch.
+   */
+  useGrammarState?: boolean;
+}
+/**
+ * Renderer that reuses shiki-stream's tokenizer (grammarState-aware) to avoid
+ * re-tokenizing stable prefixes when code arrives incrementally.
+ *
+ * API mirrors createShikiStreamRenderer: updateCode(lang?), setTheme, dispose.
+ */
+declare function createShikiStreamCachedRenderer(container: HTMLElement, options: ShikiStreamCachedRendererOptions): {
+  updateCode: (code: string, lang?: string) => Promise<void>;
+  setTheme: (theme: string) => Promise<void>;
+  dispose: () => void;
+  getState: () => {
+    code: string;
+    lang: string | undefined;
+    theme: string;
+    tokenCount: number;
+  };
+};
+//#endregion
+export { RenderOptions, RestoreItem, RestoreOptions, ShikiStreamCachedRendererOptions, ShikiStreamRendererOptions, ThemedToken, TokenIncrementalOptions, TokenIncrementalUpdater, type TokenStyleMode, type TokenStyleModeOption, UpdateResult, clearAll, createScheduledTokenIncrementalUpdater, createShikiStreamCachedRenderer, createShikiStreamRenderer, createTokenIncrementalUpdater, defaultLanguages, defaultThemes, disposeHighlighter, drain, getQueueLength, getTimeBudget, isPaused, pause, registerHighlight, renderCodeWithTokens, restoreWithVisibilityPriority, resume, runImmediate, scheduleRenderJob, setTimeBudget, updateCodeTokensIncremental };
+//# sourceMappingURL=index.d.ts.map

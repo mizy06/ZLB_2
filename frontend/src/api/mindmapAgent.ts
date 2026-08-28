@@ -1,10 +1,12 @@
 import type {
+  AppAccount,
   AppConfig,
   AppEvent,
   AppMessage,
   AppModel,
   AppProvider,
   AppSession,
+  AppSessionUsage,
   AppSessionRuntimeStatus,
   AppSessionSnapshot,
   AppTask,
@@ -24,11 +26,12 @@ import type {
   ProviderRefreshResult,
   QuestionResponse,
 } from './types';
-
+import { markMindmapAuthRequired } from './mindmapAuth';
 const WORKSPACE_ID = 'mindmap-agent';
 const WORKSPACE_ROOT = '/workspace';
 const FIXED_MODEL = 'qwen3.8-max';
-const QWEN38_MAX_CONTEXT_LIMIT = 131072;
+const QWEN38_MAX_CONTEXT_LIMIT = 1_000_000;
+const LEGACY_QWEN38_OUTPUT_LIMIT = 131_072;
 const EMPTY_USAGE = {
   inputTokens: 0,
   outputTokens: 0,
@@ -39,6 +42,69 @@ const EMPTY_USAGE = {
   contextLimit: QWEN38_MAX_CONTEXT_LIMIT,
   turnCount: 0,
 };
+
+const DEFAULT_CONTEXT_LIMIT = QWEN38_MAX_CONTEXT_LIMIT;
+
+type ContextUsageSource = {
+  context_tokens?: unknown;
+  max_context_tokens?: unknown;
+  context_usage?: unknown;
+  manifest?: unknown;
+};
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))
+      ? Number(value)
+      : undefined;
+}
+
+/**
+ * Normalize all backend context shapes into the two fields consumed by the
+ * existing ConversationStatus -> Composer ContextRing path. Older jobs keep
+ * the values in manifest, while live usage events send them at the top level.
+ */
+export function contextUsageFromSource(
+  source: ContextUsageSource,
+  fallback: Pick<AppSessionUsage, 'contextTokens' | 'contextLimit'> = EMPTY_USAGE,
+): Pick<AppSessionUsage, 'contextTokens' | 'contextLimit'> {
+  const manifest = recordValue(source.manifest);
+  const rawTokens = finiteNumber(source.context_tokens ?? manifest.context_tokens);
+  const rawLimit = finiteNumber(source.max_context_tokens ?? manifest.max_context_tokens);
+  const rawUsage = finiteNumber(source.context_usage ?? manifest.context_usage);
+  const contextLimit =
+    rawLimit === LEGACY_QWEN38_OUTPUT_LIMIT
+      ? QWEN38_MAX_CONTEXT_LIMIT
+      : rawLimit !== undefined && rawLimit > 0
+      ? rawLimit
+      : fallback.contextLimit > 0
+        ? fallback.contextLimit
+        : DEFAULT_CONTEXT_LIMIT;
+  const contextTokens =
+    rawTokens !== undefined && rawTokens >= 0
+      ? rawTokens
+      : rawUsage !== undefined && rawUsage >= 0
+        ? Math.round(rawUsage * contextLimit)
+        : Math.max(0, fallback.contextTokens);
+  return { contextTokens, contextLimit };
+}
+
+function hasContextUsage(source: ContextUsageSource): boolean {
+  const manifest = recordValue(source.manifest);
+  return (
+    source.context_tokens !== undefined
+    || source.max_context_tokens !== undefined
+    || source.context_usage !== undefined
+    || manifest.context_tokens !== undefined
+    || manifest.max_context_tokens !== undefined
+    || manifest.context_usage !== undefined
+  );
+}
 
 interface MindmapLoopRound {
   editor_model: string;
@@ -155,6 +221,8 @@ interface BackendJobEvent {
   task_id: string;
   kind:
     | 'status'
+    | 'agent_started'
+    | 'context_preparing'
     | 'model_start'
     | 'model_delta'
     | 'model_complete'
@@ -163,10 +231,12 @@ interface BackendJobEvent {
     | 'job_failed'
     | 'job_cancelled'
     | 'usage'
+    | 'compaction_started'
     | 'compaction';
   context_tokens?: number;
   max_context_tokens?: number;
   context_usage?: number;
+  total_tokens?: number;
   tokensBefore?: number;
   tokensAfter?: number;
   summary?: string;
@@ -195,12 +265,28 @@ interface SessionDraft {
   uploadId?: string;
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
+async function parseResponse<T>(
+  response: Response,
+  options: { notifyAuth?: boolean } = {},
+): Promise<T> {
   if (!response.ok) {
+    if (response.status === 401 && options.notifyAuth !== false) {
+      markMindmapAuthRequired();
+    }
     const body = (await response.json().catch(() => ({}))) as { detail?: string };
     throw new Error(body.detail || `HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+function request(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    credentials: 'include',
+  });
 }
 
 function nowIso(): string {
@@ -257,6 +343,8 @@ function stageLabel(stage: string): string {
   const labels: Record<string, string> = {
     queued: '排队等待',
     starting: '启动任务',
+    context_preparing: '准备上下文',
+    agent_started: 'Agent 启动',
     parse: '解析文档',
     ingest: '读取内容',
     chunk: '切分内容',
@@ -506,90 +594,96 @@ class MindmapEventConnection implements KimiEventConnection {
     }
   }
 
+  private emitContextUsage(sessionId: string, source: ContextUsageSource, totalTokens?: unknown): void {
+    const currentSession = this.api.sessionCache.get(sessionId) || this.api.drafts.get(sessionId)?.session;
+    const context = contextUsageFromSource(source, currentSession?.usage || EMPTY_USAGE);
+    const total = finiteNumber(totalTokens);
+    const nextUsage: AppSessionUsage = {
+      ...(currentSession?.usage || EMPTY_USAGE),
+      ...context,
+      ...(total !== undefined ? { inputTokens: total } : {}),
+    };
+    if (currentSession) {
+      currentSession.usage = nextUsage;
+      this.api.sessionCache.set(sessionId, currentSession);
+    }
+    this.emit(sessionId, {
+      type: 'sessionUsageUpdated',
+      sessionId,
+      usage: nextUsage,
+      model: FIXED_MODEL,
+    });
+  }
+
   private async consume(
     sessionId: string,
     taskId: string,
     event: BackendJobEvent,
   ): Promise<void> {
-    if (event.kind === 'usage') {
-      const ctxUsed = Number(event.context_tokens ?? 0);
-      const ctxMax = Number(event.max_context_tokens ?? QWEN38_MAX_CONTEXT_LIMIT);
-      const currentSession = this.api.sessionCache.get(sessionId) || this.api.drafts.get(sessionId)?.session;
-      const nextUsage: any = {
-        ...(currentSession?.usage || EMPTY_USAGE),
-        contextTokens: ctxUsed,
-        contextLimit: ctxMax > 0 ? ctxMax : QWEN38_MAX_CONTEXT_LIMIT,
-        inputTokens: Number((event as any).total_tokens ?? currentSession?.usage.inputTokens ?? 0),
-      };
-      if (currentSession) {
-        currentSession.usage = nextUsage;
-        this.api.sessionCache.set(sessionId, currentSession);
+    if (
+      event.kind === 'agent_started'
+      || event.kind === 'context_preparing'
+    ) {
+      const nextToolCallId = `stage_${sessionId}_${this.promptId(sessionId)}_${event.stage || event.id}`;
+      const current = this.openStageBySession.get(sessionId);
+      if (current && current !== nextToolCallId) {
+        this.finishStage(sessionId, event.created_at);
       }
+      if (!current || current !== nextToolCallId) {
+        this.openStageBySession.set(sessionId, nextToolCallId);
+        this.emit(sessionId, {
+          type: 'messageCreated',
+          message: this.message(
+            sessionId,
+            `message_${nextToolCallId}`,
+            'assistant',
+            [{
+              type: 'toolUse',
+              toolCallId: nextToolCallId,
+              toolName: stageLabel(event.stage),
+              input: event.message || stageLabel(event.stage),
+            }],
+            event.created_at,
+          ),
+        });
+      }
+      return;
+    }
+
+    if (event.kind === 'usage') {
+      this.emitContextUsage(sessionId, event, event.total_tokens);
+      return;
+    }
+
+    if (event.kind === 'compaction_started') {
+      this.finishStage(sessionId, event.created_at);
       this.emit(sessionId, {
-        type: 'sessionUsageUpdated',
+        type: 'compactionStarted',
         sessionId,
-        usage: nextUsage,
-        model: FIXED_MODEL,
+        trigger: event.trigger === 'manual' ? 'manual' : 'auto',
       });
       return;
     }
 
     if (event.kind === 'compaction') {
-      const tokensBefore = Number(event.tokensBefore ?? 0);
-      const tokensAfter = Number(event.tokensAfter ?? 0);
-      const currentSession = this.api.sessionCache.get(sessionId) || this.api.drafts.get(sessionId)?.session;
-      const nextUsage: any = {
-        ...(currentSession?.usage || EMPTY_USAGE),
-        contextTokens: tokensAfter,
-        contextLimit: QWEN38_MAX_CONTEXT_LIMIT,
-      };
-      if (currentSession) {
-        currentSession.usage = nextUsage;
-        this.api.sessionCache.set(sessionId, currentSession);
-      }
-      this.emit(sessionId, {
-        type: 'sessionUsageUpdated',
-        sessionId,
-        usage: nextUsage,
-        model: FIXED_MODEL,
+      const tokensBefore = finiteNumber(event.tokensBefore);
+      const tokensAfter = finiteNumber(event.tokensAfter);
+      this.emitContextUsage(sessionId, {
+        context_tokens: tokensAfter ?? 0,
+        max_context_tokens: event.max_context_tokens,
       });
       this.emit(sessionId, {
-        type: 'messageCreated',
-        message: this.message(
-          sessionId,
-          `compaction_${sessionId}_${Date.now()}`,
-          'assistant',
-          [{
-            type: 'text',
-            text: `ℹ️ [上下文自动压缩] 上下文用量已达高水位阈值 (${tokensBefore}/${QWEN38_MAX_CONTEXT_LIMIT})，已自动通过 Qwen3.8-max 压缩提纯至 ${tokensAfter} Tokens。`,
-          }],
-          event.created_at,
-        ),
+        type: 'compactionCompleted',
+        sessionId,
+        tokensBefore,
+        tokensAfter,
+        summary: event.summary,
       });
       return;
     }
 
     if (event.kind === 'status') {
-      if (event.context_tokens !== undefined || event.max_context_tokens !== undefined) {
-        const ctxUsed = Number(event.context_tokens ?? 0);
-        const ctxMax = Number(event.max_context_tokens ?? QWEN38_MAX_CONTEXT_LIMIT);
-        const currentSession = this.api.sessionCache.get(sessionId) || this.api.drafts.get(sessionId)?.session;
-        const nextUsage: any = {
-          ...(currentSession?.usage || EMPTY_USAGE),
-          contextTokens: ctxUsed,
-          contextLimit: ctxMax > 0 ? ctxMax : QWEN38_MAX_CONTEXT_LIMIT,
-        };
-        if (currentSession) {
-          currentSession.usage = nextUsage;
-          this.api.sessionCache.set(sessionId, currentSession);
-        }
-        this.emit(sessionId, {
-          type: 'sessionUsageUpdated',
-          sessionId,
-          usage: nextUsage,
-          model: FIXED_MODEL,
-        });
-      }
+      if (hasContextUsage(event)) this.emitContextUsage(sessionId, event);
       const nextToolCallId = `stage_${sessionId}_${this.promptId(sessionId)}_${event.stage || event.id}`;
       const current = this.openStageBySession.get(sessionId);
       if (current && current !== nextToolCallId) this.finishStage(sessionId, event.created_at);
@@ -605,7 +699,7 @@ class MindmapEventConnection implements KimiEventConnection {
               type: 'toolUse',
               toolCallId: nextToolCallId,
               toolName: stageLabel(event.stage),
-              input: `${event.message || stageLabel(event.stage)}${event.progress == null ? '' : ` · ${event.progress}%`}`,
+              input: event.message || stageLabel(event.stage),
             }],
             event.created_at,
           ),
@@ -623,6 +717,7 @@ class MindmapEventConnection implements KimiEventConnection {
     }
 
     if (event.kind === 'model_start') {
+      if (event.role.startsWith('source_context_compactor')) return;
       const toolCallId = `model_${sessionId}_${this.promptId(sessionId)}_${event.call_id || event.id}`;
       const calls = this.openCallsBySession.get(sessionId) ?? new Map<string, string>();
       calls.set(event.call_id || String(event.id), toolCallId);
@@ -648,6 +743,7 @@ class MindmapEventConnection implements KimiEventConnection {
     }
 
     if (event.kind === 'model_delta') {
+      if (event.role.startsWith('source_context_compactor')) return;
       const toolCallId = this.openCallsBySession
         .get(sessionId)
         ?.get(event.call_id || String(event.id));
@@ -663,6 +759,7 @@ class MindmapEventConnection implements KimiEventConnection {
     }
 
     if (event.kind === 'model_complete' || event.kind === 'model_error') {
+      if (event.role.startsWith('source_context_compactor')) return;
       this.finishCall(
         sessionId,
         event.call_id || String(event.id),
@@ -680,28 +777,15 @@ class MindmapEventConnection implements KimiEventConnection {
     ) {
       this.finishStage(sessionId, event.created_at);
       this.finishOpenCalls(sessionId, event.created_at, event.kind === 'job_failed');
+      this.emit(sessionId, {
+        type: 'compactionCancelled',
+        sessionId,
+      });
       const [job, interactions] = await Promise.all([
         this.api.fetchJob(taskId),
         this.api.fetchInteractions(taskId),
       ]);
-      const ctxUsed = Number((job as any).context_tokens ?? (job.manifest as any)?.context_tokens ?? 0);
-      const ctxMax = Number((job as any).max_context_tokens ?? (job.manifest as any)?.max_context_tokens ?? QWEN38_MAX_CONTEXT_LIMIT);
-      const finalUsage: any = {
-        ...(this.api.sessionCache.get(sessionId)?.usage || EMPTY_USAGE),
-        contextTokens: ctxUsed,
-        contextLimit: ctxMax > 0 ? ctxMax : QWEN38_MAX_CONTEXT_LIMIT,
-      };
-      const existingSession = this.api.sessionCache.get(sessionId);
-      if (existingSession) {
-        existingSession.usage = finalUsage;
-        this.api.sessionCache.set(sessionId, existingSession);
-      }
-      this.emit(sessionId, {
-        type: 'sessionUsageUpdated',
-        sessionId,
-        usage: finalUsage,
-        model: FIXED_MODEL,
-      });
+      this.emitContextUsage(sessionId, job);
       const isComplete = event.kind === 'job_complete' && job.status === 'completed';
       const reason = event.kind === 'job_cancelled' ? 'cancelled' : event.kind === 'job_failed' ? 'failed' : 'completed';
       const latestInteraction = interactions.at(-1);
@@ -795,7 +879,7 @@ export class MindmapAgentApi implements KimiWebApi {
   }
 
   async listSessions(input?: PageRequest): Promise<Page<AppSession>> {
-    const history = await parseResponse<BackendHistoryItem[]>(await fetch('/api/history?limit=100'));
+    const history = await parseResponse<BackendHistoryItem[]>(await request('/api/history?limit=100'));
     let items = history.map((item) => {
       const session = sessionFromHistory(item, this.titleOverrides.get(item.task_id));
       this.sessionCache.set(session.id, session);
@@ -893,17 +977,16 @@ export class MindmapAgentApi implements KimiWebApi {
   async getSessionStatus(sessionId: string): Promise<AppSessionRuntimeStatus> {
     const taskId = this.taskIdForSession(sessionId);
     const job = taskId ? await this.fetchJob(taskId) : null;
-    const ctxUsed = (job as any)?.context_tokens ?? (job as any)?.usage?.context_tokens ?? ((job?.manifest as any)?.context_tokens ?? 0);
-    const ctxMax = (job as any)?.max_context_tokens ?? (job as any)?.usage?.max_context_tokens ?? ((job?.manifest as any)?.max_context_tokens ?? QWEN38_MAX_CONTEXT_LIMIT);
-    const ctxUsage = (job as any)?.context_usage ?? (ctxMax > 0 ? ctxUsed / ctxMax : 0);
+    const context = contextUsageFromSource(job || {});
+    const ctxUsage = context.contextLimit > 0 ? context.contextTokens / context.contextLimit : 0;
     return {
       model: FIXED_MODEL,
       thinkingEffort: 'off',
       permission: 'auto',
       planMode: false,
       swarmMode: isMultiAgentLoop(job?.loop_config),
-      contextTokens: ctxUsed,
-      maxContextTokens: ctxMax,
+      contextTokens: context.contextTokens,
+      maxContextTokens: context.contextLimit,
       contextUsage: ctxUsage,
     };
   }
@@ -919,7 +1002,7 @@ export class MindmapAgentApi implements KimiWebApi {
   async archiveSession(sessionId: string): Promise<{ archived: true }> {
     const taskId = this.taskIdForSession(sessionId);
     if (taskId) {
-      await parseResponse(await fetch(`/api/jobs/${encodeURIComponent(taskId)}`, { method: 'DELETE' }));
+      await parseResponse(await request(`/api/jobs/${encodeURIComponent(taskId)}`, { method: 'DELETE' }));
     }
     this.drafts.delete(sessionId);
     return { archived: true };
@@ -1002,7 +1085,7 @@ export class MindmapAgentApi implements KimiWebApi {
           type: 'toolUse',
           toolCallId,
           toolName: stageLabel(job.stage),
-          input: `${job.message || stageLabel(job.stage)} · ${job.progress}%`,
+          input: job.message || stageLabel(job.stage),
         });
       } else if (interaction.status === 'completed') {
         const version = interaction.result_graph_version;
@@ -1070,7 +1153,6 @@ export class MindmapAgentApi implements KimiWebApi {
                 lastProgress: {
                   kind: job.stage,
                   text: job.message,
-                  percent: job.progress,
                 },
               }],
               promptId: activePromptId,
@@ -1084,7 +1166,7 @@ export class MindmapAgentApi implements KimiWebApi {
 
   async exportSession(sessionId: string): Promise<{ blob: Blob; fileName: string }> {
     const taskId = this.taskIdForSession(sessionId) || sessionId;
-    const response = await fetch(`/api/jobs/${encodeURIComponent(taskId)}/export.json`);
+    const response = await request(`/api/jobs/${encodeURIComponent(taskId)}/export.json`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return {
       blob: await response.blob(),
@@ -1122,7 +1204,7 @@ export class MindmapAgentApi implements KimiWebApi {
         throw new Error('当前任务还没有可供修改的图版本。');
       }
       await parseResponse<BackendJob>(
-        await fetch(`/api/jobs/${encodeURIComponent(existingTaskId)}/refine`, {
+        await request(`/api/jobs/${encodeURIComponent(existingTaskId)}/refine`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1196,7 +1278,7 @@ export class MindmapAgentApi implements KimiWebApi {
       human_instruction: promptText,
     }));
     const job = await parseResponse<BackendJob>(
-      await fetch('/api/jobs', { method: 'POST', body: form }),
+      await request('/api/jobs', { method: 'POST', body: form }),
     );
     const promptId = uid('prompt');
     this.promptBySession.set(sessionId, promptId);
@@ -1237,7 +1319,7 @@ export class MindmapAgentApi implements KimiWebApi {
     const taskId = this.taskIdForSession(sessionId);
     if (!taskId) return { aborted: false };
     await parseResponse(
-      await fetch(`/api/jobs/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }),
+      await request(`/api/jobs/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }),
     );
     return { aborted: true };
   }
@@ -1412,7 +1494,7 @@ export class MindmapAgentApi implements KimiWebApi {
   }
 
   async listWorkspaces(): Promise<AppWorkspace[]> {
-    const history = await parseResponse<BackendHistoryItem[]>(await fetch('/api/history?limit=100'));
+    const history = await parseResponse<BackendHistoryItem[]>(await request('/api/history?limit=100'));
     return [{
       id: WORKSPACE_ID,
       root: WORKSPACE_ROOT,
@@ -1538,7 +1620,7 @@ export class MindmapAgentApi implements KimiWebApi {
     if (upload) return upload.blob;
     const taskId = fileId.startsWith('mindmap_') ? fileId.slice('mindmap_'.length) : '';
     if (!taskId) throw new Error('文件不存在');
-    const response = await fetch(`/api/jobs/${encodeURIComponent(taskId)}/export.png`);
+    const response = await request(`/api/jobs/${encodeURIComponent(taskId)}/export.png`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.blob();
   }
@@ -1578,6 +1660,61 @@ export class MindmapAgentApi implements KimiWebApi {
     };
   }
 
+  async registerAccount(input: {
+    username: string;
+    password: string;
+  }): Promise<AppAccount> {
+    const response = await request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const account = await parseResponse<{
+      id: string;
+      username: string;
+      created_at: string;
+    }>(response, { notifyAuth: false });
+    return {
+      id: account.id,
+      username: account.username,
+      createdAt: account.created_at,
+    };
+  }
+
+  async loginAccount(input: {
+    username: string;
+    password: string;
+  }): Promise<AppAccount> {
+    const response = await request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const account = await parseResponse<{
+      id: string;
+      username: string;
+      created_at: string;
+    }>(response, { notifyAuth: false });
+    return {
+      id: account.id,
+      username: account.username,
+      createdAt: account.created_at,
+    };
+  }
+
+  async getAccount(): Promise<AppAccount> {
+    const account = await parseResponse<{
+      id: string;
+      username: string;
+      created_at: string;
+    }>(await request('/api/auth/me'));
+    return {
+      id: account.id,
+      username: account.username,
+      createdAt: account.created_at,
+    };
+  }
+
   async startOAuthLogin(): Promise<{
     flowId: string;
     provider: string;
@@ -1595,7 +1732,8 @@ export class MindmapAgentApi implements KimiWebApi {
   }
 
   async logout(): Promise<{ loggedOut: boolean }> {
-    return { loggedOut: false };
+    const response = await request('/api/auth/logout', { method: 'POST' });
+    return parseResponse(response, { notifyAuth: false });
   }
 
   taskIdForSession(sessionId: string): string | undefined {
@@ -1623,11 +1761,11 @@ export class MindmapAgentApi implements KimiWebApi {
   }
 
   async fetchJob(taskId: string): Promise<BackendJob> {
-    return parseResponse(await fetch(`/api/jobs/${encodeURIComponent(taskId)}`));
+    return parseResponse(await request(`/api/jobs/${encodeURIComponent(taskId)}`));
   }
 
   async fetchInteractions(taskId: string): Promise<BackendInteraction[]> {
-    const response = await fetch(`/api/jobs/${encodeURIComponent(taskId)}/interactions`);
+    const response = await request(`/api/jobs/${encodeURIComponent(taskId)}/interactions`);
     if (response.status === 404) return [];
     return parseResponse(response);
   }
@@ -1639,7 +1777,7 @@ export class MindmapAgentApi implements KimiWebApi {
 
   private async health(): Promise<BackendHealth> {
     if (this.healthCache) return this.healthCache;
-    this.healthCache = await parseResponse<BackendHealth>(await fetch('/api/health'));
+    this.healthCache = await parseResponse<BackendHealth>(await request('/api/health'));
     return this.healthCache;
   }
 
@@ -1690,8 +1828,7 @@ export class MindmapAgentApi implements KimiWebApi {
       model: FIXED_MODEL,
       usage: {
         ...EMPTY_USAGE,
-        contextTokens: (job as any).context_tokens ?? ((job.manifest as any)?.context_tokens ?? 0),
-        contextLimit: (job as any).max_context_tokens ?? ((job.manifest as any)?.max_context_tokens ?? QWEN38_MAX_CONTEXT_LIMIT),
+        ...contextUsageFromSource(job),
         turnCount: Math.max(interactions.length, 1),
       },
       messageCount: interactions.length ? interactions.length * 2 : job.status === 'completed' ? 2 : 1,

@@ -144,7 +144,7 @@ onUnmounted(() => {
             <div class="callout good">
               <span class="ico">✓</span>
               <div>
-                <b>Brand tone (the do-not list)</b>: calm, clinical, never exaggerated. <span class="pill red" style="margin:0 4px">Reject</span> purple gradients, glassmorphism, glowing shadows, AI purple / blue glows, endlessly looping fussy micro-animations, "Boost your productivity"-style marketing copy, and using emoji as icons — <b>the moon phases 🌑…🌘 are the sole exception</b>, used only while waiting for TopoMind to respond. These are all common tells of AI-generated interfaces (an "AI tell"), deliberately avoided.
+                <b>Brand tone (the do-not list)</b>: calm, clinical, never exaggerated. <span class="pill red" style="margin:0 4px">Reject</span> purple gradients, glassmorphism, glowing shadows, AI purple / blue glows, endlessly looping fussy micro-animations, "Boost your productivity"-style marketing copy, and using emoji as icons. These are all common tells of AI-generated interfaces (an "AI tell"), deliberately avoided.
               </div>
             </div>
 
@@ -332,7 +332,7 @@ onUnmounted(() => {
               </template>
             </div>
 
-            <p>Do not use emoji as functional icons (the sole exception is the moon phases 🌑…🌘, used only while waiting for TopoMind to respond). The TopoMind five-node mind-tree mark is a brand asset and is not part of this icon system.</p>
+            <p>Do not use emoji as functional icons. The TopoMind five-node mind-tree mark is a brand asset and is not part of this icon system.</p>
             <p>A few <b>special graphics</b> are not in the registry; each has a dedicated component maintained in one place, and must not be copied by hand: <code>&lt;ContextRing :pct /&gt;</code> (the Composer context progress ring, data-driven), <code>&lt;AuthStateIcon kind /&gt;</code> (the success / expired / error colored illustrations in the login flow), <code>&lt;Spinner /&gt;</code> (loading state). Status dots (such as in the Provider list) always use CSS dots (<code>border-radius:50%</code>), not SVG. The <code>scripts/check-style.mjs</code> <code>icon-from-registry</code> rule exempts the above and the brand mark; all other hand-written <code>&lt;svg&gt;</code> is flagged.</p>
 
             <h3 class="sub">Spacing</h3>
@@ -411,7 +411,7 @@ onUnmounted(() => {
 
             <h4 class="mini">Reduced motion</h4>
             <div class="callout info"><span class="ico">i</span><div>
-              Under <code>@media (prefers-reduced-motion: reduce)</code>, all animation and transition durations drop to about <code>0.001ms</code> (effectively off), and the <b>MoonSpinner moon phase pauses</b> on the current frame. Components should not check this individually; it is handled uniformly in the global styles.
+              Under <code>@media (prefers-reduced-motion: reduce)</code>, all animation and transition durations drop to about <code>0.001ms</code> (effectively off). Components should not check this individually; it is handled uniformly in the global styles.
             </div></div>
 
             <h3 class="sub">Layout &amp; breakpoints</h3>
@@ -754,10 +754,9 @@ onUnmounted(() => {
 
             <!-- ===== Spinner ===== -->
             <h3 class="sub">Spinner</h3>
-            <p>Loaders fall into two categories by scenario — <b>do not mix them</b>:</p>
+            <p>Use the shared loader everywhere so loading states stay visually consistent:</p>
             <ul class="clean">
-              <li><b>Spinner (plain · SVG ring)</b> —— the default loader. Used for button loading, app startup (GlobalLoading), and general inline waits — "everything else".</li>
-              <li><b>MoonSpinner (moon phase · brand signature)</b> —— used <b>only</b> for the chat waiting state of "message sent, waiting for TopoMind's first response" (the sending placeholder in ChatPane, SideChatPanel, ActivityNotice).</li>
+              <li><b>Spinner (plain · SVG ring)</b> —— used for button loading, app startup (GlobalLoading), chat waits, and general inline waits.</li>
             </ul>
 
             <h4 class="mini">Spinner · plain loader (default)</h4>
@@ -771,23 +770,6 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-
-            <h4 class="mini">MoonSpinner · moon phase (only while waiting for TopoMind)</h4>
-            <div class="stage-wrap">
-              <div class="stage-bar"><span class="st">MoonSpinner · chat waiting state only <span class="tag spec">signature</span></span></div>
-              <div class="stage p col">
-                <span class="stage-label">Frame loop (8 frames)</span>
-                <div class="demo-row" style="font-size:22px;letter-spacing:2px;line-height:1">
-                  <span>🌑</span><span>🌒</span><span>🌓</span><span>🌔</span><span>🌕</span><span>🌖</span><span>🌗</span><span>🌘</span>
-                </div>
-                <span class="stage-label">Usage · only while the chat waits for a response</span>
-                <div class="demo-row">
-                  <span class="p-thinking"><span style="font-size:16px;line-height:1">🌔</span>Thinking…</span>
-                  <span class="p-thinking"><span style="font-size:16px;line-height:1">🌕</span>Waiting for response…</span>
-                </div>
-              </div>
-            </div>
-            <div class="callout info"><span class="ico">i</span><div>The moon phase is the <b>sole exception</b> to the emoji-as-icon rule, and is <b>limited</b> to waiting for TopoMind's first response. It is currently implemented twice — in <code>MoonSpinner.vue</code> and <code>ActivityNotice.vue</code> — and should be merged into a single <code>MoonSpinner</code> component, sized via tokens and supporting <code>prefers-reduced-motion</code>. All other loading states use the plain Spinner.</div></div>
 
             <!-- ===== Link ===== -->
             <h3 class="sub">Link</h3>
@@ -1286,7 +1268,7 @@ onUnmounted(() => {
                 <tr><td class="tk">no-gradient-text</td><td>gradient text / gradient background</td><td><span class="pill red">Forbidden</span></td></tr>
                 <tr><td class="tk">no-glassmorphism</td><td><code>backdrop-filter: blur</code> (<b>TopBar sticky nav bar</b> is the sole exception)</td><td><span class="pill amber">TopBar exempt</span></td></tr>
                 <tr><td class="tk">no-color-glow</td><td>colored / large-radius box-shadow glow</td><td><span class="pill red">Forbidden</span></td></tr>
-                <tr><td class="tk">no-emoji-icon</td><td>using emoji as a functional icon (<b>the moon phases 🌑…🌘 are the sole exception</b>, and only while waiting for TopoMind to respond; all other loading states use the plain Spinner)</td><td><span class="pill amber">Moon phase exempt</span></td></tr>
+                <tr><td class="tk">no-emoji-icon</td><td>using emoji as a functional icon; loading states use the shared <code>Spinner</code> component</td><td><span class="pill red">Forbidden</span></td></tr>
                 <tr><td class="tk">no-hardcoded-hex</td><td>unregistered hex color inside a component <code>&lt;style&gt;</code></td><td><span class="pill amber">Warning</span></td></tr>
                 <tr><td class="tk">no-hardcoded-font</td><td>hard-coded <code>font-family</code> in a component (e.g. <code>'Inter'</code>) instead of <code>var(--font-ui)</code></td><td><span class="pill amber">Warning</span></td></tr>
                 <tr><td class="tk">radius-from-scale</td><td>radius value not in <code>{4,6,8,12,16,20,999}</code></td><td><span class="pill amber">Warning</span></td></tr>
@@ -1312,10 +1294,9 @@ onUnmounted(() => {
               </tbody>
             </table>
 
-            <h3 class="sub">Moon phase exemption</h3>
+            <h3 class="sub">Loading indicator</h3>
             <div class="callout good"><span class="ico">✓</span><div>
-              The "🌑…🌘" moon-phase emoji are a TopoMind interaction signature, <b>used only while waiting for TopoMind's first response</b>, and are rendered uniformly by the <code>MoonSpinner</code> component; waiting states such as <code>ActivityNotice</code> reuse it rather than implementing their own moon phase.
-              It is the sole exception to the <code>no-emoji-icon</code> rule; all other loading states use the plain <code>Spinner</code>.
+              Loading states use the shared <code>Spinner</code> component. Do not use emoji or bespoke animated marks as functional loading indicators.
             </div></div>
 
             <h3 class="sub">Glassmorphism exemption</h3>
@@ -1507,7 +1488,7 @@ onUnmounted(() => {
             <p>Desktop click targets <b>≥ 32px</b>; touch devices <b>≥ 44px</b> (consistent with the §01 principle and the IconButton <code>lg</code> tier).</p>
 
             <h4 class="mini">6. Reduced motion</h4>
-            <p>Handled uniformly in the global styles per §02's <code>@media (prefers-reduced-motion: reduce)</code>; components do not check this individually. The MoonSpinner moon phase pauses on the current frame.</p>
+            <p>Handled uniformly in the global styles per §02's <code>@media (prefers-reduced-motion: reduce)</code>; components do not check this individually.</p>
 
             <h4 class="mini">7. Live announcements (non-mandatory)</h4>
             <p>Screen-reader announcements are <b>not a mandatory contract</b> in this product. Short hints like Toast can use <code>role="status"</code> / <code>aria-live</code>; chat streaming output is currently not announced word-by-word, which is an acceptable trade-off, to be added later if a real need arises.</p>

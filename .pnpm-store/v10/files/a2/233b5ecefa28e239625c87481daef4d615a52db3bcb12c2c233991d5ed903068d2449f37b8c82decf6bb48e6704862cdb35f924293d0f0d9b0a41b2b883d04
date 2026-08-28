@@ -1,0 +1,71 @@
+export interface StrategyDiagnostics {
+    area: 'parse' | 'render' | 'stream';
+    path: string;
+    reason?: string;
+    chunked?: boolean;
+    unbounded?: boolean;
+}
+export interface ChunkDiagnostics {
+    count: number;
+    fallback?: boolean;
+    fallbackReason?: string;
+    globalStateDetected?: string;
+    globalStateFallbackDisabled?: boolean;
+    maxChunkChars: number;
+    maxChunkLines: number;
+}
+export interface UnboundedDiagnostics {
+    mode?: 'full' | 'stream';
+    fallback?: boolean;
+    fallbackReason?: string;
+    globalStateDetected?: string;
+    globalStateFallbackDisabled?: boolean;
+    maxChunkChars?: number;
+    maxChunkLines?: number;
+    committedChars: number;
+    committedLines: number;
+    pendingChars: number;
+    pendingLines: number;
+    fedChunks: number;
+    parsedChunks: number;
+}
+export interface EditableDiagnostics {
+    fallback?: boolean;
+    fallbackReason?: string;
+}
+export interface StockFastDiagnostics {
+    area: 'parse' | 'render';
+    attempted: boolean;
+    matched: boolean;
+    attemptMs: number;
+    fallbackReason?: string;
+    blocks: number;
+    headings: number;
+    paragraphs: number;
+    lists: number;
+    fences: number;
+    paragraphCacheHits: number;
+    paragraphCacheMisses: number;
+    paragraphCacheBypasses: number;
+    listCacheHits: number;
+    listCacheMisses: number;
+    fenceCacheHits: number;
+    fenceCacheMisses: number;
+}
+export interface ParseDiagnostics {
+    strategy?: StrategyDiagnostics;
+    chunk?: ChunkDiagnostics;
+    unbounded?: UnboundedDiagnostics;
+    editable?: EditableDiagnostics;
+    stockFast?: StockFastDiagnostics;
+}
+export declare function createStockFastDiagnostics(area: StockFastDiagnostics['area']): StockFastDiagnostics;
+export declare const MDTS_DIAGNOSTICS: unique symbol;
+export declare function getParseDiagnostics(env: Record<string, unknown> | undefined): ParseDiagnostics | undefined;
+export declare function clearParseDiagnostics(env: Record<string, unknown> | undefined): void;
+export declare function beginParseDiagnostics(env: Record<string, unknown> | undefined): void;
+export declare function setStockFastDiagnostics(env: Record<string, unknown> | undefined, info: StockFastDiagnostics): void;
+export declare function setStrategyDiagnostics(env: Record<string, unknown> | undefined, info: StrategyDiagnostics): void;
+export declare function setChunkDiagnostics(env: Record<string, unknown> | undefined, info: ChunkDiagnostics): void;
+export declare function setUnboundedDiagnostics(env: Record<string, unknown> | undefined, info: UnboundedDiagnostics): void;
+export declare function setEditableDiagnostics(env: Record<string, unknown> | undefined, info: EditableDiagnostics): void;

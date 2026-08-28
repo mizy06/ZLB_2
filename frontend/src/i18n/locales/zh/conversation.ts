@@ -8,7 +8,7 @@ export default {
   switchWorkspace: '切换工作区',
   addWorkspace: '添加工作区',
   moreWorkspaces: '更多工作区 ({count})',
-  compacting: '正在压缩上下文…',
+  compacting: '正在进行上下文压缩',
   compactedPlain: '上下文已压缩',
   compactedAuto: '已自动压缩上下文',
   compactedTokens: '（{before} → {after} tokens）',
