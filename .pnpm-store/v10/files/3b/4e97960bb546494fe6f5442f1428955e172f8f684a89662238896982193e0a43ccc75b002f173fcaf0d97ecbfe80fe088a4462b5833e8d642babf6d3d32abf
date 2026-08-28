@@ -1,0 +1,146 @@
+{
+  "name": "stream-monaco",
+  "type": "module",
+  "version": "0.0.49",
+  "packageManager": "pnpm@10.33.4",
+  "description": "A framework-agnostic Monaco Editor integration with Shiki syntax highlighting, built for real-time streaming updates and efficient diff editing.",
+  "author": "Simon He",
+  "license": "MIT",
+  "funding": "https://github.com/sponsors/Simon-He95",
+  "homepage": "https://github.com/Simon-He95/stream-monaco#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Simon-He95/stream-monaco.git"
+  },
+  "bugs": "https://github.com/Simon-He95/stream-monaco/issues",
+  "keywords": [
+    "monaco-editor",
+    "monaco",
+    "shiki",
+    "shiki-monaco",
+    "syntax-highlighting",
+    "textmate",
+    "vscode",
+    "real-time",
+    "code-editor",
+    "diff-editor",
+    "signals",
+    "framework-agnostic",
+    "framework",
+    "streaming",
+    "vue",
+    "react",
+    "svelte",
+    "solid",
+    "preact",
+    "vanilla"
+  ],
+  "sideEffects": [
+    "./dist/index.js",
+    "./dist/index.cjs",
+    "./dist/index.legacy.js",
+    "./dist/index.legacy.cjs",
+    "./legacy.js",
+    "./legacy.cjs"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./legacy": {
+      "import": "./dist/index.legacy.js",
+      "require": "./dist/index.legacy.cjs"
+    }
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "*": [
+        "./dist/*",
+        "./dist/index.d.ts"
+      ]
+    }
+  },
+  "bin": {
+    "run": "cli.mjs"
+  },
+  "files": [
+    "dist",
+    "legacy.cjs",
+    "legacy.d.cts",
+    "legacy.d.ts",
+    "legacy.js"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "npm run build -- --watch src",
+    "format": "prettier --write --cache .",
+    "lint": "eslint . --cache",
+    "lint:fix": "pnpm run lint --fix",
+    "prepublishOnly": "pnpm release:verify",
+    "release": "bumpp --tag \"v%s\"",
+    "publish:package": "pnpm release:verify && npm publish --ignore-scripts",
+    "start": "esno src/index.ts",
+    "bench": "node scripts/stream-benchmark.mjs",
+    "bench:playwright": "node scripts/playwright-bench.mjs",
+    "perf:report": "pnpm build && node scripts/playwright-performance-gate.mjs --entry=dist --report-only",
+    "perf:gate": "pnpm perf:gate:ci",
+    "perf:gate:ci": "pnpm perf:gate:canary",
+    "perf:gate:canary": "pnpm build && node scripts/playwright-performance-gate.mjs --entry=dist --skip-baseline --repeat=1 --scenarios=editor-cold-first-highlight,editor-update-highlight,editor-stream-append-burst,diff-cold-first-highlight-no-unchanged-regions,diff-update-highlight,diff-stream-append-burst",
+    "perf:gate:budget": "pnpm perf:gate:ci",
+    "perf:gate:baseline": "pnpm build && node scripts/playwright-performance-gate.mjs --entry=dist --require-baseline",
+    "perf:gate:release": "pnpm build && node scripts/playwright-performance-gate.mjs --entry=dist --skip-baseline --repeat=2",
+    "perf:gate:src": "node scripts/playwright-performance-gate.mjs --entry=src",
+    "perf:baseline": "pnpm build && node scripts/playwright-performance-gate.mjs --entry=dist --repeat=3 --update-baseline",
+    "perf:analyze": "node scripts/analyze-performance-report.mjs",
+    "release:verify": "node scripts/release-verify.mjs",
+    "smoke:diff": "node scripts/playwright-diff-smoke.mjs",
+    "smoke:height-stability": "node scripts/playwright-height-stability-smoke.mjs",
+    "shot:diff-ux": "node scripts/playwright-diff-ux-shot.mjs",
+    "validate:diff-gutter": "node scripts/playwright-diff-gutter-validate.mjs",
+    "validate:diff-hunk-actions": "node scripts/playwright-diff-hunk-actions-validate.mjs",
+    "validate:diff-hunk-custom-flow": "node scripts/playwright-diff-hunk-custom-flow-validate.mjs",
+    "validate:diff-hunk-update-diff-flow": "node scripts/playwright-diff-hunk-update-diff-flow-validate.mjs",
+    "validate:diff-inline": "node scripts/playwright-diff-inline-validate.mjs",
+    "validate:diff-transition": "node scripts/playwright-diff-transition-validate.mjs",
+    "validate:diff-unchanged-expand": "node scripts/playwright-diff-unchanged-expand-validate.mjs",
+    "validate:diff-unchanged-reveal": "node scripts/playwright-diff-unchanged-reveal-validate.mjs",
+    "validate:markstream-diff-theme": "node scripts/playwright-markstream-diff-theme-validate.mjs",
+    "compare:diff-ux": "node scripts/playwright-diff-ux-compare.mjs",
+    "test": "vitest --run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "monaco-editor": ">=0.52.2 <0.56.0"
+  },
+  "dependencies": {
+    "@shikijs/monaco": "^3.23.0",
+    "alien-signals": "^2.0.8",
+    "shiki": "^3.23.0"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^5.4.1",
+    "@types/node": "^18.19.130",
+    "bumpp": "^8.2.1",
+    "eslint": "^9.39.4",
+    "lint-staged": "^13.3.0",
+    "picocolors": "^1.1.1",
+    "playwright": "1.38.0",
+    "prettier": "^2.8.8",
+    "rimraf": "^3.0.2",
+    "tsdown": "^0.12.9",
+    "tsx": "^3.14.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.3",
+    "vitest": "^3.2.4"
+  },
+  "lint-staged": {
+    "*": [
+      "prettier --write --cache --ignore-unknown"
+    ],
+    "*.{vue,js,ts,jsx,tsx,md,json}": "eslint --fix"
+  }
+}

@@ -1,26 +1,31 @@
 # vNext Clean-Room 实施矩阵
 
-- 日期：2026-07-29
+- 日期：2026-07-30
 - 分支：`experiment/new_bone`
-- 基线提交：`297da939835dc9b748a33bd80d368702d7de687d`
+- 执行基线提交：`4b28c75025481509dccdb28fe3459ee33ea27f4d`
 - 决策依据：`docs/MINDMAP_SYSTEM_REDESIGN.md` ADR-01
 - 历史规格：`docs/superpowers/specs/2026-07-17-mind-map-agent-framework-design.md`
 - 2026-07-30 产品审批：`docs/MINDMAP_PRODUCT_APPROVAL_RECORD.md`
 - 完整执行书：`docs/MINDMAP_EXECUTION_PLAYBOOK.md`
-- 当前结论：受限 S0-S3 shadow 与真实多介质 renderer 的代码和自动验证已完成；
-  八项 P0 仍须关闭，生产替换仍为 No-Go
+- 当前 profile：`STUDENT COMPETITION`
+- 当前结论：八项 Q0 P0、integrated red-team 和全量自动验证已完成，代码候选
+  `ACCEPTED FOR COMPETITION`。独立多人签署、60 份 Gold、20 人研究、完整生产
+  fault matrix、internal allowlist 和 canary 已移出竞赛 DoD；实际参赛材料的
+  端到端演练仍由项目所有者在提交作品前完成。
+- 完整证据：`docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`
 
 ## 1. 状态定义
 
 | 状态 | 含义 |
 | --- | --- |
 | 已实现 | 存在可执行代码、冻结合同和自动化测试 |
+| 竞赛就绪 | 满足学生竞赛的代码、安全、演示和回退底线，不代表生产认证 |
 | 合同已实现，运行锁定 | 合同、策略和拒绝路径存在，但默认不启用真实外部能力 |
-| 待外部证据 | 需要真实数据、标注者、用户研究、运维演练或审批，不能由代码测试替代 |
+| 生产证据归档 | 未来产品化所需的真实数据、用户研究或运维演练，不阻断竞赛 |
 | No-Go | ADR-01 或最终发布决策明确禁止当前启用 |
 
-“已实现”只表示本仓库中的受限 shadow 行为可执行，不表示模型质量、生产 SLO、
-公网发布或教师/学生可用性已经得到证明。
+“竞赛就绪”允许本地或隔离演示，不表示模型质量、生产 SLO、多租户公网发布或
+教师/学生统计可用性已经得到证明。
 
 ## 2. Clean-Room 边界
 
@@ -48,7 +53,7 @@ backend.vnext.adapters.legacy_result
 
 | 阶段 | 设计范围 | 当前证据 | 状态 |
 | --- | --- | --- | --- |
-| S0 合同冻结 | IR、Inventory、Region、Claim、Graph、Projection、Artifact | 34 个注册合同、34 个 schema 加 `manifest.json`；确定性导出与 RFC 8785 digest | 已实现 |
+| S0 合同冻结 | IR、Inventory、Region、Claim、Graph、Projection、Artifact | 36 个注册合同、36 个 schema 加 `manifest.json`；确定性导出与 RFC 8785 digest | 已实现；新增 proposal/assessment 独立合同待 Schema Steward 审核 |
 | S1 Source Shadow | PDF/PPTX/DOCX/TXT/Markdown、outline、对象、表格、假设 | `source_ir/parser.py`、`source_inventory/enumerator.py`；空页/空 slide/标题/表格 fixture | 已实现 |
 | S2 Claim 与遗漏审计 | source-only claim、独立分母、三类状态、遗漏硬门 | `claims/atomizer.py`、`claims/omission.py`、`claims/audit.py` | 已实现 |
 | S3 显式 top-down Region | 显式 outline/title 递归、split/stop gate、bottom-up replan | `regions/planner.py`、`regions/gates.py`、`regions/auditor.py` | 已实现 |
@@ -57,8 +62,8 @@ backend.vnext.adapters.legacy_result
 | S3 recorded semantic stage | 局部 `TaskEnvelope`、严格 Claim/Region proposal、独立 Region veto、完整 interaction replay | `claims/model_stage.py`、`regions/model_stage.py`、`model_runtime/adapter.py`、两个 recorded CLI | 已实现；无 live endpoint |
 | S3 多介质呈现 | 同一 Projection 输出 Web/Mobile/PNG/PDF/JSON | `presentation/builder.py`、`pagination.py`、`renderer.py`、`render-shadow` CLI | 已实现；发布保持锁定 |
 | S4 评测工具 | 每文档/分层门、risk-coverage、五次稳定性、泄漏检测 | `contracts/quality.py`、`quality/evaluator.py`、`pilot-evaluate` CLI | 已实现 |
-| S4 真实 pilot | 12 development、18 calibration、30 sealed blind，多标注者 | 默认 policy 在数据或阈值不完整时返回 `incomplete` | 待外部证据 |
-| S4 可用性 | 8 名教师、12 名学生，桌面/移动各半 | 尚无真实研究结果 | 待外部证据 |
+| S4 真实 pilot | 12 development、18 calibration、30 sealed blind，多标注者 | 未来产品化方案 | 生产证据归档 |
+| S4 可用性 | 8 名教师、12 名学生，桌面/移动各半 | 未来产品化方案 | 生产证据归档 |
 
 S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实 OCR/VLM、复杂公式和
 化学反应若不能可靠解析，会保持原始区域或 `unresolved`，不会被自然语言猜补。
@@ -74,7 +79,7 @@ S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实
 | PDF outline/空页保留 | `source_ir/parser.py` | `test_pdf_retains_blank_pages_and_nested_outline` | 已实现 |
 | PPTX 原生对象、空 slide、表格 | `source_ir/parser.py` | `test_pptx_retains_empty_slides_objects_tables_and_headers` | 已实现 |
 | DOCX 标题、表格、未知分页 | `source_ir/parser.py` | `test_docx_preserves_heading_table_and_unresolved_pagination` | 已实现 |
-| 独立 Source Inventory | `source_inventory/enumerator.py` | `test_vnext_claim_pipeline_tdd.py` | 已实现 |
+| 独立 Source Inventory | `source_inventory/enumerator.py`、`raw_manifest.py` | `test_vnext_claim_pipeline_tdd.py`、`test_vnext_source_shadow_tdd.py`、`test_vnext_q0_red_team_tdd.py` | 已实现；PDF native/render/parser 三方对账，PPTX ZIP/XML 对账 hidden/notes/alt/off-slide/object，未表达信号进入 `MUST_HAVE + unresolved` |
 | Source Inventory 全量对账 | `contracts/regions.py`、`regions/planner.py` | `test_vnext_gates_tdd.py`、`test_vnext_region_planner_tdd.py` | 已实现 |
 | Split/Stop 不能以容量冒充语义 | `regions/gates.py` | `test_capacity_semantics_cannot_pass_split`、`test_safety_limit_cannot_turn_mixed_region_into_stop` | 已实现 |
 | Bottom-up replan 最小祖先约束 | `regions/auditor.py`、`regions/gates.py` | `test_replan_must_target_affected_ancestor_path` | 已实现 |
@@ -86,6 +91,7 @@ S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实
 | 模型 abstain 不隐藏分母 | `ClaimLedger.unresolved_source_ids`、`claims/omission.py` | `test_model_abstention_is_unresolved_not_omitted` | 已实现 |
 | 指令/练习不冒充 core fact | `claims/atomizer.py` | `test_instruction_cannot_be_promoted_to_core_fact` | 已实现 |
 | 独立遗漏审计与高价值硬门 | `claims/omission.py`、`claims/audit.py` | `test_missing_high_value_source_is_not_hidden` | 已实现 |
+| Relation proposal/verifier/canonical 三段独立 | `contracts/graph.py`、`canonical_graph/builder.py`、`orchestration/durable_pipeline.py` | `test_vnext_s3_pipeline_tdd.py`、`test_vnext_durable_pipeline_tdd.py`、`test_vnext_q0_red_team_tdd.py` | 已实现；proposal 与 assessment 为独立 artifact/stage，verifier 只消费 proposal ref，canonical 逐项拒绝语义改写 |
 | Canonical DAG 可多父、必须无环 | `contracts/graph.py`、`canonical_graph/builder.py` | `test_vnext_graph_projection_tdd.py` | 已实现 |
 | Parentless 不补根 | `canonical_graph/builder.py`、`projection/builder.py` | `test_parentless_claim_is_blocked_not_promoted_to_root` | 已实现 |
 | Veto 只能用新证据和新对象重开 | `contracts/graph.py` | `test_rejected_relation_cannot_reopen_without_novel_evidence` | 已实现 |
@@ -93,6 +99,8 @@ S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实
 | 跨链不改变 Projection parent | `contracts/crosslinks.py`、`canonical_graph/cross_links.py` | `test_vnext_cross_links_tdd.py` | 已实现 |
 | 高风险跨链要求独立双票 | `canonical_graph/cross_links.py` | `test_high_risk_cross_link_waits_for_second_independent_vote` | 已实现 |
 | Canonical 多父到 View 单父 | `contracts/projection.py`、`projection/validation.py` | `test_projection_records_alternate_canonical_parent` | 已实现 |
+| Open Replan barrier | `contracts/regions.py`、`orchestration/shadow_pipeline.py`、`durable_pipeline.py`、`projection/builder.py` | `test_vnext_q0_red_team_tdd.py` | 已实现；open/accepted quarantine，closed 必须绑定 closure digest 和 TreeRevision，reuse 不能绕过 |
+| Quality hard-metric 合取 | `contracts/control.py`、`orchestration/control_store.py`、`durable_pipeline.py` | `test_vnext_q0_red_team_tdd.py` | 已实现；`BLOCK > INCOMPLETE > REVIEW > PASS`，空 hard set 与未冻结阈值均 INCOMPLETE，store 重验证 |
 | 执行、质量、发布状态正交 | `contracts/control.py` | `test_execution_quality_and_publication_are_orthogonal` | 已实现 |
 | Durable lease/CAS/outbox/reuse | `orchestration/control_store.py`、`durable_pipeline.py` | `test_vnext_control_plane_tdd.py`、`test_vnext_durable_pipeline_tdd.py` | 已实现；嵌套 Region replay 保持前序，单机 SQLite shadow |
 | 三类 replay | `replay/store.py`、`model_runtime/adapter.py` | `test_vnext_replay_search_tdd.py`、`test_vnext_model_runtime_tdd.py` | 已实现；初始输出、retry、schema repair 和 fallback 可按完整 interaction 序列回放 |
@@ -104,9 +112,9 @@ S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实
 | Append-only 人工复核 | `contracts/review.py`、`review/store.py` | `test_vnext_review_tdd.py` | 已实现 |
 | 最小受影响子树回放 | `review/planner.py`、`review/guard.py` | `test_vnext_review_tdd.py` | 已实现 |
 | Pilot 最差文档/分层与稳定性 | `quality/evaluator.py` | `test_vnext_quality_harness_tdd.py` | 已实现；默认阈值未冻结 |
-| Standalone shadow HTTP | `api/app.py` | `test_vnext_shadow_api_tdd.py` | 已实现，默认锁定，无发布路由 |
-| 单向 legacy 下转换 | `adapters/legacy_result.py` | `test_vnext_legacy_adapter_tdd.py` | 已实现，不接旧 route/SQLite |
-| Canary 阶段、release ledger 与安全回滚 | `contracts/release.py`、`orchestration/control_store.py`、`orchestration/release.py` | `test_vnext_release_governor_tdd.py` | HOLD/ADVANCE/ROLLBACK append-only 落账；指针与事件同事务；公网流量 No-Go |
+| Standalone shadow HTTP | `api/app.py` | `test_vnext_shadow_api_tdd.py`、`test_vnext_q0_red_team_tdd.py` | 已实现，owner 只由受信 `PrincipalContext` 派生，cross-owner probe 404 + security event；默认锁定，无发布路由 |
+| 单向 legacy 下转换 | `adapters/legacy_result.py` | `test_vnext_legacy_adapter_tdd.py`、`test_vnext_q0_red_team_tdd.py` | 已实现；只读 published pointer、PASS attestation 和 trusted run，不硬编码 PASS，不接旧 route/SQLite |
+| Canary 阶段、release ledger 与安全回滚 | `contracts/release.py`、`orchestration/control_store.py`、`orchestration/release.py` | `test_vnext_release_governor_tdd.py`、`test_vnext_q0_red_team_tdd.py` | trusted aggregator evidence/observation、HOLD/ADVANCE/ROLLBACK append-only 落账；指针与事件同事务；公网流量 No-Go |
 | Web/Mobile/PNG/PDF/JSON 一致性 | `contracts/presentation.py`、`presentation/builder.py`、`presentation/pagination.py`、`presentation/renderer.py` | `test_vnext_presentation_tdd.py`、`test_vnext_presentation_renderer_tdd.py` | 已实现真实文件、原子 owner scope、digest 校验、CJK fail-closed；`publication_enabled=false` |
 
 ## 5. 历史规格的处理
@@ -134,9 +142,10 @@ S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实
 
 ## 6. GitHub-First 记录
 
-当前环境没有 `gh`。实现前已检查当前仓库历史、公开 GitHub issue/PR/source、
-上游文档、release 和许可证。采用的是公开 API、行为约束或设计模式；除依赖包
-本身外，没有复制上游项目代码。
+本机已安装 `gh 2.96.0`，现已认证为 `mizy06`。实现前和审计中使用当前仓库历史、
+GitHub Web/REST、公开 source、上游文档、commit/tag 和许可证完成 GitHub-first；
+认证后补跑 `gh search issues/prs/code`。采用的是公开 API、行为约束或设计模式；
+除依赖包本身外，没有复制上游项目代码。
 
 采用或直接参考：
 
@@ -160,6 +169,7 @@ S1 的“已实现”限定于当前原生 parser 能观察到的对象。真实
 | Accessibility | `https://github.com/w3c/wcag/commit/6b34f25b875f94629c2d009863093106a1a713ee` | 固化 reflow、字号、对比度和目标尺寸合同 |
 | Raster/PNG | `https://github.com/python-pillow/Pillow/blob/main/docs/reference/ImageDraw.rst` | 复用已锁定 Pillow 12.3.0 的绘制、字体和 PNG metadata API |
 | PDF 文件 | `https://github.com/py-pdf/pypdf/blob/main/docs/user/handling-outlines.md`、`https://github.com/py-pdf/pypdf/blob/main/docs/user/adding-pdf-annotations.md` | 复用已锁定 pypdf 6.14.2 写入 bookmark、URI annotation 和 metadata |
+| PPTX raw inventory | `https://github.com/scanny/python-pptx/tree/v1.0.2`、`https://github.com/scanny/python-pptx/commit/c38d5f5c6850ae3aefdc3a86dbf9bd0af35cf346` | 1.0.2/MIT 的 `has_notes_slide` 可无副作用判断 notes，但公开 `cNvPr` 类型不完整暴露 alt text；独立 inspector 因此只读 ZIP/XML，不调用可能创建 notes part 的属性 |
 | 真实 viewport 验收 | `https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/registry/dependencies.ts` | 使用仓库锁定 Playwright 1.62.0；宿主依赖通过官方 `install-deps chromium` 补齐 |
 
 检索 `SourceObservationIR`、`RegionSplitCertificate`、
@@ -187,7 +197,96 @@ history/TTL、rollout duration audit 和 bad-revision rollback issue/PR。其状
   迁移范围。
 - Temporal/Postgres：单机 shadow 尚未用真实并发和故障证据证明必须迁移。
 
+2026-07-30 Q0 复审另查询：
+
+- 当前仓库符号：`RawSourceManifest`、`notes_slide`、`cNvPr`、`descr`、
+  `show`、`RelationAssessmentLedger`、`evaluate_quality_gate`；
+- 上游仓库：`scanny/python-pptx`、`docling-project/docling`；
+- 认证后的 GitHub issue/PR 查询没有返回可直接采用的
+  hidden/notes/alt/off-slide 对账实现；
+- GitHub code search 确认 `python-pptx` 的 `has_notes_slide` source、测试和文档，
+  以及 Docling 的 notes 读取路径；没有发现同时提供完整 raw denominator、
+  alt/off-slide 对账和本项目 owner/lineage 合同的实现；
+- 决定：不新增依赖、不复制上游代码，使用标准库 ZIP/XML 建立存在性分母，并把
+  parser 未表达的信号 fail closed 为 unresolved。
+
+远端执行骨架：
+
+- 总控：`https://github.com/mizy06/ZLB_2/issues/26`
+- Q0 八项 P0：`#1` 至 `#8`
+- Q1 六项 Gold/quality：`#9` 至 `#14`
+- Runtime/Q2/Q3/Q4/Q5 epic：`#15` 至 `#19`
+- Q0-Q5 Gate review：`#20` 至 `#25`
+
+这些 issue 是生产 Profile 的历史骨架；竞赛 Profile 生效后将关闭或归档，不再
+阻断候选。
+
 ## 7. 验证结果
+
+### 7.1 2026-07-30 执行候选
+
+候选身份：
+
+```text
+branch: experiment/new_bone
+HEAD: 4b28c75025481509dccdb28fe3459ee33ea27f4d
+code-only changed-file manifest: 62 files
+code-only manifest sha256:
+  ac541ac93311f860c932e085ad38c7b3364edfa8e895aebe0e5f92b8823d1e3d
+schema manifest sha256:
+  c71af4d5b80f6519ce8699835122b958873363095ddafde96f64e2331a7c5966
+legacy OpenAPI snapshot:
+  sha256:111e35217a1e0c1896ec8b860658b5f9be544e36cb2132686fac5ed73ec116ea
+```
+
+最终验证：
+
+```text
+.venv/bin/python -m unittest discover -s backend/tests -p 'test_vnext*.py' -v
+  -> Ran 182 tests in 20.802s, OK
+
+.venv/bin/python -m unittest discover -s backend/tests -v
+  -> Ran 718 tests in 32.707s, OK (skipped=1)
+
+.venv/bin/python -m backend.vnext.cli export-schemas --check
+  -> {"changed": []}
+
+registry / generated schema count
+  -> 36 contracts, 36 schema files, 37 files including manifest.json
+
+.venv/bin/python -m pip check
+  -> No broken requirements found
+
+git diff --check
+.venv/bin/python -m compileall -q backend/app backend/vnext backend/tests
+  -> passed
+
+frontend: pnpm test / tsc -b / pnpm build
+  -> 7/7 passed / passed / built
+
+pnpm exec playwright test
+  -> 2/2 passed on isolated production-shaped app
+```
+
+vNext renderer 另绑定最终候选语义指纹
+`sha256:080bf4a88dd3807b53d70b05fb9b525e21873c7644a4719e5fb07da9ee1ed114`
+完成 1366x768、390x844、320x800 reflow 和 200% 文本检查。四组均满足：
+keyboard traversal、同步 DOM tree、长描述、无横向溢出、无 incoherent overlap、
+无可见文本裁切；桌面 Canvas 有 3504 个采样非白像素，移动端按批准策略隐藏
+Canvas 并保持 44px 目标。报告同时绑定 code-only manifest digest
+`ac541ac93311f860c932e085ad38c7b3364edfa8e895aebe0e5f92b8823d1e3d`，
+位于隔离 Codex visualization 目录的 `vnext-final-vTLrGf/`。
+
+已知非阻断项保持不变：
+
+- Starlette `TestClient`/`httpx` deprecation warning；
+- Vite `699.49 kB` large-chunk warning；
+- 唯一 skip 是宿主缺少 `age`/`age-keygen` 的 legacy 密钥往返，与 vNext
+  Q0 候选无关。
+
+按学生竞赛 Profile，代码与自动证据已经满足竞赛候选验收。生产级独立签署和统计
+证据不再是当前交付项；完整边界见
+`docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`。
 
 2026-07-29 本分支执行：
 
@@ -278,7 +377,9 @@ replay snapshot 运行：
 实现无关。测试期间出现 Starlette `TestClient`/`httpx` deprecation warning；
 现有锁定依赖功能正常，本次不为消除 warning 改动依赖栈。
 
-## 8. 尚未完成且不能伪造的证据
+## 8. 未来产品化证据归档
+
+以下内容不再阻断学生竞赛，仅在未来正式产品化时恢复：
 
 ### 8.1 外部数据和人员
 
@@ -312,35 +413,29 @@ replay snapshot 运行：
   链校验已实现；尚无外部签名锚点、多主机 writer、备份恢复或 RTO/RPO 演练证据。
 - Standalone API 只提供受保护的 shadow run/read，不提供上传、发布或 legacy route。
 
-## 9. 解锁顺序
+## 9. 竞赛收尾顺序
 
-1. 冻结 pilot 标注规范，收集 60 文档并运行 `pilot-evaluate`。
-2. 用 calibration 结果冻结阈值和 verifier independence group。
-3. 关闭 Q0 P0，以已完成的 recorded/no-egress Claim 与显式 Region stages 为基线，
-   用 calibration 冻结 prompt、provider revision、预算和失败门，再按 ADR-03/05
-   的范围解锁 public-fixture inferred Region 和内部模型 profile pilot。
-4. 完成 live search 隐私、SSRF、prompt injection、retention 和 snapshot 红队后，
-   再考虑租户 opt-in。
-5. 对现有 renderer 完成教师/学生任务、跨浏览器、辅助技术和打印验收；证据齐备前
-   保持 `publication_enabled=false`。
-6. 完成 ADR-08 公共 API 迁移证据、Q0-Q5、并发/灾备/回滚演练和 blind set 扩充后，
-   才可申请 internal allowlist；public canary 仍需 release-specific 授权。
+1. 使用至少一份实际参赛材料完成端到端生成、诊断和导出演练。
+2. 在演示设备上复查桌面与移动端，不出现裁切、重叠或空白画布。
+3. 确认演示环境没有真实密钥、未授权私有数据和意外公网能力。
+4. 保存稳定提交和关闭 vNext 的回退步骤。
+5. 只在比赛确实需要时追加模型/search 能力；生产 Gold、用户研究、灾备和
+   canary 保持未来工作，不阻塞当前提交。
 
 ## 10. 最终边界
 
 当前可以准确声称：
 
-> 独立 vNext 受限 shadow 已形成可执行的
+> 学生竞赛候选已形成可执行的
 > `Document IR + Source Inventory -> explicit top-down RegionPlan ->
 > Claim Ledger -> Canonical DAG -> Diagnostic Projection` 主链，并具备不可变
 > artifact、耐久控制、完整 recorded model interaction 回放、复核、评测、真实
-> Web/PNG/PDF/JSON shadow 输出、默认拒绝搜索和发布治理基础。
+> Web/PNG/PDF/JSON shadow 输出、默认拒绝搜索和可回退演示基础。
 
 当前不能声称：
 
 > 已完成完整生产 Agent 框架、已达到教学质量、已通过公网发布门，或可以替换
 > legacy v56。
 
-因此本实现提供了 ADR-01/02 和后续 scoped approval 的实验基础，但不自动符合这些
-ADR 的正式合同。完整生产目标必须保持未完成，直到第 8 节证据、八项 P0 和 Q0-Q5
-逐项满足。
+因此本实现按竞赛 Profile 为 `COMPETITION DEMO READY`；第 8 节和生产 Q0-Q5
+只在未来产品化时恢复。

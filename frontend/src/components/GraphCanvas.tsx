@@ -16,6 +16,7 @@ import {
   mindMapLabelMaxLines,
   wrapMindMapLabel,
 } from "../mindmapLayout";
+import { isRenderableNodeMedia } from "../mindmapMedia";
 import type { AnalysisResult } from "../types";
 
 type GraphCanvasProps = {
@@ -116,7 +117,7 @@ export function GraphCanvas({
           const isBranch = node.role === "branch_topic";
           const mediaAsset = node.media_asset_ids
             .map((assetId) => assetById.get(assetId))
-            .find((asset) => asset?.url);
+            .find(isRenderableNodeMedia);
           const hiddenCount = hiddenCounts.get(node.id) || 0;
           const label = hiddenCount ? `${node.name}  +${hiddenCount}` : node.name;
           const unitsPerLine = mediaAsset

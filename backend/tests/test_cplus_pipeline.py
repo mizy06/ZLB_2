@@ -21,6 +21,7 @@ from backend.app.architecture_schemas import (
 from backend.app.agents import RoleRuntime
 from backend.app.blackboard import SQLiteBlackboard
 from backend.app.cplus_pipeline import (
+    _mark_discarded_content_units,
     _merge_content_units,
     run_cplus_pipeline,
 )
@@ -30,8 +31,7 @@ from backend.app.config import settings
 from backend.app.mindmap_engine.schemas import RenderResponse
 from backend.app.mindmap_engine.schemas import EvidenceRef, NodeCandidateIn
 from backend.app.pdf_page_knowledge import PdfPageKnowledgeResult
-from backend.app.pdf_page_transcription import PdfPageTranscriptionResult
-from backend.app.schemas import ParsedDocument, SourceBlock
+from backend.app.schemas import ParsedDocument
 
 
 SAMPLE = """# 机器学习基础
@@ -59,6 +59,40 @@ async def noop_progress(stage: str, progress: int, message: str) -> None:
 
 
 class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
+    def test_discarded_planning_units_map_back_to_source_units(self):
+        units = [
+            ContentUnit(
+                id="source-a",
+                document_id="doc",
+                kind="text",
+                status="uncovered",
+                text="课程主线",
+            ),
+            ContentUnit(
+                id="source-b",
+                document_id="doc",
+                kind="text",
+                status="uncovered",
+                text="科普介绍",
+            ),
+        ]
+
+        updated = _mark_discarded_content_units(
+            units,
+            {"source-a"},
+            {"source-b": "source-a"},
+        )
+
+        self.assertEqual(
+            [unit.status for unit in updated],
+            ["rejected", "rejected"],
+        )
+        self.assertEqual(
+            [unit.status for unit in units],
+            ["uncovered", "uncovered"],
+            msg="标记丢弃不能原地修改原始账本对象",
+        )
+
     def test_vlm_enrichment_replaces_the_weak_native_visual_unit(self):
         native = ContentUnit(
             id="visual:native-1",
@@ -135,154 +169,6 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
             settings.vision_max_pages,
         )
 
-    async def test_strict_pdf_transcription_replaces_parser_blocks(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            path = root / "course.pdf"
-            path.write_bytes(b"%PDF fixture")
-            data_root = root / "data"
-            render_dir = data_root / "assets" / "strict-render"
-            render_dir.mkdir(parents=True)
-            image_path = render_dir / "page_0001.png"
-            Image.new("RGB", (320, 240), "white").save(image_path)
-            rendered = RenderResponse.model_validate(
-                {
-                    "render_id": "strict-render",
-                    "filename": path.name,
-                    "pages": [
-                        {
-                            "asset_id": "page_0001",
-                            "render_id": "strict-render",
-                            "filename": image_path.name,
-                            "url": "/page_0001.png",
-                            "page": 1,
-                            "width": 320,
-                            "height": 240,
-                        }
-                    ],
-                    "native_visuals": [],
-                    "warnings": [],
-                }
-            )
-            parsed = ParsedDocument(
-                document_id="doc_strict_pdf",
-                filename=path.name,
-                file_type="pdf",
-                title="旧解析标题",
-                blocks=[
-                    SourceBlock(
-                        text="旧几何解析残缺公式 10^6",
-                        page=1,
-                    )
-                ],
-                parse_metadata={"pdf_page_count": 1},
-            )
-            transcribed_document = parsed.model_copy(
-                update={
-                    "blocks": [
-                        SourceBlock(
-                            text="视觉转录公式 10^-6",
-                            page=1,
-                            heading="视觉转录",
-                        )
-                    ],
-                    "parse_metadata": {
-                        **parsed.parse_metadata,
-                        "pdf_page_transcription": {
-                            "complete": True,
-                            "accepted_pages": [1],
-                            "failed_pages": [],
-                        },
-                    },
-                }
-            )
-            transcription = PdfPageTranscriptionResult(
-                document=transcribed_document,
-                complete=True,
-                accepted_pages=[1],
-                called_pages=[1],
-            )
-            unavailable = RoleRuntime(
-                provider="qwen",
-                model="qwen3.8-max-preview",
-                client=None,
-                available=False,
-            )
-            vision = RoleRuntime(
-                provider="qwen",
-                model="qwen3-vl-plus",
-                client=None,
-                available=False,
-            )
-            selection = ModelSelection(
-                generator_provider="qwen",
-                verifier_provider="qwen",
-                vision_provider="qwen",
-            )
-            blackboard = SQLiteBlackboard(root / "blackboard.sqlite3")
-
-            with (
-                patch(
-                    "backend.app.cplus_pipeline.settings",
-                    replace(
-                        settings,
-                        mindmap_data_dir=data_root,
-                        pdf_transcription_mode="vision_strict",
-                    ),
-                ),
-                patch(
-                    "backend.app.cplus_pipeline.parse_document",
-                    return_value=parsed,
-                ),
-                patch(
-                    "backend.app.cplus_pipeline.render_document",
-                    return_value=rendered,
-                ) as render,
-                patch(
-                    "backend.app.cplus_pipeline.transcribe_pdf_pages",
-                    return_value=transcription,
-                ) as transcribe,
-                patch(
-                    "backend.app.cplus_pipeline.build_role_runtimes",
-                    return_value=(
-                        unavailable,
-                        unavailable,
-                        vision,
-                        None,
-                        None,
-                        selection,
-                        [],
-                    ),
-                ),
-            ):
-                result = await run_cplus_pipeline(
-                    task_id="task_strict_pdf",
-                    file_path=path,
-                    filename=path.name,
-                    model="qwen3.8-max-preview",
-                    provider="qwen",
-                    mode="standard",
-                    use_ai=True,
-                    progress=noop_progress,
-                    blackboard=blackboard,
-                )
-
-        self.assertIsNone(render.call_args.kwargs["max_pages"])
-        self.assertEqual(
-            render.call_args.kwargs["pdf_dpi"],
-            settings.pdf_transcription_dpi,
-        )
-        transcribe.assert_awaited_once()
-        self.assertEqual(
-            result.document.blocks[0].text,
-            "视觉转录公式 10^-6",
-        )
-        self.assertNotIn("旧几何解析残缺公式", result.document.blocks[0].text)
-        self.assertNotIn(
-            "pdf_page_transcription",
-            result.degraded_components,
-        )
-
     async def test_page_knowledge_seeds_nodes_without_retranscription(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -317,18 +203,17 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                 filename=path.name,
                 file_type="pdf",
                 title="激光课程",
-                blocks=[
-                    SourceBlock(
-                        text="旧几何解析残缺公式 Δν/ν≈10^6",
-                        page=1,
-                    )
-                ],
-                parse_metadata={"pdf_page_count": 1},
+                blocks=[],
+                parse_metadata={
+                    "pdf_page_count": 1,
+                    "pdf_input_mode": "direct_visual_only",
+                    "pdf_text_extraction_performed": False,
+                },
             )
             unit = ContentUnit(
                 id="pdfk:p0001:linewidth",
                 document_id=parsed.document_id,
-                kind="text",
+                kind="visual",
                 branch_hint="激光",
                 importance=0.9,
                 text="Δν/ν≈10^-6",
@@ -338,6 +223,10 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                 page=1,
                 bbox=[0.1, 0.2, 0.7, 0.2],
                 asset_id="page_0001",
+                visual_kind="direct_page_knowledge",
+                visual_action="standalone_node",
+                summary="谱线相对宽度满足 Δν/ν≈10^-6",
+                knowledge_claims=["谱线相对宽度满足 Δν/ν≈10^-6"],
             )
             candidate = NodeCandidateIn(
                 temp_id=f"direct:{unit.id}",
@@ -361,13 +250,7 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             knowledge_document = parsed.model_copy(
                 update={
-                    "blocks": [
-                        SourceBlock(
-                            text=unit.evidence_excerpt,
-                            page=1,
-                            heading="激光",
-                        )
-                    ],
+                    "blocks": [],
                     "parse_metadata": {
                         **parsed.parse_metadata,
                         "pdf_page_knowledge": {
@@ -415,9 +298,12 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
                 patch(
-                    "backend.app.cplus_pipeline.parse_document",
+                    "backend.app.cplus_pipeline.parse_visual_document",
                     return_value=parsed,
                 ),
+                patch(
+                    "backend.app.cplus_pipeline.parse_document",
+                ) as parse_text,
                 patch(
                     "backend.app.cplus_pipeline.render_document",
                     return_value=rendered,
@@ -427,9 +313,6 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
                     return_value=knowledge,
                     create=True,
                 ) as extract,
-                patch(
-                    "backend.app.cplus_pipeline.transcribe_pdf_pages",
-                ) as transcribe,
                 patch(
                     "backend.app.cplus_pipeline.analyze_visual_pages",
                 ) as analyze_visual,
@@ -461,14 +344,16 @@ class CPlusPipelineTests(unittest.IsolatedAsyncioTestCase):
         extract.assert_awaited_once()
         self.assertEqual(
             extract.call_args.kwargs["extraction_profile"],
-            "layout_nodes",
+            "direct",
         )
         self.assertEqual(
             extract.call_args.kwargs["prompt_version"],
             "page-knowledge-stage-v1",
         )
-        transcribe.assert_not_awaited()
+        parse_text.assert_not_called()
         analyze_visual.assert_not_awaited()
+        self.assertEqual(result.document.blocks, [])
+        self.assertEqual(result.chunks, [])
         self.assertIn(
             "谱线相对宽度",
             {node.name for node in result.nodes},

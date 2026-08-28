@@ -1,0 +1,553 @@
+import { o as createDiffSurface, r as CodeStreamController, s as fileContents, t as DiffStreamController } from "./DiffStreamController-ZVSIb4q0.mjs";
+//#region src/markstream.ts
+function useMonaco(options = {}) {
+	let stream;
+	let diffStream;
+	let surface;
+	let editorAdapter;
+	let diffAdapter;
+	let language = "text";
+	let original = "";
+	let modified = "";
+	let container;
+	let visualRevision = 0;
+	let themeType = "system";
+	let appliedTheme = resolveTheme(options);
+	let appliedThemePairKey = getThemePairKey(options);
+	const shared = {
+		disableLineNumbers: options.lineNumbers === false,
+		overflow: options.wordWrap === "on" ? "wrap" : "scroll",
+		enableLineSelection: options.enableLineSelection
+	};
+	const sharedOptions = () => ({
+		...shared,
+		theme: appliedTheme,
+		themeType
+	});
+	async function createEditor(target, code, lang) {
+		cleanupEditor();
+		const revision = visualRevision;
+		applyEditorStyles(target, options);
+		container = target;
+		language = normalizeSurfaceLanguage(lang);
+		if (shouldRenderMergeConflict(code)) return createMergeConflictEditor(target, code, language);
+		if (options.stream === false) return createStaticFileEditor(target, code, language);
+		const createdStream = new CodeStreamController({
+			...sharedOptions(),
+			...pickPierreOptions(options),
+			fileName: `code.${language}`,
+			language,
+			maxHeight: options.MAX_HEIGHT,
+			autoScroll: options.autoScrollOnUpdate === false ? "never" : "near-bottom",
+			autoScrollThresholdPx: options.autoScrollThresholdPx,
+			workerManager: options.workerManager
+		});
+		stream = createdStream;
+		createdStream.append(code);
+		await createdStream.mount(target);
+		if (revision !== visualRevision || stream !== createdStream || container !== target) {
+			createdStream.dispose();
+			throw new Error("Editor creation was cancelled");
+		}
+		options.onController?.(createdStream);
+		editorAdapter = createEditorAdapter(() => createdStream.getText(), target, () => createdStream.getFinalizedSurface(), (listener) => createdStream.onDidRender(listener));
+		return editorAdapter;
+	}
+	async function createDiffEditor(target, oldCode, newCode, lang) {
+		cleanupEditor();
+		const revision = visualRevision;
+		applyEditorStyles(target, options);
+		container = target;
+		language = normalizeSurfaceLanguage(lang);
+		original = oldCode;
+		modified = newCode;
+		let createdSurface;
+		let createdDiffStream;
+		if (options.stream === false) {
+			createdSurface = createDiffSurface({
+				kind: "diff",
+				oldFile: asFile(oldCode),
+				newFile: asFile(newCode),
+				annotations: options.lineAnnotations,
+				workerManager: options.workerManager,
+				options: {
+					...sharedOptions(),
+					diffStyle: options.diffStyle ?? (options.renderSideBySide === false ? "unified" : "split"),
+					...pickPierreOptions(options)
+				}
+			});
+			surface = createdSurface;
+			await createdSurface.mount(target);
+			if (revision !== visualRevision || surface !== createdSurface || container !== target) {
+				createdSurface.dispose();
+				throw new Error("Editor creation was cancelled");
+			}
+			options.onController?.(createdSurface);
+		} else {
+			createdDiffStream = new DiffStreamController({
+				...sharedOptions(),
+				...pickPierreOptions(options),
+				fileName: `code.${language}`,
+				language,
+				diffStyle: options.diffStyle ?? (options.renderSideBySide === false ? "unified" : "split"),
+				maxHeight: options.MAX_HEIGHT,
+				wrap: options.wordWrap === "on",
+				workerManager: options.workerManager
+			});
+			diffStream = createdDiffStream;
+			await createdDiffStream.mount(target, oldCode, newCode);
+			if (revision !== visualRevision || diffStream !== createdDiffStream || container !== target) {
+				createdDiffStream.dispose();
+				throw new Error("Editor creation was cancelled");
+			}
+			options.onController?.(createdDiffStream);
+		}
+		diffAdapter = createDiffAdapter(() => original, () => modified, target, () => createdSurface ?? createdDiffStream?.getFinalizedSurface());
+		return diffAdapter;
+	}
+	async function updateCode(code, lang = language) {
+		const nextLanguage = normalizeSurfaceLanguage(lang);
+		if (shouldRenderMergeConflict(code)) {
+			if (surface?.getInput().kind === "merge-conflict") {
+				language = nextLanguage;
+				await surface.updateMergeConflict(asFile(code), options.lineAnnotations);
+			} else if (container) await createMergeConflictEditor(container, code, nextLanguage);
+			return;
+		}
+		if (options.stream === false) {
+			if (surface?.getInput().kind === "file") {
+				language = nextLanguage;
+				await surface.updateFile(asFile(code), options.lineAnnotations);
+			} else if (container) await createStaticFileEditor(container, code, nextLanguage);
+			return;
+		}
+		if (!stream) {
+			if (container) await createEditor(container, code, nextLanguage);
+			return;
+		}
+		if (stream.getState() === "finalized") {
+			if (code !== stream.getText()) await stream.reset(code);
+			return;
+		}
+		if (nextLanguage !== language) {
+			language = nextLanguage;
+			await stream.setLanguage(nextLanguage);
+			if (code !== stream.getText()) await stream.reset(code);
+			return;
+		}
+		const previous = stream.getText();
+		if (code.startsWith(previous)) stream.append(code.slice(previous.length));
+		else await stream.reset(code);
+	}
+	async function updateDiff(oldCode, newCode, lang = language) {
+		original = oldCode;
+		modified = newCode;
+		language = normalizeSurfaceLanguage(lang);
+		if (diffStream) {
+			await diffStream.update(oldCode, newCode);
+			return;
+		}
+		if (!surface) {
+			if (container) await createDiffEditor(container, oldCode, newCode, lang);
+			return;
+		}
+		await surface.updateDiff(asFile(oldCode), asFile(newCode));
+	}
+	function cleanupEditor() {
+		visualRevision++;
+		stream?.dispose();
+		diffStream?.dispose();
+		if (!diffStream) surface?.dispose();
+		stream = void 0;
+		diffStream = void 0;
+		surface = void 0;
+		editorAdapter = void 0;
+		diffAdapter = void 0;
+		container = void 0;
+	}
+	async function createStaticFileEditor(target, code, lang) {
+		cleanupEditor();
+		const revision = visualRevision;
+		container = target;
+		language = lang;
+		const createdSurface = createDiffSurface({
+			kind: "file",
+			file: asFile(code),
+			annotations: options.lineAnnotations,
+			workerManager: options.workerManager,
+			options: {
+				...sharedOptions(),
+				...pickPierreOptions(options)
+			}
+		});
+		surface = createdSurface;
+		await createdSurface.mount(target);
+		if (revision !== visualRevision || surface !== createdSurface || container !== target) {
+			createdSurface.dispose();
+			throw new Error("Editor creation was cancelled");
+		}
+		options.onController?.(createdSurface);
+		editorAdapter = createEditorAdapter(() => getSurfaceFileContents(createdSurface) ?? code, target, () => createdSurface, (listener) => createdSurface.onDidRender(listener));
+		return editorAdapter;
+	}
+	async function createMergeConflictEditor(target, code, lang) {
+		cleanupEditor();
+		const revision = visualRevision;
+		container = target;
+		language = lang;
+		const createdSurface = createDiffSurface({
+			kind: "merge-conflict",
+			file: asFile(code),
+			annotations: options.lineAnnotations,
+			workerManager: options.workerManager,
+			options: {
+				...sharedOptions(),
+				...pickPierreOptions(options)
+			}
+		});
+		surface = createdSurface;
+		await createdSurface.mount(target);
+		if (revision !== visualRevision || surface !== createdSurface || container !== target) {
+			createdSurface.dispose();
+			throw new Error("Editor creation was cancelled");
+		}
+		options.onController?.(createdSurface);
+		editorAdapter = createEditorAdapter(() => getSurfaceFileContents(createdSurface) ?? code, target, () => createdSurface, (listener) => createdSurface.onDidRender(listener));
+		return editorAdapter;
+	}
+	function shouldRenderMergeConflict(code) {
+		if (options.mergeConflict === false) return false;
+		return /^<<<<<<< .+$/m.test(code) && /^=======$/m.test(code) && /^>>>>>>> .+$/m.test(code);
+	}
+	async function setTheme(nextTheme) {
+		if (!nextTheme) return;
+		if (typeof nextTheme === "string") {
+			const themes = options.themes;
+			if (themes?.[0] === nextTheme) {
+				await applyThemePairIfChanged();
+				themeType = "dark";
+				stream?.setThemeType("dark");
+				diffStream?.setThemeType("dark");
+				surface?.setThemeType("dark");
+				return;
+			}
+			if (themes?.[1] === nextTheme) {
+				await applyThemePairIfChanged();
+				themeType = "light";
+				stream?.setThemeType("light");
+				diffStream?.setThemeType("light");
+				surface?.setThemeType("light");
+				return;
+			}
+		}
+		appliedThemePairKey = void 0;
+		appliedTheme = nextTheme;
+		await applyTheme(nextTheme);
+	}
+	async function applyThemePairIfChanged() {
+		const pairKey = getThemePairKey(options);
+		if (!pairKey || pairKey === appliedThemePairKey) return;
+		appliedThemePairKey = pairKey;
+		appliedTheme = resolveTheme(options);
+		await applyTheme(appliedTheme);
+	}
+	async function applyTheme(nextTheme) {
+		await stream?.setTheme(nextTheme);
+		await diffStream?.setTheme(nextTheme);
+		await surface?.setTheme(nextTheme);
+	}
+	function asFile(contents) {
+		return fileContents(`code.${language || "txt"}`, contents, language);
+	}
+	return {
+		runtimeKind: "stream-diffs",
+		createEditor,
+		createDiffEditor,
+		updateCode,
+		appendCode(chunk) {
+			stream?.append(chunk);
+		},
+		async finalizeCode() {
+			if (!stream || stream.getState() === "finalized") return stream?.getFinalizedSurface();
+			const nativeOptions = pickPierreOptions(options);
+			delete nativeOptions.lineAnnotations;
+			await stream.finalize({
+				view: "file",
+				...nativeOptions,
+				theme: appliedTheme,
+				themeType,
+				annotations: options.lineAnnotations,
+				workerManager: options.workerManager
+			});
+			return stream.getFinalizedSurface();
+		},
+		async finalizeDiff() {
+			if (!diffStream) return surface;
+			surface = await diffStream.finalize(options.lineAnnotations);
+			return surface;
+		},
+		updateDiff,
+		updateOriginal(code, lang = language) {
+			return updateDiff(code, modified, lang);
+		},
+		updateModified(code, lang = language) {
+			return updateDiff(original, code, lang);
+		},
+		appendOriginal(chunk, lang = language) {
+			return updateDiff(original + chunk, modified, lang);
+		},
+		appendModified(chunk, lang = language) {
+			return updateDiff(original, modified + chunk, lang);
+		},
+		cleanupEditor,
+		safeClean: cleanupEditor,
+		setTheme,
+		async setLanguage(next) {
+			language = normalizeSurfaceLanguage(next);
+			await stream?.setLanguage(language);
+			await diffStream?.setLanguage(language);
+			if (surface && !diffStream) {
+				const input = surface.getInput();
+				if (input.kind === "file" || input.kind === "merge-conflict") await surface.update({
+					...input,
+					file: {
+						...input.file,
+						lang: language
+					}
+				});
+				else if (input.kind === "diff" && "oldFile" in input) await surface.update({
+					...input,
+					oldFile: {
+						...input.oldFile,
+						lang: language
+					},
+					newFile: {
+						...input.newFile,
+						lang: language
+					}
+				});
+			}
+		},
+		getCurrentTheme: () => appliedTheme,
+		getEditor: () => EDITOR_NAMESPACE,
+		getEditorView: () => editorAdapter ?? null,
+		getDiffEditorView: () => diffAdapter ?? null,
+		getDiffModels: () => ({
+			original: createModel(() => original),
+			modified: createModel(() => surface?.getResolvedFile()?.contents ?? diffStream?.getModified() ?? modified)
+		}),
+		getCode: () => {
+			const input = surface?.getInput();
+			if (input?.kind === "diff" || input?.kind === "patch") return {
+				original,
+				modified: surface?.getResolvedFile()?.contents ?? modified
+			};
+			if (input?.kind === "file" || input?.kind === "merge-conflict") return input.file.contents;
+			if (diffStream) return {
+				original: diffStream.getOriginal(),
+				modified: diffStream.getModified()
+			};
+			return stream?.getText() ?? null;
+		},
+		refreshDiffPresentation: () => surface?.update(surface.getInput()),
+		whenVisualReady: async () => {
+			const target = container;
+			const revision = visualRevision;
+			const renderedSurface = surface ?? stream?.getFinalizedSurface() ?? diffStream?.getFinalizedSurface();
+			if (!renderedSurface || !await renderedSurface.whenVisualReady()) return false;
+			return waitForVisualReady(target, () => revision === visualRevision && target === container && renderedSurface === (surface ?? stream?.getFinalizedSurface() ?? diffStream?.getFinalizedSurface()), () => isSurfaceRenderComplete(surface ?? stream?.getFinalizedSurface() ?? diffStream?.getFinalizedSurface()));
+		}
+	};
+}
+async function waitForVisualReady(container, isCurrent, isRenderComplete) {
+	if (!container || typeof window === "undefined") return false;
+	let previousSignature = "";
+	let previousPre;
+	let stableFrames = 0;
+	for (let frame = 0; frame < 120; frame += 1) {
+		if (!isCurrent()) return false;
+		const shell = container.querySelector(".stream-diffs-shell");
+		const pre = ((shell?.querySelector("diffs-container"))?.shadowRoot)?.querySelector("pre");
+		const rect = shell?.getBoundingClientRect();
+		const text = pre?.textContent ?? "";
+		if (!!rect && rect.width > 0 && rect.height > 0 && !!pre && isRenderComplete()) {
+			const signature = `${Math.round(rect.width)}:${Math.round(rect.height)}:${pre.scrollWidth}:${pre.scrollHeight}:${text.length}`;
+			stableFrames = pre === previousPre && signature === previousSignature ? stableFrames + 1 : 1;
+			previousPre = pre;
+			previousSignature = signature;
+			if (stableFrames >= 2) return true;
+		} else {
+			previousSignature = "";
+			previousPre = void 0;
+			stableFrames = 0;
+		}
+		await nextVisualFrame();
+	}
+	return false;
+}
+function isSurfaceRenderComplete(surface) {
+	if (!surface) return true;
+	const instance = surface.getNativeInstance();
+	const renderer = instance?.fileRenderer ?? instance?.hunksRenderer;
+	if (!renderer) return true;
+	const cache = renderer.renderCache;
+	if (!cache?.result) return false;
+	if (cache.highlighted === true) return true;
+	const input = surface.getInput();
+	if (normalizeSurfaceLanguage(input.kind === "file" || input.kind === "merge-conflict" ? input.file.lang : "oldFile" in input ? input.oldFile.lang ?? input.newFile.lang : surface.getDiff()?.lang) === "text") return true;
+	const tokenizeMaxLength = Number(renderer.getTokenizeMaxLength?.() ?? 1e5);
+	if (input.kind === "file" || input.kind === "merge-conflict") return countLines(input.file.contents) > tokenizeMaxLength;
+	const diff = surface.getDiff();
+	return !!diff && Math.max(diff.additionLines.length, diff.deletionLines.length) > tokenizeMaxLength;
+}
+function normalizeSurfaceLanguage(language) {
+	return !language || /^(?:text|txt|plain|plaintext)$/i.test(language) ? "text" : language;
+}
+function countLines(value) {
+	if (!value) return 0;
+	let lines = 1;
+	for (let index = 0; index < value.length; index += 1) if (value.charCodeAt(index) === 10) lines += 1;
+	return lines;
+}
+function nextVisualFrame() {
+	return new Promise((resolve) => {
+		let settled = false;
+		const done = () => {
+			if (settled) return;
+			settled = true;
+			window.clearTimeout(timeout);
+			window.cancelAnimationFrame(frame);
+			resolve();
+		};
+		const frame = window.requestAnimationFrame(done);
+		const timeout = window.setTimeout(done, 50);
+	});
+}
+function resolveTheme(options) {
+	if (options.themes?.length && typeof options.themes[0] === "string" && typeof options.themes[1] === "string") return {
+		dark: options.themes[0],
+		light: options.themes[1]
+	};
+	return options.theme ?? void 0;
+}
+function getThemePairKey(options) {
+	if (typeof options.themes?.[0] !== "string" || typeof options.themes?.[1] !== "string") return void 0;
+	return `${options.themes[0]}\n${options.themes[1]}`;
+}
+function pickPierreOptions(options) {
+	const hostKeys = /* @__PURE__ */ new Set([
+		"MAX_HEIGHT",
+		"theme",
+		"themes",
+		"readOnly",
+		"lineNumbers",
+		"wordWrap",
+		"renderSideBySide",
+		"autoScrollOnUpdate",
+		"autoScrollThresholdPx",
+		"stream",
+		"mergeConflict",
+		"lineAnnotations",
+		"onController",
+		"workerManager",
+		"languages",
+		"onThemeChange"
+	]);
+	const nativeOptions = Object.fromEntries(Object.entries(options).filter(([key]) => !hostKeys.has(key)));
+	const legacyFolding = options.diffHideUnchangedRegions;
+	delete nativeOptions.diffHideUnchangedRegions;
+	const foldingOptions = typeof legacyFolding === "object" && legacyFolding ? legacyFolding : void 0;
+	const foldingEnabled = foldingOptions?.enabled !== false;
+	if (legacyFolding === false || foldingOptions && !foldingEnabled) nativeOptions.expandUnchanged ??= true;
+	else if (legacyFolding === true || foldingOptions) {
+		nativeOptions.expandUnchanged ??= false;
+		if (foldingOptions) {
+			const context = Number(foldingOptions.contextLineCount);
+			if (Number.isFinite(context) && context >= 0) nativeOptions.parseDiffOptions = {
+				context,
+				...nativeOptions.parseDiffOptions
+			};
+			const minimumLineCount = Number(foldingOptions.minimumLineCount);
+			if (Number.isFinite(minimumLineCount) && minimumLineCount >= 1) nativeOptions.collapsedContextThreshold ??= Math.max(0, Math.floor(minimumLineCount) - 1);
+		}
+	}
+	return nativeOptions;
+}
+function createModel(getValue) {
+	return {
+		getValue,
+		getLineCount: () => getValue().split("\n").length
+	};
+}
+function getSurfaceFileContents(surface) {
+	const input = surface?.getInput();
+	return input?.kind === "file" || input?.kind === "merge-conflict" ? input.file.contents : void 0;
+}
+function createEditorAdapter(getValue, container, getSurface = () => void 0, subscribeRender) {
+	const readFontSize = () => Number.parseFloat(container.style.fontSize) || 14;
+	return {
+		getModel: () => createModel(getValue),
+		getContentHeight: () => container.querySelector(".stream-diffs-shell")?.scrollHeight ?? container.scrollHeight,
+		layout: () => {},
+		getOption(key) {
+			if (key === EDITOR_OPTION.fontInfo) return { fontSize: readFontSize() };
+			if (key === EDITOR_OPTION.lineHeight) return Number.parseFloat(container.style.lineHeight) || Math.round(readFontSize() * 1.5);
+		},
+		updateOptions(next) {
+			applyEditorStyles(container, next);
+		},
+		onDidContentSizeChange: (listener) => subscribeRender?.(listener) ?? { dispose() {} },
+		onDidLayoutChange: (listener) => subscribeRender?.(listener) ?? { dispose() {} },
+		setSelectedLines: (range) => getSurface()?.setSelectedLines(range),
+		setAnnotations: (annotations) => getSurface()?.setAnnotations(annotations),
+		acceptReject: (hunkIndex, action) => getSurface()?.acceptReject(hunkIndex, action),
+		resolveConflict: (conflictIndex, resolution) => getSurface()?.resolveConflict(conflictIndex, resolution)
+	};
+}
+function createDiffAdapter(getOriginal, getModified, container, getSurface) {
+	return {
+		...createEditorAdapter(getModified, container, getSurface, (listener) => getSurface()?.onDidRender(listener) ?? { dispose() {} }),
+		getOriginalEditor: () => createEditorAdapter(getOriginal, container, getSurface, (listener) => getSurface()?.onDidRender(listener) ?? { dispose() {} }),
+		getModifiedEditor: () => createEditorAdapter(getModified, container, getSurface, (listener) => getSurface()?.onDidRender(listener) ?? { dispose() {} }),
+		getLineChanges: () => getSurface()?.getDiff()?.hunks.map((hunk) => ({
+			originalStartLineNumber: hunk.deletionStart,
+			originalEndLineNumber: hunk.deletionStart + hunk.deletionCount - 1,
+			modifiedStartLineNumber: hunk.additionStart,
+			modifiedEndLineNumber: hunk.additionStart + hunk.additionCount - 1
+		})) ?? [],
+		onDidUpdateDiff: (listener) => getSurface()?.onDidRender(listener) ?? { dispose() {} }
+	};
+}
+const EDITOR_OPTION = {
+	fontInfo: 0,
+	lineHeight: 1
+};
+const EDITOR_NAMESPACE = { EditorOption: EDITOR_OPTION };
+function applyEditorStyles(container, options) {
+	const { style } = container;
+	if (typeof options.fontSize === "number") {
+		style.fontSize = `${options.fontSize}px`;
+		style.setProperty("--diffs-font-size", `${options.fontSize}px`);
+	}
+	if (typeof options.lineHeight === "number") {
+		style.lineHeight = `${options.lineHeight}px`;
+		style.setProperty("--diffs-line-height", `${options.lineHeight}px`);
+	}
+	if (typeof options.fontFamily === "string") {
+		style.fontFamily = options.fontFamily;
+		style.setProperty("--diffs-font-family", options.fontFamily);
+	}
+}
+async function preloadMonacoWorkers() {}
+async function preloadStreamDiffs() {
+	return true;
+}
+function detectLanguage(code) {
+	if (/^\s*</.test(code)) return "html";
+	if (/\b(interface|type|enum)\s+\w+|:\s*(string|number|boolean)\b/.test(code)) return "typescript";
+	if (/\b(const|let|function|import|export)\b/.test(code)) return "javascript";
+	if (/\b(def|from|lambda|None|True|False)\b/.test(code)) return "python";
+	return "text";
+}
+//#endregion
+export { detectLanguage, preloadMonacoWorkers, preloadStreamDiffs, useMonaco };

@@ -1,0 +1,1020 @@
+import { ElementContent } from "./node_modules/.pnpm/@types_hast@3.0.4/node_modules/@types/hast/index.js";
+import { BundledLanguage, BundledTheme, CodeToHastOptions, DecorationItem, HighlighterGeneric, LanguageRegistration, ShikiTransformer, ThemeRegistration, ThemeRegistrationResolved, ThemedToken } from "shiki";
+import { CreatePatchOptionsNonabortable } from "diff";
+
+//#region src/types.d.ts
+type CodeViewScrollBehavior = 'instant' | 'smooth' | 'smooth-auto';
+/**
+ * Represents a file's contents for generating diffs via `parseDiffFromFile` or
+ * for when rendering a file directly using the File components
+ */
+interface FileContents {
+  /** Filename used for display in headers and for inferring the language for
+   * syntax highlighting. */
+  name: string;
+  /** The raw text contents of the file. */
+  contents: string;
+  /** Explicitly set the syntax highlighting language instead of inferring from
+   * filename. Generally you should not be setting this. */
+  lang?: SupportedLanguages;
+  /** Optional header passed to the jsdiff library's `createTwoFilesPatch`. */
+  header?: string;
+  /**
+   * Identifies a file for caching. Optional for read-only rendering, but
+   * required and expected to be unique and stable when Editor `persistState`
+   * is enabled.
+   */
+  cacheKey?: string;
+}
+interface FileDiffLoadedChangedFiles {
+  oldFile: FileContents;
+  newFile: FileContents;
+}
+interface FileDiffLoadedPureRenamedFile {
+  oldFile: null;
+  newFile: FileContents;
+}
+type FileDiffLoadedFiles = FileDiffLoadedChangedFiles | FileDiffLoadedPureRenamedFile;
+type DiffFileInput = {
+  oldFile: FileContents;
+  newFile: FileContents;
+} | {
+  oldFile: null;
+  newFile: FileContents;
+} | {
+  oldFile: FileContents;
+  newFile: null;
+};
+type MaybeDiffFileInput = DiffFileInput | {
+  oldFile?: undefined;
+  newFile?: undefined;
+};
+type FileDiffContentsLoader = (fileDiff: FileDiffMetadata) => Promise<FileDiffLoadedFiles>;
+type HighlighterTypes = 'shiki-js' | 'shiki-wasm';
+type HighlightedToken = [char: number, fg: string, text: string];
+type DiffsThemeNames = BundledTheme | (string & {});
+type ThemesType = Record<'dark' | 'light', DiffsThemeNames>;
+/**
+ * A Shiki highlighter instance configured with the library's supported
+ * languages and themes. Used internally to generate syntax-highlighted AST
+ * from file contents. By default diffs will ensure that only 1 highlighter is
+ * instantiated per thread and shared for all syntax highlighting.  This
+ * applies to the main thread and worker threads.
+ */
+type DiffsHighlighter = HighlighterGeneric<SupportedLanguages, DiffsThemeNames>;
+/**
+ * Describes the type of change for a file in a diff.
+ * - `change`: File content was modified, name unchanged.
+ * - `rename-pure`: File was renamed/moved without content changes (100% similarity).
+ * - `rename-changed`: File was renamed/moved and content was also modified.
+ * - `new`: A new file was added.
+ * - `deleted`: An existing file was removed.
+ */
+type ChangeTypes = 'change' | 'rename-pure' | 'rename-changed' | 'new' | 'deleted';
+/**
+ * Represents a parsed patch file, typically corresponding to a single commit.
+ * Returned by `parsePatchFiles` when parsing raw patch/diff strings.
+ */
+interface ParsedPatch {
+  /** Optional raw introductory text before the file diffs that may have been
+   * included in the patch (e.g., commit message, author, date). */
+  patchMetadata?: string;
+  /** Array of file changes contained in the patch. */
+  files: FileDiffMetadata[];
+}
+/**
+ * Represents a block of unchanged context lines within a hunk.  Basically a
+ * batch of lines in a hunk that are prefixed with a space ` `.  Consecutive
+ * lines prefixed with a ` ` are grouped together into a single ContextContent.
+ */
+interface ContextContent {
+  type: 'context';
+  /** Number of unchanged lines in this context block. */
+  lines: number;
+  /**
+   * Zero-based index into `FileDiffMetadata.additionLines` where this context
+   * block starts.
+   */
+  additionLineIndex: number;
+  /**
+   * Zero-based index into `FileDiffMetadata.deletionLines` where this context
+   * block starts.
+   */
+  deletionLineIndex: number;
+}
+/**
+ * Represents a block of changes (additions and/or deletions) within a hunk.
+ * Consecutive `+` and `-` lines are grouped together into a single
+ * ChangeContent.
+ */
+interface ChangeContent {
+  type: 'change';
+  /** Number of lines prefixed with `-` in this change block. */
+  deletions: number;
+  /**
+   * Zero-based index into `FileDiffMetadata.deletionLines` where the deleted
+   * lines start.
+   */
+  deletionLineIndex: number;
+  /** Number of lines prefixed with `+` in this change block. */
+  additions: number;
+  /**
+   * Zero-based index into `FileDiffMetadata.additionLines` where the added
+   * lines start.
+   */
+  additionLineIndex: number;
+}
+/**
+ * Represents a single hunk from a diff, corresponding to
+ * one `@@ ... @@` block.
+ */
+interface Hunk {
+  /**
+   * Number of unchanged lines between the previous hunk (or file start) and
+   * this hunk.
+   */
+  collapsedBefore: number;
+  /**
+   * Starting line number in the new file version, parsed from the `+X`
+   * in the hunk header.
+   */
+  additionStart: number;
+  /**
+   * Total line count in the new file version for this hunk, parsed from
+   * `+X,count` in the hunk header.  If this hunk was viewed in `diffStyle:
+   * split` this would correspond to the number of lines in the right
+   * `additions` column.  It includes both `context` lines and lines
+   * prefixed with `+`.
+   */
+  additionCount: number;
+  /** This corresponds to the number of lines prefixed with `+` in this hunk. */
+  additionLines: number;
+  /**
+   * Zero-based index into `FileDiffMetadata.additionLines` where this hunk's
+   * content starts.
+   */
+  additionLineIndex: number;
+  /**
+   * Starting line number in the old file version, parsed from the `-X`
+   * in the hunk header.
+   */
+  deletionStart: number;
+  /**
+   * Total line count in the old file version for this hunk, parsed from
+   * `-X,count` in the hunk header.  If this hunk was viewed in `diffStyle:
+   * split` this would correspond to the number of lines in the left
+   * `deletions` column.  It includes both `context` lines and lines
+   * prefixed with `-`.
+   */
+  deletionCount: number;
+  /** This corresponds to the number of lines prefixed with `-` in this hunk. */
+  deletionLines: number;
+  /**
+   * Zero-based index into `FileDiffMetadata.deletionLines` where this hunk's
+   * content starts.
+   */
+  deletionLineIndex: number;
+  /**
+   * Array of content segments within this hunk, each representing either
+   * a context line group or a change group.
+   */
+  hunkContent: (ContextContent | ChangeContent)[];
+  /**
+   * Function/method name that appears after the `@@` markers if it existed in
+   * the diff.
+   */
+  hunkContext?: string;
+  /** Raw hunk header string (e.g., `@@ -1,5 +1,7 @@`). */
+  hunkSpecs?: string;
+  /**
+   * Starting line index for this hunk when rendered in split (side-by-side)
+   * view.
+   */
+  splitLineStart: number;
+  /** Total rendered line count for this hunk in split view. */
+  splitLineCount: number;
+  /** Starting line index for this hunk when rendered in unified view. */
+  unifiedLineStart: number;
+  /** Total rendered line count for this hunk in unified view. */
+  unifiedLineCount: number;
+  /**
+   * True if the old file version has no trailing newline at end of file.  This
+   * is parsed from the patch file directly at the end of the hunk.  If the
+   * final hunkContent is a `context` group, then both values will be true or
+   * false together.  If it's from a `change` content group, then it may differ
+   * depending on the patch.
+   */
+  noEOFCRDeletions: boolean;
+  /**
+   * True if the new file version has no trailing newline at end of file.  This
+   * is parsed from the patch file directly at the end of the hunk.  If the
+   * final hunkContent is a `context` group, then both values will be true or
+   * false together.  If it's from a `change` content group, then it may differ
+   * depending on the patch.
+   */
+  noEOFCRAdditions: boolean;
+}
+/**
+ * Metadata and content for a single file's diff.  Think of this as a JSON
+ * compatible representation of a diff for a single file.
+ *
+ * When a renderer uses `loadDiffFiles` to hydrate a partial diff, it upgrades
+ * this metadata object in place. Keep the same object identity stable when
+ * callers want that hydrated state to persist across later renders.
+ */
+interface FileDiffMetadata {
+  /** The file's name and path. */
+  name: string;
+  /** Previous file path, present only if file was renamed or moved. */
+  prevName?: string;
+  /**
+   * Explicitly override the syntax highlighting language instead of inferring
+   * from filename.  This will never be set by default, since all internal diff
+   * APIs will attempt to detect the language automatically.  If you'd like to
+   * specify a language override, you can do so via the method `setLanguageOverride`
+   */
+  lang?: SupportedLanguages;
+  /**
+   * Object ID for the new file content parsed from the `index` line in a
+   * patch file.
+   */
+  newObjectId?: string;
+  /**
+   * Object ID for the previous file content parsed from the `index` line in a
+   * patch file.
+   */
+  prevObjectId?: string;
+  /**
+   * Git file mode parsed from the diff (e.g., `100644` for regular files) when
+   * present in the patch metadata.
+   */
+  mode?: string;
+  /** Previous git file mode, present if the mode changed. */
+  prevMode?: string;
+  /** The type of change for this file. */
+  type: ChangeTypes;
+  /** Array of diff hunks containing line-level change information.  Each hunk
+   * corresponds to a `@@ -X,X +X,X @@` group in a diff. */
+  hunks: Hunk[];
+  /** Pre-computed line size for this diff if rendered in `split` diffStyle. */
+  splitLineCount: number;
+  /** Pre-computed line size for this diff if rendered in `unified` diffStyle. */
+  unifiedLineCount: number;
+  /**
+   * Whether the diff was parsed from a patch file (true) or generated from
+   * full file contents (false).
+   *
+   * When true, `deletionLines`/`additionLines` contain only the lines present
+   * in the patch and hunk expansion is unavailable.
+   *
+   * When false, they contain the complete file contents.
+   *
+   * A hydrating renderer mutates a partial metadata object to flip this to
+   * false after `loadDiffFiles` resolves. Passing a freshly parsed partial
+   * object later is treated as a new partial render model.
+   */
+  isPartial: boolean;
+  /**
+   * Array of lines from previous version of the file. If `isPartial` is false,
+   * it means that `deletionLines` can be considered the entire contents of the
+   * old version of the file.  Otherwise `deletionLines` will just be an array
+   * of all the content processed from the `context` and `deletion` lines of
+   * the patch.
+   */
+  deletionLines: string[];
+  /**
+   * Array of lines from new version of the file. If `isPartial` is false, it
+   * means that `additionLines` can be considered the entire contents of the
+   * new version of the file.  Otherwise `additionLines` will just be an array
+   * of all the content processed from the `context` and `addition` lines of
+   * the patch.
+   */
+  additionLines: string[];
+  /**
+   * Set while an attached editor's session-scoped hunk updates have reshaped
+   * `hunks` away from a plain recompute (regions stay frozen during an edit
+   * session). Consumed by the session-exit recompute, which restores
+   * recompute-shaped hunks and clears the flag. It lives on the metadata so
+   * it survives instance recycling and pooling.
+   *
+   * @internal
+   */
+  editSessionDirty?: boolean;
+  /**
+   * This unique key is only used for Worker Pools to avoid subsequent requests
+   * to highlight if we've already highlighted the diff.  Please note that if
+   * you modify the contents of the diff in any way, you will need to update
+   * the `cacheKey`.
+   *
+   * When `loadDiffFiles` hydrates a partial diff, Diffs uses loaded file cache
+   * keys when they are available so full-file highlights can be reused. If the
+   * loaded files are unkeyed and this partial key exists, Diffs appends a
+   * hydration segment as a fallback.
+   */
+  cacheKey?: string;
+}
+type MergeConflictMarkerRowType = 'marker-start' | 'marker-base' | 'marker-separator' | 'marker-end';
+interface MergeConflictMarkerRow {
+  type: MergeConflictMarkerRowType;
+  hunkIndex: number;
+  /** Index into `hunk.hunkContent` for the structural block this row belongs to. */
+  contentIndex: number;
+  conflictIndex: number;
+  lineText: string;
+  /** Unified rendered-row index where this virtual row should be injected. */
+  lineIndex: number;
+}
+type SupportedLanguages = BundledLanguage | 'text' | 'ansi' | (string & {});
+type HunkLineType = 'context' | 'expanded' | 'addition' | 'deletion' | 'metadata';
+type ThemeTypes = 'system' | 'light' | 'dark';
+type PostRenderPhase = 'mount' | 'update' | 'unmount';
+/**
+ * The `'custom'` variant is deprecated and will be removed in a future version.
+ */
+type HunkSeparators = 'simple' | 'metadata' | 'line-info' | 'line-info-basic' | 'custom';
+type LineDiffTypes = 'word-alt' | 'word' | 'char' | 'none';
+type DiffIndicators = 'classic' | 'bars' | 'none';
+interface BaseCodeOptions {
+  theme?: DiffsThemeNames | ThemesType;
+  disableLineNumbers?: boolean;
+  overflow?: 'scroll' | 'wrap';
+  themeType?: ThemeTypes;
+  collapsed?: boolean;
+  disableFileHeader?: boolean;
+  disableVirtualizationBuffers?: boolean;
+  stickyHeader?: boolean;
+  preferredHighlighter?: HighlighterTypes;
+  useCSSClasses?: boolean;
+  useTokenTransformer?: boolean;
+  tokenizeMaxLineLength?: number;
+  tokenizeMaxLength?: number;
+  unsafeCSS?: string;
+}
+interface BaseDiffOptions extends BaseCodeOptions {
+  diffStyle?: 'unified' | 'split';
+  diffIndicators?: DiffIndicators;
+  disableBackground?: boolean;
+  hunkSeparators?: HunkSeparators;
+  expandUnchanged?: boolean;
+  /**
+   * Fetches full file contents for partial changed/renamed diffs parsed from
+   * patches. Return both sides for changed diffs and `oldFile: null` for pure
+   * renames. Added/deleted diffs already include their available side and thus
+   * this function serves no purpose in those contexts
+   */
+  loadDiffFiles?: FileDiffContentsLoader;
+  collapsedContextThreshold?: number;
+  lineDiffType?: LineDiffTypes;
+  maxLineDiffLength?: number;
+  expansionLineCount?: number;
+  /**
+   * Options forwarded to the underlying diff algorithm when computing diffs
+   * from file contents (oldFile/newFile). Has no effect on pre-parsed patches.
+   */
+  parseDiffOptions?: CreatePatchOptionsNonabortable;
+}
+type BaseDiffOptionsWithDefaults = Required<Omit<BaseDiffOptions, 'unsafeCSS' | 'preferredHighlighter' | 'parseDiffOptions' | 'loadDiffFiles'>>;
+type CustomPreProperties = Record<string, string | number | undefined>;
+interface PrePropertiesConfig extends Required<Pick<BaseDiffOptions, 'diffIndicators' | 'disableBackground' | 'disableLineNumbers' | 'overflow'>> {
+  type: 'diff' | 'file';
+  split: boolean;
+  totalLines: number;
+  customProperties?: CustomPreProperties;
+}
+type FileHeaderRenderMode = 'default' | 'custom';
+type RenderHeaderMetadataCallback = (fileDiff: FileDiffMetadata) => Element | string | number | null | undefined;
+type RenderHeaderPrefixCallback = (fileDiff: FileDiffMetadata) => Element | string | number | null | undefined;
+type RenderHeaderFilenameSuffixCallback = (fileDiff: FileDiffMetadata) => Element | string | number | null | undefined;
+type RenderFileMetadata = (file: FileContents) => Element | string | number | null | undefined;
+type ExtensionFormatMap = Record<string, SupportedLanguages | undefined>;
+type AnnotationSide = 'deletions' | 'additions';
+type SelectionSide = 'deletions' | 'additions';
+interface SelectedLineRange {
+  start: number;
+  side?: SelectionSide;
+  end: number;
+  endSide?: SelectionSide;
+}
+type OptionalMetadata<T> = T extends undefined ? {
+  metadata?: undefined;
+} : {
+  metadata: T;
+};
+/**
+ * Annotation rendered for a file line. Use `lineNumber: 0` to render a
+ * file-level annotation above the first rendered file line.
+ */
+type LineAnnotation<T = undefined> = {
+  lineNumber: number;
+} & OptionalMetadata<T>;
+/**
+ * Annotation rendered for one side of a diff line. Use `lineNumber: 0` to
+ * render a side-specific file-level annotation above the first hunk/separator.
+ */
+type DiffLineAnnotation<T = undefined> = {
+  side: AnnotationSide;
+  lineNumber: number;
+} & OptionalMetadata<T>;
+type CodeViewFileItem<T = undefined> = {
+  id: string;
+  type: 'file';
+  file: FileContents;
+  annotations?: LineAnnotation<T>[];
+  version?: number;
+  collapsed?: boolean;
+  /**
+   * Put this item into edit mode. Requires `EditProvider` in React or the
+   * CodeView `createEditor` option in vanilla; ignored while `collapsed` is
+   * true. Make sure you bump the version when also changing the value.
+   */
+  edit?: boolean;
+};
+type CodeViewDiffItem<T = undefined> = {
+  id: string;
+  type: 'diff';
+  fileDiff: FileDiffMetadata;
+  annotations?: DiffLineAnnotation<T>[];
+  version?: number;
+  collapsed?: boolean;
+  /**
+   * Put this item into edit mode. Requires `EditProvider` in React or the
+   * CodeView `createEditor` option in vanilla; ignored while `collapsed` is
+   * true. Make sure you bump the version when also changing the value.
+   */
+  edit?: boolean;
+};
+type CodeViewItem<T = undefined> = CodeViewFileItem<T> | CodeViewDiffItem<T>;
+interface CodeViewPositionScrollTarget {
+  type: 'position';
+  position: number;
+  behavior?: CodeViewScrollBehavior;
+}
+interface CodeViewLineScrollTarget {
+  type: 'line';
+  id: string;
+  lineNumber: number;
+  side?: SelectionSide;
+  align?: 'start' | 'center' | 'end' | 'nearest';
+  offset?: number;
+  behavior?: CodeViewScrollBehavior;
+}
+interface CodeViewRangeScrollTarget {
+  type: 'range';
+  id: string;
+  range: SelectedLineRange;
+  align?: 'start' | 'center' | 'end' | 'nearest';
+  offset?: number;
+  behavior?: CodeViewScrollBehavior;
+}
+interface NumericScrollLineAnchor {
+  lineNumber: number;
+  top: number;
+  side?: SelectionSide;
+}
+interface CodeViewItemScrollTarget {
+  type: 'item';
+  id: string;
+  align?: 'start' | 'center' | 'end' | 'nearest';
+  offset?: number;
+  behavior?: CodeViewScrollBehavior;
+}
+type CodeViewScrollTarget = CodeViewPositionScrollTarget | CodeViewLineScrollTarget | CodeViewRangeScrollTarget | CodeViewItemScrollTarget;
+type MergeConflictResolution = 'current' | 'incoming' | 'both';
+interface MergeConflictRegion {
+  conflictIndex: number;
+  startLineIndex: number;
+  startLineNumber: number;
+  separatorLineIndex: number;
+  separatorLineNumber: number;
+  endLineIndex: number;
+  endLineNumber: number;
+  baseMarkerLineIndex?: number;
+  baseMarkerLineNumber?: number;
+}
+interface MergeConflictActionPayload {
+  resolution: MergeConflictResolution;
+  conflict: MergeConflictRegion;
+}
+interface GapSpan {
+  type: 'gap';
+  rows: number;
+}
+type LineSpans = GapSpan | AnnotationSpan;
+type LineTypes = 'change-deletion' | 'change-addition' | 'context' | 'context-expanded';
+interface LineInfo {
+  type: LineTypes;
+  lineNumber: number;
+  altLineNumber?: number;
+  lineIndex: number | `${number},${number}`;
+}
+interface SharedRenderState {
+  lineInfo: (LineInfo | undefined)[] | ((shikiLineNumber: number) => LineInfo);
+}
+interface AnnotationSpan {
+  type: 'annotation';
+  hunkIndex: number;
+  lineIndex: number;
+  annotations: string[];
+}
+interface LineEventBaseProps {
+  type: 'line';
+  lineNumber: number;
+  lineElement: HTMLElement;
+  numberElement: HTMLElement;
+  numberColumn: boolean;
+}
+interface DiffLineEventBaseProps extends Omit<LineEventBaseProps, 'type'> {
+  type: 'diff-line';
+  annotationSide: AnnotationSide;
+  lineType: LineTypes;
+}
+interface TokenEventBase {
+  type: 'token';
+  lineNumber: number;
+  lineCharStart: number;
+  lineCharEnd: number;
+  tokenText: string;
+  tokenElement: HTMLElement;
+}
+interface DiffTokenEventBaseProps extends TokenEventBase {
+  side: AnnotationSide;
+}
+interface ObservedAnnotationNodes {
+  type: 'annotations';
+  column1: {
+    container: HTMLElement;
+    child: HTMLElement;
+    childHeight: number;
+  };
+  column2: {
+    container: HTMLElement;
+    child: HTMLElement;
+    childHeight: number;
+  };
+  currentHeight: number | 'auto';
+}
+interface ObservedGridNodes {
+  type: 'code';
+  codeElement: HTMLElement;
+  numberElement: HTMLElement | null;
+  codeWidth: number | 'auto';
+  numberWidth: number;
+  applyColumnVariables: boolean;
+}
+type CodeColumnType = 'unified' | 'additions' | 'deletions';
+interface HunkData {
+  slotName: string;
+  hunkIndex: number;
+  lines: number;
+  lineCountKnown: boolean;
+  type: CodeColumnType;
+  expandable?: {
+    chunked: boolean;
+    up: boolean;
+    down: boolean;
+  };
+}
+type AnnotationLineMap<LAnnotation> = Record<number, DiffLineAnnotation<LAnnotation>[] | undefined>;
+type ExpansionDirections = 'up' | 'down' | 'both';
+interface ThemedFileResult {
+  code: ElementContent[];
+  themeStyles: string;
+  baseThemeType: 'light' | 'dark' | undefined;
+}
+interface RenderDiffFilesResult {
+  deletionLines: ElementContent[];
+  additionLines: ElementContent[];
+}
+interface ThemedDiffResult {
+  code: RenderDiffFilesResult;
+  themeStyles: string;
+  baseThemeType: 'light' | 'dark' | undefined;
+}
+interface HunkExpansionRegion {
+  fromStart: number;
+  fromEnd: number;
+}
+interface ForceDiffPlainTextOptions {
+  forcePlainText: boolean;
+  startingLine?: number;
+  totalLines?: number;
+  expandedHunks?: Map<number, HunkExpansionRegion> | true;
+  collapsedContextThreshold?: number;
+}
+interface ForceFilePlainTextOptions {
+  forcePlainText: boolean;
+  startingLine?: number;
+  totalLines?: number;
+  lines?: string[];
+}
+interface RenderFileOptions {
+  theme: DiffsThemeNames | Record<'dark' | 'light', DiffsThemeNames>;
+  useTokenTransformer: boolean;
+  tokenizeMaxLineLength: number;
+}
+interface RenderDiffOptions {
+  theme: DiffsThemeNames | Record<'dark' | 'light', DiffsThemeNames>;
+  useTokenTransformer: boolean;
+  tokenizeMaxLineLength: number;
+  lineDiffType: LineDiffTypes;
+  maxLineDiffLength: number;
+}
+interface RenderFileResult {
+  result: ThemedFileResult;
+  options: RenderFileOptions;
+}
+interface RenderDiffResult {
+  result: ThemedDiffResult;
+  options: RenderDiffOptions;
+}
+interface RenderedFileASTCache {
+  file: FileContents;
+  highlighted: boolean;
+  options: RenderFileOptions;
+  result: ThemedFileResult | undefined;
+  renderRange: RenderRange | undefined;
+  isDirty?: boolean;
+}
+interface RenderedDiffASTCache {
+  diff: FileDiffMetadata;
+  highlighted: boolean;
+  options: RenderDiffOptions;
+  result: ThemedDiffResult | undefined;
+  renderRange: RenderRange | undefined;
+  isDirty?: boolean;
+  highlightPending?: boolean;
+}
+/**
+ * A window of rendered content. Two unit interpretations exist:
+ *
+ * - Renderer consumers (`iterateOverDiff` window predicates, windowed AST
+ *   requests, buffers, sticky specs) read `startingLine`/`totalLines` as
+ *   dense rendered-row indexes for the active diff style.
+ * - The editor reads them as zero-based document-line indexes of the new
+ *   file. `FileDiff.computeEditorRenderRange` converts the renderer range on
+ *   the editor-bound copy; the two coincide only while every line renders
+ *   (`expandUnchanged`).
+ */
+interface RenderRange {
+  startingLine: number;
+  totalLines: number;
+  bufferBefore: number;
+  bufferAfter: number;
+}
+interface RenderWindow {
+  top: number;
+  bottom: number;
+}
+interface VirtualWindowSpecs {
+  /** Absolute top edge of the active virtual window in scroll-space pixels. */
+  top: number;
+  /** Absolute bottom edge of the active virtual window in scroll-space pixels. */
+  bottom: number;
+}
+interface VirtualFileMetrics {
+  /** Number of rendered lines per hunk chunk when virtualization batches line rendering. */
+  hunkLineCount: number;
+  /** Estimated single-line row height used before a line is measured. */
+  lineHeight: number;
+  /** Height reserved for the file or diff header region. */
+  diffHeaderHeight: number;
+  /** Height reserved for each collapsed-context separator row. Only set this
+   * if you customized the size of hunk separators via unsafeCSS */
+  hunkSeparatorHeight?: number;
+  /** Vertical spacing used around hunks and file-level padding. You should not
+   * change this from the default if you aren't applying custom CSS */
+  spacing: number;
+  /** Optional top padding applied after the file header, or before content
+   * when the header is disabled. Defaults to 0 with a header, otherwise
+   * defaults to spacing if header is disabled */
+  paddingTop?: number;
+  /** Optional bottom padding applied after file content, and only if there is
+   * code for the diff. Defaults to spacing if none provided */
+  paddingBottom?: number;
+}
+interface PendingCodeViewLayoutReset {
+  metrics?: VirtualFileMetrics;
+  resetFileLayoutCache: boolean;
+  resetDiffLayoutCache: boolean;
+  includeEstimatedDiffHeights: boolean;
+}
+interface CodeViewLayout {
+  /** Top padding applied to the CodeView sticky container offset. */
+  paddingTop: number;
+  /** Bottom padding added after the final rendered item in CodeView. */
+  paddingBottom: number;
+  /** Vertical gap between virtualized CodeView items. */
+  gap: number;
+}
+interface SmoothScrollSettings {
+  /**
+   * Natural frequency of the critically-damped spring, in rad/ms. 99% settle
+   * takes roughly `6.6 / omega`; 0.015 gives ~440ms. Raise for a snappier
+   * animation; lower for a longer glide.
+   */
+  omega: number;
+  /**
+   * Distance from destination (in CSS pixels) below which the spring is
+   * considered settled. Must also clear `velocityEpsilon` before the
+   * animation actually stops and snaps to destination.
+   */
+  positionEpsilon: number;
+  /**
+   * Velocity magnitude (in CSS pixels per millisecond) below which the
+   * spring is considered effectively stationary. Pairs with
+   * `positionEpsilon` to gate the settle transition.
+   */
+  velocityEpsilon: number;
+}
+interface SelectionPoint {
+  lineNumber: number;
+  side: SelectionSide | undefined;
+}
+type DiffAcceptRejectHunkType = 'accept' | 'reject' | 'both';
+type ConflictResolverTypes = 'current' | 'incoming' | 'both';
+interface DiffAcceptRejectHunkConfig {
+  type: DiffAcceptRejectHunkType;
+  changeIndex: number;
+}
+/**
+ * Unresolved merge conflict indexes use three different coordinate spaces:
+ * - source line indexes live on `conflict.*LineIndex`
+ * - hunk-content indexes live on the fields below, with `startContentIndex`
+ *   serving as both the conflict-range start and the start-marker anchor
+ * - rendered row indexes live on unresolved `markerRows`
+ */
+interface ProcessFileConflictData {
+  /** Index of the hunk that owns this unresolved conflict. */
+  hunkIndex: number;
+  /** First hunk-content entry that belongs to the conflict region. */
+  startContentIndex: number;
+  /** Last hunk-content entry that belongs to the conflict region. */
+  endContentIndex: number;
+  /** Hunk-content index for the current/ours change block. */
+  currentContentIndex?: number;
+  /** Hunk-content index for the optional base context block. */
+  baseContentIndex?: number;
+  /** Hunk-content index for the incoming/theirs change block. */
+  incomingContentIndex?: number;
+  /** Hunk-content index that anchors the end marker row. */
+  endMarkerContentIndex: number;
+}
+interface AppliedThemeStyleCache {
+  theme: DiffsThemeNames | ThemesType;
+  themeStyles: string;
+  themeType: ThemeTypes;
+  baseThemeType: 'light' | 'dark' | undefined;
+  scrollbarGutter: number | undefined;
+}
+interface StickySpecs {
+  topOffset: number;
+  height: number;
+}
+interface DiffsComponentOptions extends BaseCodeOptions {
+  enableGutterUtility?: boolean;
+  enableLineSelection?: boolean;
+  expandUnchanged?: boolean;
+  diffStyle?: 'unified' | 'split';
+  lineHoverHighlight?: 'disabled' | 'both' | 'number' | 'line';
+}
+interface EditorActiveLineOptions {
+  lineNumberOnly?: boolean;
+  side?: SelectionSide;
+}
+interface DiffsBaseComponent {
+  readonly type: 'file' | 'file-diff' | 'unresolved-file';
+  readonly top?: number;
+  readonly options: DiffsComponentOptions;
+  setOptions: (options: Partial<DiffsComponentOptions>) => void;
+  setSelectedLines: (range: {
+    start: number;
+    end: number;
+  } | null, options?: {
+    notify?: boolean;
+    activeLineSide?: SelectionSide;
+    lineNumberOnly?: boolean;
+  }) => void;
+  render(options: {
+    file?: FileContents;
+    fileDiff?: FileDiffMetadata;
+    lineAnnotations?: any[];
+    renderRange?: RenderRange;
+  }): void;
+  rerender(): void;
+  cleanUp(): void;
+}
+interface DiffsEditableComponent<LAnnotation> extends DiffsBaseComponent {
+  /** @internal Return the current file when this component renders one. */
+  __getCurrentFile?: () => FileContents | undefined;
+  /**
+   * @internal Code options with worker-pool overrides applied: the theme the
+   * shared highlighter is actually loaded with and the pool's tokenize limit.
+   */
+  __getEffectiveCodeOptions(): BaseCodeOptions;
+  /** @internal Keep the editor caret decoration separate from line selection. */
+  setEditorActiveLine: (lineNumber: number | null, options?: EditorActiveLineOptions) => void;
+  /** Return the horizontal code scroll position (`scrollLeft`). */
+  getCodeScrollLeft: () => number;
+  /** Set the horizontal code scroll position (`scrollLeft`). */
+  setCodeScrollLeft: (position: number) => void;
+  /**
+   * Return the position and height of a one-based line relative to this component.
+   * The host uses it to scroll to virtualized lines before their DOM nodes exist.
+   * A zero height means the line is not currently renderable.
+   * In a file diff, `lineNumber` is the line number in the new file.
+   */
+  getLinePosition?: (lineNumber: number) => {
+    top: number;
+    height: number;
+  } | undefined;
+  /**
+   * Return an explicit viewport that bounds visible editor rows. Components
+   * without one fall back to their nearest scrollable ancestor or document.
+   */
+  getEditorViewport?: () => HTMLElement | Document | undefined;
+  /**
+   * Whether the given one-based new-file line currently has (or will have on
+   * scroll) a rendered row. False only for lines hidden inside a collapsed
+   * unchanged region. Components without collapsible regions leave this
+   * unimplemented and the editor treats every line as renderable.
+   */
+  isLineRenderable?: (lineNumber: number) => boolean;
+  /**
+   * The nearest renderable one-based new-file line at or beyond `lineNumber`
+   * in the given direction, or undefined when every line that way is hidden
+   * inside collapsed regions. Sequential caret motion uses this to skip
+   * collapsed regions like code folds.
+   */
+  getNearestRenderableLine?: (lineNumber: number, direction: 'up' | 'down') => number | undefined;
+  /**
+   * Expand collapsed context so the given one-based new-file line can
+   * render. Returns true when an expansion was performed (a re-render will
+   * follow, possibly deferred).
+   */
+  revealLine?: (lineNumber: number) => boolean;
+  /**
+   * Attach an editor to this component. The returned detach closure receives
+   * `recycle: true` when the editor is only being released by a virtualized
+   * unmount (the session continues on remount) and no argument/false on a
+   * genuine session end.
+   */
+  attachEditor: (editor: DiffsEditor<LAnnotation>) => (recycle?: boolean) => void;
+  applyDocumentChange: (textDocument: DiffsTextDocument, newLineAnnotations?: DiffLineAnnotation<LAnnotation>[], shouldUpdateBuffer?: boolean) => void;
+  updateRenderCache: (lines: Map<number, Array<HighlightedToken>>, themeType: 'dark' | 'light', options?: {
+    /**
+     * Whether to refresh the diffs view.
+     * Deferred background-tokenize passes always pass false.
+     */
+    shouldRefreshDiffsView?: boolean;
+    /**
+     * Whether the line count has changed in flight.
+     * True only during an edit pass whose line count changed,
+     * deferred background-tokenize passes always pass false.
+     */
+    lineCountChangeInFlight?: boolean;
+  }) => void;
+}
+type EditableInstance<T extends {
+  type: string;
+}> = T extends {
+  type: 'unresolved-file';
+} ? never : T;
+interface DiffsEditor<LAnnotation> {
+  /** @internal */
+  __prepareFile?(file: FileContents): FileContents;
+  __postponeBgTokenizeToNextFrame(): void;
+  /** @internal Capture focus intent before replacing the editable view. */
+  __captureFocusForDOMReplacement(): void;
+  __syncRenderView(highlighter: DiffsHighlighter, fileContainer: HTMLElement, fileOrDiff: FileContents | FileDiffMetadata, lineAnnotations: LineAnnotation<LAnnotation>[] | DiffLineAnnotation<LAnnotation>[] | undefined, renderRange: RenderRange | undefined): void;
+  edit<T extends DiffsEditableComponent<LAnnotation>>(fileInstance: EditableInstance<T>): () => void;
+  cleanUp(recycle?: boolean): void;
+}
+/**
+ * Position in a text document expressed as zero-based line and character offset.
+ * The offsets are based on a UTF-16 string representation. So a string of the form
+ * `a𐐀b` the character offset of the character `a` is 0, the character offset of `𐐀`
+ * is 1 and the character offset of b is 3 since `𐐀` is represented using two code
+ * units in UTF-16.
+ *
+ * Positions are line end character agnostic. So you can not specify a position that
+ * denotes `\r|\n` or `\n|` where `|` represents the character offset.
+ */
+interface Position {
+  /**
+   * Line position in a document (zero-based).
+   *
+   * If a line number is greater than the number of lines in a document, it
+   * defaults back to the number of lines in the document.
+   * If a line number is negative, it defaults to 0.
+   *
+   * The above two properties are implementation specific.
+   */
+  readonly line: number;
+  /**
+   * Character offset on a line in a document (zero-based).
+   *
+   * The meaning of this offset is determined by the negotiated
+   * `PositionEncodingKind`.
+   *
+   * If the character value is greater than the line length it defaults back
+   * to the line length. This property is implementation specific.
+   */
+  readonly character: number;
+}
+/**
+ * A range in a text document expressed as (zero-based) start and end positions.
+ *
+ * If you want to specify a range that contains a line including the line ending
+ * character(s) then use an end position denoting the start of the next line.
+ * For example:
+ * ```ts
+ * {
+ *     start: { line: 5, character: 23 }
+ *     end : { line 6, character : 0 }
+ * }
+ * ```
+ */
+interface Range {
+  /**
+   * The range's start position.
+   */
+  readonly start: Position;
+  /**
+   * The range's end position.
+   */
+  readonly end: Position;
+}
+/**
+ * A text edit applicable to a text document.
+ */
+interface TextEdit {
+  /**
+   * The range of the text document to be manipulated. To insert
+   * text into a document create a range where start === end.
+   */
+  readonly range: Range;
+  /**
+   * The string to be inserted. For delete operations use an
+   * empty string.
+   */
+  readonly newText: string;
+}
+/** Different with `TextEdit`, the range has been resolved to offsets. */
+interface ResolvedTextEdit {
+  /** The start offset of the text change. */
+  readonly start: number;
+  /** The end offset of the text change. */
+  readonly end: number;
+  /** The string to be inserted. For delete operations use an empty string. */
+  readonly text: string;
+}
+/** A normalized text change reported by the editor. */
+interface EditorChange extends ResolvedTextEdit {
+  /** The replaced range in the document before the change. */
+  range: Range;
+}
+/** The document state and normalized edits reported after an editor change. */
+interface EditorChangeEvent<LAnnotation> {
+  changes: EditorChange[];
+  file: FileContents;
+  lineAnnotations?: LineAnnotation<LAnnotation>[] | DiffLineAnnotation<LAnnotation>[];
+}
+/**
+ * The direction of a selection.
+ * -1: backward
+ *  0: none
+ *  1: forward
+ */
+type SelectionDirection = -1 | 0 | 1;
+interface EditorSelection extends Range {
+  direction: SelectionDirection;
+}
+interface EditorViewState {
+  /** Horizontal position owned by the current editable code scroller. */
+  scrollLeft: number;
+  /** Vertical position of the editor viewport. */
+  scrollTop?: number;
+}
+interface EditorState {
+  selections?: EditorSelection[];
+  view?: EditorViewState;
+}
+interface DiffsTextDocument {
+  readonly lineCount: number;
+  getLineText: (lineNumber: number, includeLineBreak?: boolean) => string;
+  getText: () => string;
+}
+/**
+ * Options CodeView passes to its `createEditor` factory. A structural subset
+ * of `EditorOptions` from `@pierre/diffs/edit`, so factories can spread
+ * them straight into the constructor — `new Editor({ ...options })` — and
+ * layer any editor configuration of their own on top. Forwarding `onChange`
+ * is what lets CodeView resolve document changes back to the owning item and
+ * emit them through its own `onItemEditChange` option.
+ */
+interface CodeViewCreateEditorOptions<LAnnotation> {
+  onChange: (file: FileContents, lineAnnotations: LineAnnotation<LAnnotation>[] | DiffLineAnnotation<LAnnotation>[] | undefined, event: EditorChangeEvent<LAnnotation>) => void;
+}
+//#endregion
+export { AnnotationLineMap, AnnotationSide, AnnotationSpan, AppliedThemeStyleCache, BaseCodeOptions, BaseDiffOptions, BaseDiffOptionsWithDefaults, type BundledLanguage, ChangeContent, ChangeTypes, CodeColumnType, type CodeToHastOptions, CodeViewCreateEditorOptions, CodeViewDiffItem, CodeViewFileItem, CodeViewItem, CodeViewItemScrollTarget, CodeViewLayout, CodeViewLineScrollTarget, CodeViewPositionScrollTarget, CodeViewRangeScrollTarget, CodeViewScrollBehavior, CodeViewScrollTarget, ConflictResolverTypes, ContextContent, type CreatePatchOptionsNonabortable, CustomPreProperties, type DecorationItem, DiffAcceptRejectHunkConfig, DiffAcceptRejectHunkType, DiffFileInput, DiffIndicators, DiffLineAnnotation, DiffLineEventBaseProps, DiffTokenEventBaseProps, DiffsBaseComponent, DiffsComponentOptions, DiffsEditableComponent, DiffsEditor, DiffsHighlighter, DiffsTextDocument, DiffsThemeNames, EditableInstance, EditorActiveLineOptions, EditorChange, EditorChangeEvent, EditorSelection, EditorState, EditorViewState, ExpansionDirections, ExtensionFormatMap, FileContents, FileDiffContentsLoader, FileDiffLoadedChangedFiles, FileDiffLoadedFiles, FileDiffLoadedPureRenamedFile, FileDiffMetadata, FileHeaderRenderMode, ForceDiffPlainTextOptions, ForceFilePlainTextOptions, GapSpan, HighlightedToken, HighlighterTypes, Hunk, HunkData, HunkExpansionRegion, HunkLineType, HunkSeparators, type LanguageRegistration, LineAnnotation, LineDiffTypes, LineEventBaseProps, LineInfo, LineSpans, LineTypes, MaybeDiffFileInput, MergeConflictActionPayload, MergeConflictMarkerRow, MergeConflictMarkerRowType, MergeConflictRegion, MergeConflictResolution, NumericScrollLineAnchor, ObservedAnnotationNodes, ObservedGridNodes, ParsedPatch, PendingCodeViewLayoutReset, Position, PostRenderPhase, PrePropertiesConfig, ProcessFileConflictData, Range, RenderDiffFilesResult, RenderDiffOptions, RenderDiffResult, RenderFileMetadata, RenderFileOptions, RenderFileResult, RenderHeaderFilenameSuffixCallback, RenderHeaderMetadataCallback, RenderHeaderPrefixCallback, RenderRange, RenderWindow, RenderedDiffASTCache, RenderedFileASTCache, ResolvedTextEdit, SelectedLineRange, SelectionDirection, SelectionPoint, SelectionSide, SharedRenderState, type ShikiTransformer, SmoothScrollSettings, StickySpecs, SupportedLanguages, TextEdit, type ThemeRegistration, type ThemeRegistrationResolved, ThemeTypes, ThemedDiffResult, ThemedFileResult, type ThemedToken, ThemesType, TokenEventBase, VirtualFileMetrics, VirtualWindowSpecs };
+//# sourceMappingURL=types.d.ts.map

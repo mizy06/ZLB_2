@@ -6,10 +6,9 @@ from dataclasses import replace
 from unittest.mock import patch
 
 import httpx
-from fastapi import HTTPException, Response
+from fastapi import HTTPException
 
 from backend.app import main
-from backend.app.agent_prompts import THEME_SYNTHESIZER_PROMPT_SHA256
 from backend.app.config import (
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_QWEN_MODEL,
@@ -21,18 +20,6 @@ from backend.app.config import (
 from backend.app.model_provider import (
     HARD_RETRY_DELAY_CAP_SECONDS,
     OpenAICompatibleClient,
-)
-from backend.app.pdf_layout_knowledge import (
-    PAGE_LAYOUT_NODE_SCHEMA_VERSION,
-    PAGE_LAYOUT_SCHEMA_VERSION,
-)
-from backend.app.pdf_page_knowledge import (
-    PAGE_KNOWLEDGE_SCHEMA_VERSION,
-    PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-)
-from backend.app.pdf_page_transcription import (
-    PAGE_TRANSCRIPTION_SCHEMA_VERSION,
-    PDF_PAGE_TRANSCRIPTION_PROMPT_SHA256,
 )
 
 
@@ -262,6 +249,10 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
                 "compatible-mode/v1"
             ),
             (
+                "https://ws-r1lp2twiz8lj5t79.cn-beijing."
+                "maas.aliyuncs.com/compatible-mode/v1"
+            ),
+            (
                 "https://llm-workspace.ap-northeast-1.maas.aliyuncs.com/"
                 "compatible-mode/v1"
             ),
@@ -291,6 +282,11 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
         cases = (
             (
                 "https://provider.example/compatible-mode/v1",
+                ("unapproved_endpoint",),
+            ),
+            (
+                "https://ws-other.cn-beijing.maas.aliyuncs.com/"
+                "compatible-mode/v1",
                 ("unapproved_endpoint",),
             ),
             (
@@ -371,23 +367,23 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             loaded.parser_version,
-            "parser-v8-page-knowledge-extraction",
+            "parser-v9-direct-visual-only",
         )
         self.assertEqual(
             loaded.prompt_version,
-            "cplus-prompts-v9-theme-completeness",
+            "editorial-ppt-vision-v1",
         )
         self.assertEqual(
             loaded.theme_prompt_version,
-            "theme-synthesizer-v3-bounded-hybrid-routing",
+            "theme-synthesizer-v4-semantic-partition",
         )
         self.assertEqual(
             loaded.pdf_page_knowledge_prompt_version,
-            "cplus-prompts-v8-page-knowledge",
+            "editorial-ppt-vision-v1",
         )
         self.assertEqual(
             loaded.pdf_page_transcription_prompt_version,
-            "cplus-prompts-v8-page-knowledge",
+            "editorial-ppt-vision-v1",
         )
 
     def test_run_manifest_records_sanitized_models_and_runtime_versions(self):
@@ -399,7 +395,7 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
             qwen_vision_model="qwen3.8-max-preview",
             qwen_production_profile="approved_cn_token_plan_preview",
             pdf_transcription_mode="vision_nodes_strict",
-            pdf_page_extraction_mode="direct_layout_fallback",
+            pdf_page_extraction_mode="direct",
             pdf_transcription_dpi=192,
             pdf_transcription_concurrency=8,
             pdf_transcription_max_attempts=2,
@@ -442,57 +438,14 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             manifest["prompt_versions"],
             {
-                "pipeline": configured.prompt_version,
-                "theme": {
-                    "version": configured.theme_prompt_version,
-                    "sha256": THEME_SYNTHESIZER_PROMPT_SHA256,
-                },
-                "pdf_page_knowledge": {
-                    "version": (
-                        configured.pdf_page_knowledge_prompt_version
-                    ),
-                    "sha256": PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-                },
-                "pdf_page_transcription": {
-                    "version": (
-                        configured.pdf_page_transcription_prompt_version
-                    ),
-                    "sha256": PDF_PAGE_TRANSCRIPTION_PROMPT_SHA256,
-                },
+                "editorial_pipeline": configured.prompt_version,
             },
         )
-        transcription = manifest["pdf_page_transcription"]
-        self.assertEqual(transcription["mode"], "vision_nodes_strict")
         self.assertEqual(
-            transcription["prompt_version"],
-            configured.pdf_page_knowledge_prompt_version,
+            manifest["architecture"],
+            main.EDITORIAL_PPT_ARCHITECTURE_NAME,
         )
-        self.assertEqual(
-            transcription["prompt_sha256"],
-            PDF_PAGE_KNOWLEDGE_PROMPT_SHA256,
-        )
-        self.assertEqual(
-            transcription["extraction_profile"],
-            "direct_layout_fallback",
-        )
-        self.assertEqual(
-            transcription["layout_schema_version"],
-            PAGE_LAYOUT_SCHEMA_VERSION,
-        )
-        self.assertEqual(
-            transcription["layout_node_schema_version"],
-            PAGE_LAYOUT_NODE_SCHEMA_VERSION,
-        )
-        self.assertEqual(
-            transcription["schema_version"],
-            PAGE_KNOWLEDGE_SCHEMA_VERSION,
-        )
-        self.assertEqual(
-            transcription["output_contract"],
-            "PageKnowledgeExtraction",
-        )
-        self.assertEqual(transcription["render_dpi"], 192)
-        self.assertEqual(transcription["min_confidence"], 0.85)
+        self.assertNotIn("pdf_page_transcription", manifest)
 
     def test_poppler_version_is_unavailable_without_pdftoppm(self):
         with patch.object(main.shutil, "which", return_value=None):
@@ -530,51 +483,33 @@ class ProductionRouteTDDTests(unittest.IsolatedAsyncioTestCase):
                         await main.frontend(path)
                     self.assertEqual(raised.exception.status_code, 404)
 
-    async def test_production_session_cookie_defaults_to_secure(self):
+    async def test_production_workbench_requires_local_account(self):
         with patch.dict(
             os.environ,
             {
                 "MINDMAP_ENV": "production",
-                "MINDMAP_API_TOKEN": "test-token",
+                "MINDMAP_WORKBENCH_OWNER_ID": "legacy-owner",
                 "QWEN_API_KEY": "test-key",
             },
             clear=True,
         ):
             configured = load_settings()
 
-        response = Response()
         with patch.object(main, "settings", configured):
-            await main.create_session(
-                main.SessionRequest(token="test-token"),
-                response,
-            )
+            payload = await main.health()
 
-        self.assertIn("Secure", response.headers["set-cookie"])
+        self.assertTrue(payload["auth_required"])
+        self.assertTrue(payload["auth_configured"])
+        self.assertEqual(configured.workbench_owner_id, "legacy-owner")
 
-    async def test_production_session_cookie_can_explicitly_disable_secure(self):
-        with patch.dict(
-            os.environ,
-            {
-                "MINDMAP_ENV": "production",
-                "MINDMAP_API_TOKEN": "test-token",
-                "MINDMAP_SESSION_COOKIE_SECURE": "false",
-                "QWEN_API_KEY": "test-key",
-            },
-            clear=True,
-        ):
-            configured = load_settings()
+    async def test_session_routes_are_removed(self):
+        session_routes = [
+            route
+            for route in main.app.routes
+            if getattr(route, "path", "") == "/api/session"
+        ]
 
-        create_response = Response()
-        delete_response = Response()
-        with patch.object(main, "settings", configured):
-            await main.create_session(
-                main.SessionRequest(token="test-token"),
-                create_response,
-            )
-            await main.delete_session(delete_response)
-
-        self.assertNotIn("Secure", create_response.headers["set-cookie"])
-        self.assertNotIn("Secure", delete_response.headers["set-cookie"])
+        self.assertEqual(session_routes, [])
 
     async def test_retry_after_delay_obeys_configured_and_hard_caps(self):
         async def exercise(configured_cap: float) -> list[float]:

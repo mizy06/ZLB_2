@@ -1,0 +1,132 @@
+import { AnnotationSide, DiffAcceptRejectHunkConfig, DiffAcceptRejectHunkType, DiffLineAnnotation, DiffLineAnnotation as DiffLineAnnotation$1, DiffTokenEventBaseProps, File, FileContents, FileContents as FileContents$1, FileDiff, FileDiffMetadata, FileDiffMetadata as FileDiffMetadata$1, FileDiffOptions, FileDiffOptions as FileDiffOptions$1, FileOptions, FileOptions as FileOptions$1, FileStreamOptions, LineAnnotation, LineAnnotation as LineAnnotation$1, MergeConflictActionPayload, MergeConflictResolution, MergeConflictResolution as MergeConflictResolution$1, OnDiffLineClickProps, OnLineClickProps, SelectedLineRange, SelectedLineRange as SelectedLineRange$1, SelectionSide, ThemeTypes, ThemeTypes as ThemeTypes$1, TokenEventBase, UnresolvedFile, UnresolvedFileOptions, UnresolvedFileOptions as UnresolvedFileOptions$1 } from "@pierre/diffs";
+import { WorkerPoolManager, WorkerPoolManager as WorkerPoolManager$1 } from "@pierre/diffs/worker";
+//#region src/types.d.ts
+type CodeStreamState = 'idle' | 'mounting' | 'streaming' | 'finalizing' | 'finalized' | 'error' | 'disposed';
+interface CodeStreamStats {
+  characters: number;
+  lines: number;
+  writes: number;
+  resets: number;
+  renderMode: 'highlighted' | 'plain-text';
+  overflowed: boolean;
+  startedAt?: number;
+  finalizedAt?: number;
+}
+interface CodeStreamLimits {
+  maxStreamingLines?: number;
+  maxStreamingChars?: number;
+  overflowBehavior?: 'plain-text' | 'stop-highlighting';
+}
+interface CodeStreamOptions extends Omit<FileStreamOptions, 'lang' | 'onStreamAbort'> {
+  fileName?: string;
+  language?: string;
+  lineNumbers?: boolean;
+  wrap?: boolean;
+  maxHeight?: number | string;
+  autoScroll?: 'always' | 'near-bottom' | 'never';
+  autoScrollThresholdPx?: number;
+  flushStrategy?: 'raf' | {
+    intervalMs: number;
+  };
+  nonAppendBehavior?: 'reset' | 'throw' | 'ignore';
+  workerManager?: WorkerPoolManager;
+  limits?: CodeStreamLimits | false;
+  onStateChange?: (state: CodeStreamState) => void;
+  onOverflow?: (stats: CodeStreamStats) => void;
+  onError?: (error: unknown) => void;
+}
+interface DiffStreamOptions<LAnnotation = unknown> extends Omit<FileDiffOptions<LAnnotation>, 'lang'> {
+  fileName?: string;
+  language?: string;
+  diffStyle?: 'unified' | 'split';
+  lineNumbers?: boolean;
+  wrap?: boolean;
+  maxHeight?: number | string;
+  autoScroll?: 'always' | 'near-bottom' | 'never';
+  autoScrollThresholdPx?: number;
+  workerManager?: WorkerPoolManager;
+  onStateChange?: (state: CodeStreamState) => void;
+  onError?: (error: unknown) => void;
+}
+type FinalizeOptions<LAnnotation = unknown> = {
+  view?: 'stream';
+} | ({
+  view: 'file';
+  annotations?: LineAnnotation<LAnnotation>[];
+  workerManager?: WorkerPoolManager;
+} & Partial<FileOptions<LAnnotation>>) | ({
+  view: 'diff';
+  original: string;
+  diffStyle?: 'unified' | 'split';
+  annotations?: DiffLineAnnotation<LAnnotation>[];
+  workerManager?: WorkerPoolManager;
+} & Partial<FileDiffOptions<LAnnotation>>);
+interface FileViewInput<LAnnotation = unknown> {
+  kind: 'file';
+  file: FileContents;
+  annotations?: LineAnnotation<LAnnotation>[];
+  options?: FileOptions<LAnnotation>;
+  workerManager?: WorkerPoolManager;
+}
+interface DiffViewInput<LAnnotation = unknown> {
+  kind: 'diff';
+  oldFile: FileContents;
+  newFile: FileContents;
+  annotations?: DiffLineAnnotation<LAnnotation>[];
+  options?: FileDiffOptions<LAnnotation>;
+  workerManager?: WorkerPoolManager;
+}
+interface ParsedDiffViewInput<LAnnotation = unknown> {
+  kind: 'diff';
+  fileDiff: FileDiffMetadata;
+  annotations?: DiffLineAnnotation<LAnnotation>[];
+  options?: FileDiffOptions<LAnnotation>;
+  workerManager?: WorkerPoolManager;
+}
+interface PatchViewInput<LAnnotation = unknown> {
+  kind: 'patch';
+  patch: string;
+  patchIndex?: number;
+  fileIndex?: number;
+  annotations?: DiffLineAnnotation<LAnnotation>[];
+  options?: FileDiffOptions<LAnnotation>;
+  workerManager?: WorkerPoolManager;
+}
+interface MergeConflictViewInput<LAnnotation = unknown> {
+  kind: 'merge-conflict';
+  file: FileContents;
+  annotations?: DiffLineAnnotation<LAnnotation>[];
+  options?: UnresolvedFileOptions<LAnnotation>;
+  workerManager?: WorkerPoolManager;
+}
+type DiffSurfaceInput<LAnnotation = unknown> = FileViewInput<LAnnotation> | DiffViewInput<LAnnotation> | ParsedDiffViewInput<LAnnotation> | PatchViewInput<LAnnotation> | MergeConflictViewInput<LAnnotation>;
+interface DiffSurfaceController<LAnnotation = unknown> {
+  mount(container: HTMLElement): Promise<void>;
+  update(input: DiffSurfaceInput<LAnnotation>): Promise<void>;
+  updateFile(file: FileContents, annotations?: LineAnnotation<LAnnotation>[]): Promise<void>;
+  updateDiff(oldFile: FileContents, newFile: FileContents, annotations?: DiffLineAnnotation<LAnnotation>[]): Promise<void>;
+  updateParsedDiff(fileDiff: FileDiffMetadata, annotations?: DiffLineAnnotation<LAnnotation>[]): Promise<void>;
+  updatePatch(patch: string, fileIndex?: number, annotations?: DiffLineAnnotation<LAnnotation>[], patchIndex?: number): Promise<void>;
+  updateMergeConflict(file: FileContents, annotations?: DiffLineAnnotation<LAnnotation>[]): Promise<void>;
+  setSelectedLines(range: SelectedLineRange | null): void;
+  setAnnotations(annotations: LineAnnotation<LAnnotation>[] | DiffLineAnnotation<LAnnotation>[]): void;
+  setThemeType(themeType: ThemeTypes): void;
+  setTheme(theme: FileOptions<LAnnotation>['theme']): Promise<void>;
+  setOptions(options: FileOptions<LAnnotation> | FileDiffOptions<LAnnotation> | UnresolvedFileOptions<LAnnotation>): Promise<void>;
+  acceptReject(hunkIndex: number, action: 'accept' | 'reject' | 'both' | {
+    type: 'accept' | 'reject' | 'both';
+    changeIndex: number;
+  }): FileDiffMetadata;
+  resolveConflict(conflictIndex: number, resolution: MergeConflictResolution): FileContents | undefined;
+  getResolvedFile(): FileContents | undefined;
+  getDiff(): FileDiffMetadata | undefined;
+  getInput(): DiffSurfaceInput<LAnnotation>;
+  getNativeInstance(): File<LAnnotation> | FileDiff<LAnnotation> | UnresolvedFile<LAnnotation> | undefined;
+  onDidRender(listener: () => void): {
+    dispose(): void;
+  };
+  whenVisualReady(): Promise<boolean>;
+  dispose(): void;
+}
+//#endregion
+export { ThemeTypes$1 as A, MergeConflictViewInput as C, PatchViewInput as D, ParsedDiffViewInput as E, UnresolvedFileOptions$1 as M, WorkerPoolManager$1 as N, SelectedLineRange$1 as O, MergeConflictResolution$1 as S, OnLineClickProps as T, FileOptions$1 as _, CodeStreamStats as a, LineAnnotation$1 as b, DiffLineAnnotation$1 as c, DiffSurfaceInput as d, DiffTokenEventBaseProps as f, FileDiffOptions$1 as g, FileDiffMetadata$1 as h, CodeStreamState as i, TokenEventBase as j, SelectionSide as k, DiffStreamOptions as l, FileContents$1 as m, CodeStreamLimits as n, DiffAcceptRejectHunkConfig as o, DiffViewInput as p, CodeStreamOptions as r, DiffAcceptRejectHunkType as s, AnnotationSide as t, DiffSurfaceController as u, FileViewInput as v, OnDiffLineClickProps as w, MergeConflictActionPayload as x, FinalizeOptions as y };

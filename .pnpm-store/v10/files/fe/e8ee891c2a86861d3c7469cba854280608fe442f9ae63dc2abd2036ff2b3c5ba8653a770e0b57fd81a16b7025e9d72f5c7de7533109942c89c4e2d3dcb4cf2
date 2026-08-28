@@ -1,0 +1,777 @@
+import { _ as runWithKnownGlobalMarkdownState, a as getParseDiagnostics, d as detectGlobalMarkdownState, f as detectGlobalMarkdownStateFromChunks, g as resetKnownGlobalMarkdownState, m as getKnownGlobalMarkdownState, n as beginParseDiagnostics, r as clearParseDiagnostics, s as setEditableDiagnostics, t as MDTS_DIAGNOSTICS, v as countLines } from "./strategy_diagnostics-DKBiEbYW.js";
+import { a as parseAsyncIterable, c as parseIterableToSink, d as chunkedParse, f as splitIntoChunkRanges, l as parseStringUnbounded, m as renderStockFast, n as recommendStreamChunkStrategy, o as parseAsyncIterableToSink, p as splitIntoChunks, r as UnboundedBuffer, s as parseIterable, t as recommendFullChunkStrategy, y as parseStockFastAstJson } from "./chunk_recommend-KYLVtyvy.js";
+
+//#region src/stream/buffer.ts
+/**
+* Accumulates input and calls stream.parse at safe block boundaries.
+*
+* @experimental This helper is intended for append-heavy editing flows and is
+* not part of the markdown-it compatibility surface.
+*/
+var StreamBuffer = class {
+	md;
+	text = "";
+	lastFlushedLength = 0;
+	constructor(md) {
+		this.md = md;
+		if (!this.md.stream) throw new Error("StreamBuffer requires a MarkdownIt instance");
+	}
+	feed(chunk) {
+		if (!chunk) return;
+		this.text += chunk;
+	}
+	flushIfBoundary() {
+		if (!this.md.stream.enabled) {
+			const tokens$1 = this.md.parse(this.text);
+			this.lastFlushedLength = this.text.length;
+			return tokens$1;
+		}
+		const prevLen = this.lastFlushedLength;
+		if (this.text.length <= prevLen) return null;
+		const prev = this.text.slice(0, prevLen);
+		const segment = this.text.slice(prevLen);
+		if (prevLen === 0) {
+			if (segment.charCodeAt(segment.length - 1) !== 10) return null;
+			const tokens$1 = this.md.stream.parse(this.text);
+			this.lastFlushedLength = this.text.length;
+			return tokens$1;
+		}
+		if (!prev || prev.charCodeAt(prev.length - 1) !== 10) return null;
+		if (segment.charCodeAt(segment.length - 1) !== 10) return null;
+		let newlineCount = 0;
+		for (let i = 0; i < segment.length && newlineCount < 2; i++) if (segment.charCodeAt(i) === 10) newlineCount++;
+		if (newlineCount < 2) return null;
+		const tokens = this.md.stream.parse(this.text);
+		this.lastFlushedLength = this.text.length;
+		return tokens;
+	}
+	flushForce() {
+		const tokens = this.md.stream.parse(this.text);
+		this.lastFlushedLength = this.text.length;
+		return tokens;
+	}
+	getText() {
+		return this.text;
+	}
+	getTokens() {
+		return this.md.stream.peek();
+	}
+	stats() {
+		return this.md.stream.stats();
+	}
+};
+
+//#endregion
+//#region src/stream/debounced.ts
+/**
+* Debounced stream parser wrapper for real-time editing scenarios.
+*
+* When user types character-by-character, it's inefficient to parse on every keystroke.
+* This wrapper debounces parse calls to balance responsiveness and performance.
+*
+* @example
+* ```typescript
+* const md = MarkdownIt({ stream: true })
+* const debouncedParser = new DebouncedStreamParser(md, 100) // 100ms debounce
+*
+* editor.on('change', (text) => {
+*   debouncedParser.parse(text, (tokens) => {
+*     // Render tokens
+*     renderMarkdown(tokens)
+*   })
+* })
+* ```
+*/
+var DebouncedStreamParser = class {
+	md;
+	debounceMs;
+	timeoutId = null;
+	pendingCallback = null;
+	lastText = "";
+	lastTokens = [];
+	/**
+	* @param md - MarkdownIt instance with stream enabled
+	* @param debounceMs - Milliseconds to wait before parsing (default: 150ms)
+	*/
+	constructor(md, debounceMs = 150) {
+		this.md = md;
+		this.debounceMs = debounceMs;
+	}
+	/**
+	* Parse text with debouncing. Callback is called with the parsed tokens.
+	*
+	* @param text - Markdown text to parse
+	* @param callback - Called with tokens when parsing completes
+	* @param immediate - If true, parse immediately without debouncing
+	*/
+	parse(text, callback, immediate = false) {
+		if (text === this.lastText) {
+			callback(this.lastTokens);
+			return;
+		}
+		this.pendingCallback = callback;
+		if (immediate) {
+			this.executeParse(text);
+			return;
+		}
+		if (this.timeoutId) clearTimeout(this.timeoutId);
+		this.timeoutId = setTimeout(() => {
+			this.executeParse(text);
+		}, this.debounceMs);
+	}
+	/**
+	* Cancel any pending parse operation
+	*/
+	cancel() {
+		if (this.timeoutId) {
+			clearTimeout(this.timeoutId);
+			this.timeoutId = null;
+		}
+		this.pendingCallback = null;
+	}
+	/**
+	* Force immediate parse, bypassing debounce
+	*/
+	flush(text) {
+		this.cancel();
+		this.executeParse(text);
+		return this.lastTokens;
+	}
+	/**
+	* Reset the parser state
+	*/
+	reset() {
+		this.cancel();
+		this.md.stream.reset();
+		this.lastText = "";
+		this.lastTokens = [];
+	}
+	executeParse(text) {
+		this.lastText = text;
+		this.lastTokens = this.md.stream.parse(text);
+		if (this.pendingCallback) {
+			this.pendingCallback(this.lastTokens);
+			this.pendingCallback = null;
+		}
+		this.timeoutId = null;
+	}
+	/**
+	* Get parser statistics
+	*/
+	getStats() {
+		return this.md.stream.stats();
+	}
+};
+/**
+* Throttled stream parser wrapper - limits parse frequency.
+* Unlike debouncing, throttling ensures parsing happens at regular intervals
+* even during continuous typing.
+*
+* @example
+* ```typescript
+* const md = MarkdownIt({ stream: true })
+* const throttledParser = new ThrottledStreamParser(md, 200) // Parse at most every 200ms
+*
+* editor.on('change', (text) => {
+*   throttledParser.parse(text, (tokens) => {
+*     renderMarkdown(tokens)
+*   })
+* })
+* ```
+*/
+var ThrottledStreamParser = class {
+	md;
+	throttleMs;
+	lastParseTime = 0;
+	timeoutId = null;
+	pendingText = null;
+	pendingCallback = null;
+	lastTokens = [];
+	constructor(md, throttleMs = 200) {
+		this.md = md;
+		this.throttleMs = throttleMs;
+	}
+	parse(text, callback) {
+		const timeSinceLastParse = Date.now() - this.lastParseTime;
+		if (timeSinceLastParse >= this.throttleMs) {
+			this.executeParse(text, callback);
+			return;
+		}
+		this.pendingText = text;
+		this.pendingCallback = callback;
+		if (!this.timeoutId) {
+			const remainingTime = this.throttleMs - timeSinceLastParse;
+			this.timeoutId = setTimeout(() => {
+				if (this.pendingText && this.pendingCallback) this.executeParse(this.pendingText, this.pendingCallback);
+				this.timeoutId = null;
+				this.pendingText = null;
+				this.pendingCallback = null;
+			}, remainingTime);
+		}
+	}
+	cancel() {
+		if (this.timeoutId) {
+			clearTimeout(this.timeoutId);
+			this.timeoutId = null;
+		}
+		this.pendingText = null;
+		this.pendingCallback = null;
+	}
+	reset() {
+		this.cancel();
+		this.md.stream.reset();
+		this.lastParseTime = 0;
+		this.lastTokens = [];
+	}
+	executeParse(text, callback) {
+		this.lastParseTime = Date.now();
+		this.lastTokens = this.md.stream.parse(text);
+		callback(this.lastTokens);
+	}
+	getStats() {
+		return this.md.stream.stats();
+	}
+};
+
+//#endregion
+//#region src/stream/piece_table.ts
+function clampOffset(value, min, max) {
+	if (!Number.isFinite(value)) return min;
+	if (value < min) return min;
+	if (value > max) return max;
+	return value;
+}
+function normalizeSliceIndex(value, length, fallback) {
+	if (value === void 0) return fallback;
+	if (!Number.isFinite(value)) return 0;
+	const whole = Math.trunc(value);
+	if (whole < 0) return Math.max(length + whole, 0);
+	if (whole > length) return length;
+	return whole;
+}
+function countLinesInSlice(text, start, end) {
+	if (end <= start) return 0;
+	let count = 0;
+	let pos = start - 1;
+	while ((pos = text.indexOf("\n", pos + 1)) !== -1 && pos < end) count++;
+	return count;
+}
+/**
+* Piece-table source storage used by editable parsing.
+*
+* @experimental This supports the experimental editable-buffer APIs and is not
+* part of the markdown-it compatibility surface.
+*/
+var PieceTable = class {
+	original;
+	add = "";
+	pieces = [];
+	totalLength = 0;
+	totalLineBreaks = 0;
+	constructor(initial = "") {
+		this.original = initial;
+		if (initial.length > 0) {
+			this.pieces.push({
+				buffer: "original",
+				start: 0,
+				length: initial.length,
+				lineBreaks: countLines(initial)
+			});
+			this.totalLength = initial.length;
+			this.totalLineBreaks = countLines(initial);
+		}
+	}
+	get length() {
+		return this.totalLength;
+	}
+	get lineBreaks() {
+		return this.totalLineBreaks;
+	}
+	stats() {
+		return {
+			length: this.totalLength,
+			lineBreaks: this.totalLineBreaks,
+			pieces: this.pieces.length
+		};
+	}
+	append(text) {
+		this.insert(this.totalLength, text);
+	}
+	insert(offset, text) {
+		this.replace(offset, offset, text);
+	}
+	delete(start, end) {
+		this.replace(start, end, "");
+	}
+	replace(start, end, text) {
+		const from = clampOffset(start, 0, this.totalLength);
+		const to = clampOffset(end, from, this.totalLength);
+		const startIndex = this.splitAt(from);
+		const endIndex = this.splitAt(to);
+		let removedLength = 0;
+		let removedLines = 0;
+		for (let i = startIndex; i < endIndex; i++) {
+			removedLength += this.pieces[i].length;
+			removedLines += this.pieces[i].lineBreaks;
+		}
+		const nextPieces = [];
+		if (text.length > 0) {
+			const addStart = this.add.length;
+			this.add += text;
+			nextPieces.push({
+				buffer: "add",
+				start: addStart,
+				length: text.length,
+				lineBreaks: countLines(text)
+			});
+		}
+		this.pieces.splice(startIndex, endIndex - startIndex, ...nextPieces);
+		this.totalLength += text.length - removedLength;
+		this.totalLineBreaks += countLines(text) - removedLines;
+		this.mergeAdjacentAround(Math.max(0, startIndex - 1));
+	}
+	slice(start = 0, end = this.totalLength) {
+		const from = clampOffset(start, 0, this.totalLength);
+		const to = clampOffset(end, from, this.totalLength);
+		if (from === to) return "";
+		let offset = 0;
+		let out = "";
+		for (let i = 0; i < this.pieces.length; i++) {
+			const piece = this.pieces[i];
+			const pieceStart = offset;
+			const pieceEnd = offset + piece.length;
+			if (pieceEnd <= from) {
+				offset = pieceEnd;
+				continue;
+			}
+			if (pieceStart >= to) break;
+			const localStart = from > pieceStart ? from - pieceStart : 0;
+			const localEnd = to < pieceEnd ? to - pieceStart : piece.length;
+			out += this.getBuffer(piece.buffer).slice(piece.start + localStart, piece.start + localEnd);
+			offset = pieceEnd;
+		}
+		return out;
+	}
+	toString() {
+		return this.slice(0, this.totalLength);
+	}
+	view(start = 0, end = this.totalLength, windowSize = 8192) {
+		return new PieceTableSourceView(this, start, end, windowSize);
+	}
+	*iterateChunks(chunkSize = 8192) {
+		yield* this.iterateRangeChunks(0, this.totalLength, chunkSize);
+	}
+	*iterateRangeChunks(start = 0, end = this.totalLength, chunkSize = 8192) {
+		const from = clampOffset(start, 0, this.totalLength);
+		const to = clampOffset(end, from, this.totalLength);
+		if (from === to) return;
+		const size = chunkSize > 0 ? chunkSize : 8192;
+		let offset = 0;
+		for (let i = 0; i < this.pieces.length; i++) {
+			const piece = this.pieces[i];
+			const pieceStart = offset;
+			const pieceEnd = offset + piece.length;
+			if (pieceEnd <= from) {
+				offset = pieceEnd;
+				continue;
+			}
+			if (pieceStart >= to) break;
+			const localStart = from > pieceStart ? from - pieceStart : 0;
+			const localEnd = to < pieceEnd ? to - pieceStart : piece.length;
+			const text = this.getBuffer(piece.buffer).slice(piece.start + localStart, piece.start + localEnd);
+			for (let j = 0; j < text.length; j += size) yield text.slice(j, j + size);
+			offset = pieceEnd;
+		}
+	}
+	lineOfOffset(offset) {
+		const target = clampOffset(offset, 0, this.totalLength);
+		if (target <= 0) return 0;
+		let consumed = 0;
+		let line = 0;
+		for (let i = 0; i < this.pieces.length; i++) {
+			const piece = this.pieces[i];
+			const next = consumed + piece.length;
+			if (target >= next) {
+				line += piece.lineBreaks;
+				consumed = next;
+				continue;
+			}
+			const inside = target - consumed;
+			if (inside > 0) {
+				const buffer = this.getBuffer(piece.buffer);
+				line += countLinesInSlice(buffer, piece.start, piece.start + inside);
+			}
+			return line;
+		}
+		return line;
+	}
+	offsetOfLine(line) {
+		if (line <= 0) return 0;
+		let remaining = line;
+		let offset = 0;
+		for (let i = 0; i < this.pieces.length; i++) {
+			const piece = this.pieces[i];
+			if (piece.lineBreaks < remaining) {
+				remaining -= piece.lineBreaks;
+				offset += piece.length;
+				continue;
+			}
+			const buffer = this.getBuffer(piece.buffer);
+			let pos = piece.start - 1;
+			while (remaining > 0) {
+				pos = buffer.indexOf("\n", pos + 1);
+				if (pos === -1 || pos >= piece.start + piece.length) return offset + piece.length;
+				remaining--;
+			}
+			return offset + (pos - piece.start + 1);
+		}
+		return this.totalLength;
+	}
+	getBuffer(buffer) {
+		return buffer === "original" ? this.original : this.add;
+	}
+	makePiece(buffer, start, length) {
+		if (length <= 0) return null;
+		return {
+			buffer,
+			start,
+			length,
+			lineBreaks: countLines(this.getBuffer(buffer).slice(start, start + length))
+		};
+	}
+	splitAt(offset) {
+		const target = clampOffset(offset, 0, this.totalLength);
+		if (target <= 0) return 0;
+		if (target >= this.totalLength) return this.pieces.length;
+		let consumed = 0;
+		for (let i = 0; i < this.pieces.length; i++) {
+			const piece = this.pieces[i];
+			const next = consumed + piece.length;
+			if (target === consumed) return i;
+			if (target === next) return i + 1;
+			if (target > consumed && target < next) {
+				const leftLen = target - consumed;
+				const rightLen = next - target;
+				const left = this.makePiece(piece.buffer, piece.start, leftLen);
+				const right = this.makePiece(piece.buffer, piece.start + leftLen, rightLen);
+				this.pieces.splice(i, 1, ...left ? [left] : [], ...right ? [right] : []);
+				return i + (left ? 1 : 0);
+			}
+			consumed = next;
+		}
+		return this.pieces.length;
+	}
+	mergeAdjacentAround(index) {
+		let i = index;
+		while (i < this.pieces.length - 1) {
+			const left = this.pieces[i];
+			const right = this.pieces[i + 1];
+			if (!left || !right) {
+				i++;
+				continue;
+			}
+			if (left.buffer === right.buffer && left.start + left.length === right.start) {
+				left.length += right.length;
+				left.lineBreaks += right.lineBreaks;
+				this.pieces.splice(i + 1, 1);
+				continue;
+			}
+			i++;
+		}
+	}
+};
+/**
+* TextSource view over a PieceTable range.
+*
+* @experimental This supports the experimental editable-buffer APIs and is not
+* part of the markdown-it compatibility surface.
+*/
+var PieceTableSourceView = class {
+	startOffset;
+	endOffset;
+	cacheSize;
+	cachedStart = -1;
+	cachedEnd = -1;
+	cachedText = "";
+	constructor(table, start = 0, end = table.length, windowSize = 8192) {
+		this.table = table;
+		this.startOffset = clampOffset(start, 0, table.length);
+		this.endOffset = clampOffset(end, this.startOffset, table.length);
+		this.cacheSize = windowSize > 0 ? Math.trunc(windowSize) : 8192;
+	}
+	table;
+	get length() {
+		return this.endOffset - this.startOffset;
+	}
+	charAt(index) {
+		const code = this.charCodeAt(index);
+		return Number.isNaN(code) ? "" : String.fromCharCode(code);
+	}
+	charCodeAt(index) {
+		if (!Number.isFinite(index)) return NaN;
+		const relative = Math.trunc(index);
+		if (relative < 0 || relative >= this.length) return NaN;
+		this.ensureWindow(relative);
+		return this.cachedText.charCodeAt(relative - this.cachedStart);
+	}
+	slice(start = 0, end = this.length) {
+		const from = normalizeSliceIndex(start, this.length, 0);
+		const to = normalizeSliceIndex(end, this.length, this.length);
+		if (to <= from) return "";
+		if (from >= this.cachedStart && to <= this.cachedEnd) return this.cachedText.slice(from - this.cachedStart, to - this.cachedStart);
+		return this.table.slice(this.startOffset + from, this.startOffset + to);
+	}
+	indexOf(searchValue, fromIndex = 0) {
+		const needle = String(searchValue);
+		const from = clampOffset(fromIndex, 0, this.length);
+		if (needle.length === 0) return from;
+		if (from >= this.length) return -1;
+		const overlap = Math.max(0, needle.length - 1);
+		let chunkStart = this.startOffset + from;
+		while (chunkStart < this.endOffset) {
+			const chunkEnd = Math.min(this.endOffset, chunkStart + this.cacheSize);
+			const hit = this.table.slice(chunkStart, Math.min(this.endOffset, chunkEnd + overlap)).indexOf(needle);
+			if (hit !== -1) {
+				const absolute = chunkStart + hit;
+				if (absolute + needle.length <= this.endOffset) return absolute - this.startOffset;
+			}
+			if (chunkEnd >= this.endOffset) break;
+			chunkStart = chunkEnd;
+		}
+		return -1;
+	}
+	includes(searchValue, fromIndex = 0) {
+		return this.indexOf(searchValue, fromIndex) !== -1;
+	}
+	toString() {
+		return this.table.slice(this.startOffset, this.endOffset);
+	}
+	ensureWindow(relative) {
+		if (relative >= this.cachedStart && relative < this.cachedEnd) return;
+		const absoluteStart = this.startOffset + relative;
+		const absoluteEnd = Math.min(this.endOffset, absoluteStart + this.cacheSize);
+		this.cachedText = this.table.slice(absoluteStart, absoluteEnd);
+		this.cachedStart = relative;
+		this.cachedEnd = relative + this.cachedText.length;
+	}
+};
+
+//#endregion
+//#region src/stream/editable.ts
+function appendTokens(out, tokens) {
+	for (let i = 0; i < tokens.length; i++) out.push(tokens[i]);
+}
+function shiftTokenLines(tokens, offset) {
+	if (offset === 0) return;
+	const stack = [];
+	for (let i = tokens.length - 1; i >= 0; i--) stack.push(tokens[i]);
+	while (stack.length) {
+		const token = stack.pop();
+		if (token.map) {
+			token.map[0] += offset;
+			token.map[1] += offset;
+		}
+		if (token.children) for (let i = token.children.length - 1; i >= 0; i--) stack.push(token.children[i]);
+	}
+}
+function cloneStats(source, current) {
+	const sourceStats = source.stats();
+	return {
+		...current,
+		sourceChars: sourceStats.length,
+		sourceLineBreaks: sourceStats.lineBreaks,
+		pieceCount: sourceStats.pieces
+	};
+}
+function sliceAffectedLines(source, start, end) {
+	const length = source.length;
+	const clampedStart = Math.max(0, Math.min(start, length));
+	const clampedEnd = Math.max(clampedStart, Math.min(end, length));
+	const firstLine = source.lineOfOffset(clampedStart);
+	const endProbe = clampedEnd > clampedStart ? clampedEnd - 1 : clampedStart;
+	const lastLine = source.lineOfOffset(endProbe);
+	const from = source.offsetOfLine(firstLine);
+	const to = source.offsetOfLine(lastLine + 1);
+	return source.slice(from, to);
+}
+/**
+* Piece-table backed buffer for repeated edits.
+*
+* @experimental Localized reparsing has markdown-specific correctness limits
+* and falls back to full parsing when document-level state makes that necessary.
+*/
+var EditableBuffer = class {
+	md;
+	source;
+	tokens = [];
+	statsState;
+	globalStateReason;
+	staleGlobalStateReason = null;
+	constructor(md, initial = "") {
+		this.md = md;
+		this.source = new PieceTable(initial);
+		this.globalStateReason = detectGlobalMarkdownState(initial);
+		this.statsState = {
+			edits: 0,
+			fullParses: 0,
+			localizedParses: 0,
+			sourceChars: this.source.length,
+			sourceLineBreaks: this.source.lineBreaks,
+			lastMode: "idle",
+			lastAnchorLine: 0,
+			lastAnchorTokenStart: 0,
+			lastReparsedChars: initial.length,
+			pieceCount: this.source.stats().pieces
+		};
+	}
+	length() {
+		return this.source.length;
+	}
+	slice(start = 0, end = this.source.length) {
+		return this.source.slice(start, end);
+	}
+	toString() {
+		return this.source.toString();
+	}
+	peek() {
+		return this.tokens;
+	}
+	stats() {
+		return cloneStats(this.source, this.statsState);
+	}
+	reset(text = "") {
+		const next = new PieceTable(text);
+		this.staleGlobalStateReason = this.staleGlobalStateReason || this.globalStateReason;
+		this.source = next;
+		this.tokens = [];
+		this.globalStateReason = detectGlobalMarkdownState(text);
+		this.statsState = {
+			edits: 0,
+			fullParses: 0,
+			localizedParses: 0,
+			sourceChars: next.length,
+			sourceLineBreaks: next.lineBreaks,
+			lastMode: "idle",
+			lastAnchorLine: 0,
+			lastAnchorTokenStart: 0,
+			lastReparsedChars: text.length,
+			pieceCount: next.stats().pieces
+		};
+	}
+	parse(env = {}) {
+		beginParseDiagnostics(env);
+		return this.fullParse(env);
+	}
+	append(text, env = {}) {
+		return this.replace(this.source.length, this.source.length, text, env);
+	}
+	insert(offset, text, env = {}) {
+		return this.replace(offset, offset, text, env);
+	}
+	delete(start, end, env = {}) {
+		return this.replace(start, end, "", env);
+	}
+	replace(start, end, text, env = {}) {
+		beginParseDiagnostics(env);
+		const beforeLength = this.source.length;
+		const clampedStart = Math.max(0, Math.min(start, beforeLength));
+		const clampedEnd = Math.max(clampedStart, Math.min(end, beforeLength));
+		const beforeAffectedLines = sliceAffectedLines(this.source, clampedStart, clampedEnd);
+		const removedText = clampedStart < clampedEnd ? this.source.slice(clampedStart, clampedEnd) : "";
+		const editLine = this.source.lineOfOffset(clampedStart);
+		const beforeAffectedReason = detectGlobalMarkdownState(beforeAffectedLines);
+		const removedReason = detectGlobalMarkdownState(removedText);
+		const insertedReason = detectGlobalMarkdownState(text);
+		const mustFullParseBeforeEdit = this.globalStateReason !== null || beforeAffectedReason !== null || removedReason !== null || insertedReason !== null;
+		const anchor = !mustFullParseBeforeEdit && this.tokens.length > 0 ? this.findAnchorForEditLine(editLine) : null;
+		this.source.replace(clampedStart, clampedEnd, text);
+		this.statsState.edits += 1;
+		const introducedReason = detectGlobalMarkdownState(sliceAffectedLines(this.source, clampedStart, clampedStart + text.length)) || insertedReason;
+		const fallbackReason = this.globalStateReason || beforeAffectedReason || removedReason || insertedReason || introducedReason;
+		if (mustFullParseBeforeEdit || introducedReason !== null) {
+			setEditableDiagnostics(env, {
+				fallback: true,
+				fallbackReason: fallbackReason || "global-markdown-state-edit"
+			});
+			return this.fullParse(env);
+		}
+		if (!anchor || anchor.tokenStart <= 0 && anchor.lineStart <= 0) return this.fullParse(env);
+		return this.localizedReparse(anchor, env);
+	}
+	detectSourceGlobalState() {
+		return detectGlobalMarkdownStateFromChunks(this.source.iterateChunks());
+	}
+	fullParse(env) {
+		const previousReason = this.staleGlobalStateReason || this.globalStateReason;
+		const nextReason = this.detectSourceGlobalState();
+		if (previousReason || getKnownGlobalMarkdownState(env)) resetKnownGlobalMarkdownState(env);
+		this.staleGlobalStateReason = null;
+		this.tokens = runWithKnownGlobalMarkdownState(env, nextReason, () => {
+			return this.md.core.parseSource(this.source.view(), env, this.md).tokens;
+		});
+		this.globalStateReason = nextReason;
+		this.statsState.fullParses += 1;
+		this.statsState.lastMode = "full";
+		this.statsState.lastAnchorLine = 0;
+		this.statsState.lastAnchorTokenStart = 0;
+		this.statsState.lastReparsedChars = this.source.length;
+		return this.tokens;
+	}
+	localizedReparse(anchor, env) {
+		const anchorOffset = this.source.offsetOfLine(anchor.lineStart);
+		this.tokens.length = anchor.tokenStart;
+		const reparsed = this.md.core.parseSource(this.source.view(anchorOffset), env, this.md).tokens;
+		if (anchor.lineStart > 0) shiftTokenLines(reparsed, anchor.lineStart);
+		appendTokens(this.tokens, reparsed);
+		this.statsState.localizedParses += 1;
+		this.statsState.lastMode = "localized";
+		this.statsState.lastAnchorLine = anchor.lineStart;
+		this.statsState.lastAnchorTokenStart = anchor.tokenStart;
+		this.statsState.lastReparsedChars = this.source.length - anchorOffset;
+		return this.tokens;
+	}
+	findAnchorForEditLine(editLine) {
+		const segments = this.collectTopLevelSegments();
+		if (!segments.length) return null;
+		let segmentIndex = segments.length - 1;
+		for (let i = 0; i < segments.length; i++) {
+			const segment = segments[i];
+			if (editLine < segment.lineEnd || editLine <= segment.lineStart) {
+				segmentIndex = i;
+				break;
+			}
+		}
+		return segments[Math.max(0, segmentIndex - 1)];
+	}
+	collectTopLevelSegments() {
+		const segments = [];
+		let current = null;
+		const pushCurrent = () => {
+			if (!current) return;
+			if (current.lineEnd < current.lineStart) current.lineEnd = current.lineStart;
+			segments.push(current);
+			current = null;
+		};
+		for (let i = 0; i < this.tokens.length; i++) {
+			const token = this.tokens[i];
+			if (token.level === 0 && token.nesting >= 0) {
+				pushCurrent();
+				current = {
+					tokenStart: i,
+					lineStart: token.map?.[0] ?? 0,
+					lineEnd: token.map?.[1] ?? token.map?.[0] ?? 0
+				};
+			}
+			if (!current) continue;
+			if (token.map) {
+				if (token.map[0] < current.lineStart) current.lineStart = token.map[0];
+				if (token.map[1] > current.lineEnd) current.lineEnd = token.map[1];
+			}
+		}
+		pushCurrent();
+		return segments;
+	}
+};
+
+//#endregion
+export { DebouncedStreamParser, EditableBuffer, MDTS_DIAGNOSTICS, PieceTable, PieceTableSourceView, StreamBuffer, ThrottledStreamParser, UnboundedBuffer, chunkedParse, clearParseDiagnostics, getParseDiagnostics, parseAsyncIterable, parseAsyncIterableToSink, parseIterable, parseIterableToSink, parseStockFastAstJson, parseStringUnbounded, recommendFullChunkStrategy, recommendStreamChunkStrategy, renderStockFast, splitIntoChunkRanges, splitIntoChunks };

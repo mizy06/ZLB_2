@@ -1,6 +1,6 @@
 {
-  "baseline_commit": "297da939835dc9b748a33bd80d368702d7de687d",
-  "frozen_at": "2026-07-29",
+  "baseline_commit": "22f70d9cadeb87bcb246742f2e26df6f3f4247c9",
+  "frozen_at": "2026-08-02",
   "model_names": [
     "HistoryItem",
     "JobView",
@@ -12,9 +12,9 @@
     "RenderResponse",
     "SolveResponse"
   ],
-  "model_schema_digest": "sha256:f3899ad3363a7b6b0ba3ef9ac42097f2d95d1e8a02bef92caeb30237ecf235f1",
-  "openapi_digest": "sha256:111e35217a1e0c1896ec8b860658b5f9be544e36cb2132686fac5ed73ec116ea",
+  "model_schema_digest": "sha256:69ee6d516373cf7bf8196eaa9acf08b697758030f33098ba0b6081a0534cd846",
+  "openapi_digest": "sha256:cc16f8d8f47656110bf4a0180fcb29d2cd16144c014d777d66fc207ee0fc27be",
   "openapi_path_count": 23,
-  "openapi_schema_count": 48,
-  "snapshot_version": "1.0.0"
+  "openapi_schema_count": 49,
+  "snapshot_version": "1.2.0"
 }

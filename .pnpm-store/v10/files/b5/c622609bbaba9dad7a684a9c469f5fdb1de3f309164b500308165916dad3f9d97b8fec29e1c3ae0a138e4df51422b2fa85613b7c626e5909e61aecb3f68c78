@@ -1,0 +1,30 @@
+type KaTeXCDNWorkerMode = 'classic' | 'module';
+interface KaTeXCDNWorkerOptions {
+    
+    katexUrl: string;
+    
+    mhchemUrl?: string;
+    
+    mode?: KaTeXCDNWorkerMode;
+    
+    debug?: boolean;
+    
+    workerOptions?: WorkerOptions;
+    
+    renderOptions?: {
+        throwOnError?: boolean;
+        output?: string;
+        strict?: string;
+    };
+}
+interface KaTeXCDNWorkerHandle {
+    worker: Worker | null;
+    
+    dispose: () => void;
+    
+    source: string;
+}
+declare function buildKaTeXCDNWorkerSource(options: KaTeXCDNWorkerOptions): string;
+declare function createKaTeXWorkerFromCDN(options: KaTeXCDNWorkerOptions): KaTeXCDNWorkerHandle;
+
+export { KaTeXCDNWorkerHandle, KaTeXCDNWorkerMode, KaTeXCDNWorkerOptions, buildKaTeXCDNWorkerSource, createKaTeXWorkerFromCDN };

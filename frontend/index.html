@@ -1,16 +1,24 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      name="description"
-      content="将课程 PDF、PPTX 和 DOCX 转换为可追溯的知识图谱。"
-    />
-    <title>ZLB 知识导图工作台</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)" />
+    <meta name="application-name" content="TopoMind" />
+    <meta name="apple-mobile-web-app-title" content="TopoMind" />
+    <link rel="icon" href="/topomind-static.svg?v=20260823b" type="image/svg+xml" />
+    <!-- Apply persisted display prefs BEFORE the bundle loads: without this,
+         users can get a color-scheme/font flash before the client mirrors
+         the data attributes. Mirrors applyColorSchemeToDocument. Loaded from the
+         external /boot.js (a classic script, so still render-blocking) because
+         the server's Content-Security-Policy forbids inline scripts. -->
+    <script src="/boot.js"></script>
+    <title>TopoMind</title>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

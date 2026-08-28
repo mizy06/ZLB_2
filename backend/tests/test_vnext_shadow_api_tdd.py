@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -163,14 +164,99 @@ class VNextShadowAPITests(unittest.TestCase):
                     f"/v1/shadow/runs/{run_id}",
                     headers=_headers("owner-b"),
                 ).status_code,
-                404,
+                403,
             )
             self.assertEqual(
                 client.get(
                     f"/v1/shadow/artifacts/{projection_id}",
                     headers=_headers("owner-b"),
                 ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.app.state.security_events[-1]["code"],
+                "owner_header_mismatch",
+            )
+
+    def test_principal_audience_scope_and_cross_owner_probes_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ingest = root / "ingest"
+            ingest.mkdir()
+            (ingest / "course.md").write_text(
+                VALID_SOURCE,
+                encoding="utf-8",
+            )
+            base = _settings(root)
+            audience_client = TestClient(
+                create_shadow_app(
+                    replace(
+                        base,
+                        principal_audience="wrong-audience",
+                    )
+                )
+            )
+            scope_client = TestClient(
+                create_shadow_app(
+                    replace(
+                        base,
+                        principal_scopes=("vnext:read",),
+                    )
+                )
+            )
+            self.assertEqual(
+                audience_client.post(
+                    "/v1/shadow/runs",
+                    json={"source_path": "course.md"},
+                    headers=_headers(),
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                scope_client.post(
+                    "/v1/shadow/runs",
+                    json={"source_path": "course.md"},
+                    headers=_headers(),
+                ).status_code,
+                403,
+            )
+
+            owner_b_app = create_shadow_app(
+                replace(base, principal_owner_id="owner-b")
+            )
+            owner_b = TestClient(owner_b_app)
+            run_id = f"run_{'8' * 32}"
+            created = owner_b.post(
+                "/v1/shadow/runs",
+                json={"source_path": "course.md", "run_id": run_id},
+                headers=_headers("owner-b"),
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            artifact_id = created.json()["projection_artifact_id"]
+
+            owner_a_app = create_shadow_app(base)
+            owner_a = TestClient(owner_a_app)
+            self.assertEqual(
+                owner_a.get(
+                    f"/v1/shadow/runs/{run_id}",
+                    headers=_headers(),
+                ).status_code,
                 404,
+            )
+            self.assertEqual(
+                owner_a_app.state.security_events[-1]["code"],
+                "run_cross_owner_probe",
+            )
+            self.assertEqual(
+                owner_a.get(
+                    f"/v1/shadow/artifacts/{artifact_id}",
+                    headers=_headers(),
+                ).status_code,
+                404,
+            )
+            self.assertEqual(
+                owner_a_app.state.security_events[-1]["code"],
+                "artifact_cross_owner_probe",
             )
 
     def test_shadow_openapi_exposes_no_publish_or_legacy_routes(self):

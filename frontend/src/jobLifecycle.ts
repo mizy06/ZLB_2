@@ -34,6 +34,25 @@ export function canReplaceActiveJob(
   return status === null || !shouldContinuePolling(status);
 }
 
+export function canStartJobSubmission(
+  hasFile: boolean,
+  workspaceReady: boolean,
+  running: boolean,
+  submitting: boolean,
+): boolean {
+  return hasFile && workspaceReady && !running && !submitting;
+}
+
+export function canAdoptRestoredJob(
+  activeTaskId: string | null,
+  currentTaskId: string | null,
+): boolean {
+  return Boolean(
+    activeTaskId
+    && (!currentTaskId || currentTaskId === activeTaskId),
+  );
+}
+
 export function qualityPresentation(
   state: QualityState,
 ): QualityPresentation {

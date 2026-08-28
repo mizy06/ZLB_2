@@ -113,3 +113,8 @@ class JobView(BaseModel):
     message: str = ""
     result: AnalysisResult | None = None
     error: str | None = None
+    mode: str | None = None
+    loop_config: Any | None = None
+    context_tokens: int = 0
+    max_context_tokens: int = 1_000_000
+    context_usage: float = 0.0

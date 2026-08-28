@@ -6,7 +6,11 @@ from pathlib import Path
 
 from backend.vnext.artifacts.canonical import payload_digest
 from backend.vnext.artifacts.local_store import LocalArtifactStore
-from backend.vnext.canonical_graph import build_canonical_explicit_graph
+from backend.vnext.canonical_graph import (
+    build_canonical_explicit_graph,
+    build_relation_assessment_ledger,
+    build_relation_proposal_ledger,
+)
 from backend.vnext.claims import (
     atomize_source_claims,
     audit_claim_omissions,
@@ -125,11 +129,49 @@ class VNextS3PipelineTests(unittest.TestCase):
                     audit,
                 ).accepted
             )
+            proposal_ledger = build_relation_proposal_ledger(
+                ledger,
+                planning,
+                source_observation_ref=source_ref,
+                claim_ledger_ref=ledger_ref,
+                additional_input_refs=(audit_ref,),
+            )
+            proposal_envelope = store.put(
+                owner_id="tenant-a",
+                role=RuntimeRole.RELATION_PROPOSER,
+                payload=proposal_ledger,
+                producer=_producer(
+                    "vnext-explicit-relation-proposer",
+                    RuntimeRole.RELATION_PROPOSER,
+                ),
+                input_refs=(
+                    source_ref,
+                    ledger_ref,
+                    *planning.accepted_plan_refs,
+                    audit_ref,
+                ),
+            )
+            proposal_ref = store.ref(proposal_envelope)
+            relation_ledger = build_relation_assessment_ledger(
+                proposal_ledger,
+            )
+            relation_envelope = store.put(
+                owner_id="tenant-a",
+                role=RuntimeRole.RELATION_VERIFIER_A,
+                payload=relation_ledger,
+                producer=_producer(
+                    "vnext-explicit-relation-verifier-a",
+                    RuntimeRole.RELATION_VERIFIER_A,
+                ),
+                input_refs=(proposal_ref,),
+            )
+            relation_ref = store.ref(relation_envelope)
             canonical = build_canonical_explicit_graph(
                 ledger,
                 planning,
                 source_observation_ref=source_ref,
                 claim_ledger_ref=ledger_ref,
+                relation_assessment_ledger=relation_ledger,
                 additional_input_refs=(audit_ref,),
             )
             canonical_envelope = store.put(
@@ -145,6 +187,8 @@ class VNextS3PipelineTests(unittest.TestCase):
                     ledger_ref,
                     *planning.accepted_plan_refs,
                     audit_ref,
+                    proposal_ref,
+                    relation_ref,
                 ),
             )
             canonical_ref = store.ref(canonical_envelope)

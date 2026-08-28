@@ -549,6 +549,8 @@ class VNextRecordedClaimStageTests(unittest.TestCase):
                 "explicit-region-planning",
                 "recorded-model-claim-ledger",
                 "omission-and-region-audit",
+                "relation-proposal",
+                "independent-relation-assessment",
                 "canonical-explicit-graph",
                 "diagnostic-projection",
             }

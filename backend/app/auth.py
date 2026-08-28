@@ -1,128 +1,358 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
-import time
+import secrets
+import sqlite3
+import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from threading import RLock
 
-from fastapi import Header, HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 from .config import Settings, settings
 
 
-class AuthConfigurationError(RuntimeError):
-    pass
-
-
-class AuthenticationError(RuntimeError):
-    pass
+SESSION_COOKIE_NAME = "topomind_session"
+SESSION_TTL = timedelta(days=30)
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+USERNAME_MIN_LENGTH = 2
+USERNAME_MAX_LENGTH = 32
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
 
 
 @dataclass(frozen=True)
 class Principal:
     id: str
+    username: str = ""
 
 
-def _principal_id(token: str) -> str:
-    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    return f"token-{digest[:20]}"
+@dataclass(frozen=True)
+class Account:
+    id: str
+    username: str
+    created_at: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "id": self.id,
+            "username": self.username,
+            "created_at": self.created_at,
+        }
 
 
-def authenticate_token(config: Settings, provided_token: str) -> Principal:
-    expected = config.api_access_token
-    if not expected:
-        if config.production:
-            raise AuthConfigurationError(
-                "生产环境未配置 MINDMAP_API_TOKEN，接口已关闭。"
-            )
-        return Principal(id="local-development")
-    if not provided_token or not hmac.compare_digest(
-        provided_token,
-        expected,
+class AccountInputError(ValueError):
+    """The submitted username or password does not meet local policy."""
+
+
+class AccountAlreadyExistsError(ValueError):
+    """The normalized username is already registered."""
+
+
+class InvalidCredentialsError(ValueError):
+    """The account credentials are not valid."""
+
+
+def workbench_principal(config: Settings) -> Principal:
+    """Compatibility helper for older callers and migration tests."""
+
+    return Principal(id=config.workbench_owner_id)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso_now() -> str:
+    return _utc_now().isoformat()
+
+
+def normalize_username(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip()
+    if not (
+        USERNAME_MIN_LENGTH <= len(normalized) <= USERNAME_MAX_LENGTH
     ):
-        raise AuthenticationError("接口鉴权失败。")
-    return Principal(id=_principal_id(expected))
-
-
-def _bearer_token(authorization: str | None) -> str:
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return ""
-
-
-def create_session_value(
-    config: Settings,
-    *,
-    ttl_seconds: int = 12 * 60 * 60,
-    now: int | None = None,
-) -> str:
-    if not config.api_access_token:
-        raise AuthConfigurationError("未配置 API Token，不能签发会话。")
-    issued_at = int(time.time() if now is None else now)
-    principal_id = _principal_id(config.api_access_token)
-    payload = f"{principal_id}:{issued_at + max(ttl_seconds, 60)}"
-    signature = hmac.new(
-        config.api_access_token.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    encoded = base64.urlsafe_b64encode(
-        f"{payload}:{signature}".encode("utf-8")
-    ).decode("ascii")
-    return encoded.rstrip("=")
-
-
-def authenticate_session(
-    config: Settings,
-    value: str,
-    *,
-    now: int | None = None,
-) -> Principal:
-    if not value or not config.api_access_token:
-        raise AuthenticationError("会话鉴权失败。")
-    try:
-        padded = value + "=" * (-len(value) % 4)
-        decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
-        principal_id, expiry_text, signature = decoded.rsplit(":", 2)
-        expiry = int(expiry_text)
-    except (ValueError, UnicodeDecodeError):
-        raise AuthenticationError("会话格式无效。") from None
-    payload = f"{principal_id}:{expiry}"
-    expected_signature = hmac.new(
-        config.api_access_token.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(signature, expected_signature):
-        raise AuthenticationError("会话签名无效。")
-    current = int(time.time() if now is None else now)
-    if expiry < current:
-        raise AuthenticationError("会话已过期。")
-    expected_principal = _principal_id(config.api_access_token)
-    if not hmac.compare_digest(principal_id, expected_principal):
-        raise AuthenticationError("会话主体无效。")
-    return Principal(id=principal_id)
-
-
-async def require_api_principal(
-    request: Request,
-    authorization: str | None = Header(default=None),
-    x_api_token: str | None = Header(default=None),
-) -> Principal:
-    session_value = request.cookies.get(settings.session_cookie_name, "")
-    try:
-        if session_value:
-            return authenticate_session(settings, session_value)
-        return authenticate_token(
-            settings,
-            x_api_token or _bearer_token(authorization),
+        raise AccountInputError(
+            f"用户名长度必须在 {USERNAME_MIN_LENGTH}-{USERNAME_MAX_LENGTH} 个字符之间。"
         )
-    except AuthConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except AuthenticationError as exc:
-        raise HTTPException(
-            status_code=401,
-            detail=str(exc),
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+    if any(
+        character.isspace() or not (character.isalnum() or character in "._-")
+        for character in normalized
+    ):
+        raise AccountInputError("用户名只能包含字母、数字、中文、下划线、短横线和点。")
+    return normalized.casefold()
+
+
+def validate_password(value: str) -> str:
+    if not isinstance(value, str):
+        raise AccountInputError("密码格式无效。")
+    if not PASSWORD_MIN_LENGTH <= len(value) <= PASSWORD_MAX_LENGTH:
+        raise AccountInputError(
+            f"密码长度必须在 {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} 个字符之间。"
+        )
+    return value
+
+
+def _password_digest(password: str, salt: bytes) -> bytes:
+    return hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        dklen=64,
+    )
+
+
+def _session_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def _parse_expiry(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+class AccountStore:
+    """Small SQLite account/session store kept separate from the graph schema."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = RLock()
+        self._initialize()
+
+    @contextmanager
+    def _connect(self):
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _initialize(self) -> None:
+        schema = """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            username_key TEXT NOT NULL UNIQUE,
+            password_salt BLOB NOT NULL,
+            password_digest BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_digest TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_id
+            ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
+            ON sessions(expires_at);
+        """
+        with self._lock, self._connect() as connection:
+            connection.executescript(schema)
+
+    @staticmethod
+    def _account_from_row(row: sqlite3.Row) -> Account:
+        return Account(
+            id=str(row["user_id"]),
+            username=str(row["username"]),
+            created_at=str(row["created_at"]),
+        )
+
+    @staticmethod
+    def _new_session(
+        connection: sqlite3.Connection,
+        user_id: str,
+    ) -> str:
+        token = secrets.token_urlsafe(48)
+        now = _utc_now()
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                token_digest, user_id, created_at, expires_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                _session_digest(token),
+                user_id,
+                now.isoformat(),
+                (now + SESSION_TTL).isoformat(),
+            ),
+        )
+        return token
+
+    def register(self, username: str, password: str) -> tuple[Account, str, bool]:
+        username_key = normalize_username(username)
+        password = validate_password(password)
+        display_name = unicodedata.normalize("NFKC", username).strip()
+        user_id = f"usr_{secrets.token_hex(16)}"
+        created_at = _iso_now()
+        salt = secrets.token_bytes(16)
+        digest = _password_digest(password, salt)
+        with self._lock, self._connect() as connection:
+            # Serialize the existence check and insert so only one concurrent
+            # registration can claim the legacy public owner.
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT 1 FROM users WHERE username_key = ?",
+                (username_key,),
+            ).fetchone()
+            if existing:
+                raise AccountAlreadyExistsError("用户名已存在。")
+            first_account = (
+                connection.execute("SELECT 1 FROM users LIMIT 1").fetchone()
+                is None
+            )
+            connection.execute(
+                """
+                INSERT INTO users (
+                    user_id, username, username_key, password_salt,
+                    password_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    display_name,
+                    username_key,
+                    salt,
+                    digest,
+                    created_at,
+                ),
+            )
+            token = self._new_session(connection, user_id)
+        return Account(user_id, display_name, created_at), token, first_account
+
+    def login(self, username: str, password: str) -> tuple[Account, str]:
+        username_key = normalize_username(username)
+        password = validate_password(password)
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE username_key = ?",
+                (username_key,),
+            ).fetchone()
+            if row is None:
+                raise InvalidCredentialsError("用户名或密码错误。")
+            expected = _password_digest(password, bytes(row["password_salt"]))
+            if not hmac.compare_digest(expected, bytes(row["password_digest"])):
+                raise InvalidCredentialsError("用户名或密码错误。")
+            token = self._new_session(connection, str(row["user_id"]))
+        return self._account_from_row(row), token
+
+    def authenticate(self, token: str | None) -> Principal | None:
+        if not token:
+            return None
+        now = _utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM sessions WHERE expires_at <= ?",
+                (now.isoformat(),),
+            )
+            row = connection.execute(
+                """
+                SELECT users.user_id, users.username, sessions.expires_at
+                FROM sessions
+                JOIN users ON users.user_id = sessions.user_id
+                WHERE sessions.token_digest = ?
+                """,
+                (_session_digest(token),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            if _parse_expiry(str(row["expires_at"])) <= now:
+                return None
+        except ValueError:
+            return None
+        return Principal(
+            id=str(row["user_id"]),
+            username=str(row["username"]),
+        )
+
+    def logout(self, token: str | None) -> None:
+        if not token:
+            return
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM sessions WHERE token_digest = ?",
+                (_session_digest(token),),
+            )
+
+    def account_for_principal(self, principal: Principal) -> Account | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE user_id = ?",
+                (principal.id,),
+            ).fetchone()
+        return self._account_from_row(row) if row else None
+
+
+_stores: dict[Path, AccountStore] = {}
+_stores_lock = RLock()
+
+
+def account_store(config: Settings | None = None) -> AccountStore:
+    config = config or settings
+    path = (config.mindmap_data_dir / "auth.sqlite3").resolve()
+    with _stores_lock:
+        store = _stores.get(path)
+        if store is None:
+            store = AccountStore(path)
+            _stores[path] = store
+        return store
+
+
+def session_token_from_request(request: Request) -> str | None:
+    return request.cookies.get(SESSION_COOKIE_NAME)
+
+
+def set_session_cookie(
+    response: Response,
+    request: Request,
+    token: str,
+) -> None:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    scheme = (
+        forwarded_proto.split(",", 1)[0].strip().casefold()
+        or request.url.scheme.casefold()
+    )
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=int(SESSION_TTL.total_seconds()),
+        httponly=True,
+        secure=scheme == "https",
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+async def require_api_principal(request: Request) -> Principal:
+    principal = account_store().authenticate(session_token_from_request(request))
+    if principal is None:
+        raise HTTPException(status_code=401, detail="请先登录。")
+    return principal

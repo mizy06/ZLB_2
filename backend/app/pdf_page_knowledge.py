@@ -25,7 +25,7 @@ from .agents import (
     _evidence_excerpt_is_specific,
     _normalized_evidence_text,
 )
-from .architecture_schemas import ContentUnit
+from .architecture_schemas import ContentUnit, TerminalGoldGate
 from .claim_fidelity import claim_fidelity_issues
 from .mindmap_engine.schemas import (
     EvidenceRef,
@@ -36,10 +36,10 @@ from .mindmap_engine.schemas import (
 from .mindmap_engine.normalize import candidate_field_disposition
 from .model_provider import ModelProviderError, model_call_scope
 from .pdf_math_geometry import _candidate_issues
-from .schemas import ParsedDocument, SourceBlock
+from .schemas import ParsedDocument
 
 
-PAGE_KNOWLEDGE_SCHEMA_VERSION = "page-knowledge-v9"
+PAGE_KNOWLEDGE_SCHEMA_VERSION = "page-knowledge-v11-direct-visual"
 PAGE_KNOWLEDGE_ROLE = "pdf_page_knowledge_extractor"
 PAGE_KNOWLEDGE_TIMEOUT_SECONDS = 90.0
 PAGE_KNOWLEDGE_MAX_OUTPUT_TOKENS = 3600
@@ -144,15 +144,20 @@ PDF_PAGE_KNOWLEDGE_PROMPT = """你是 PDF 单页知识节点抽取器。只依�
       "formula_text": "若节点含公式，写单行 Unicode canonical 公式，否则为空字符串",
       "formula_latex": "若节点含公式，写对应 LaTeX，否则为空字符串",
       "bbox": [x, y, width, height],
-      "confidence": 0.0
+      "confidence": 0.0,
+      "terminal_gold_gate": {
+        "name_teaches_novice": true,
+        "no_further_bullet_decomposition": true,
+        "minimum_knowledge_atom": false
+      }
     }
   ]
 }
 
 规则：
 1. bbox 使用 0..1 的归一化 [左, 上, 宽, 高]，例如 [0.1,0.2,0.5,0.1]；宽高不是右下角坐标，且框必须完整位于页面内并覆盖 evidence_text。
-2. 每个节点只表达一个原子事实。name 必须是 2..48 个字符的单行、名词性、自足标签，不得使用章节编号、句子开头、连接词、句末标点或截断短语；不要输出章节目录、纯页码、按钮、装饰、坐标轴碎片、人物照片或空泛的“示意图”节点。
-3. evidence_text 必须是页面中的连续原文，不得总结、改写或拼接不同区域。
+2. 每个节点只表达一个原子事实，完整表达一枝且只能表达一枝。name 必须是 2..48 个字符的单行、自足知识表达，不得使用章节编号、句子开头、连接词、句末标点或截断短语；不得用“A、B和C”“X及Y”等并列清单合并可分别成立的知识，只有不可拆的固定术语、成对关系或单个公式中的联合量可以保留。只有当短词或短术语本身就能完整教会一个从未学过该知识的学生时，name 才能以短词结束；否则必须使用页面证据支持的完整解释性短语，让学生仅看 name 就知道必要对象、条件、关系或结论。不要输出章节目录、纯页码、按钮、装饰、坐标轴碎片、人物照片、空泛的“示意图”节点，或反应式失去键线、碳骨架、箭头和空间归属后形成的 O/OH/R/Cl 等孤立化学字母串。若化学结构关系不能从图像中完整确认，必须放弃该节点，不能把可见字符按阅读顺序拼接成 name 或 evidence_text。
+3. evidence_text 必须是页面中的连续原文，不得总结、改写或拼接不同区域；这是唯一强制逐字抄录原文的字段。name 和 definition 应做受证据约束的语义压缩，不要求机械复制页面整句。
 4. definition 可以压缩表达，但数字、正负号、指数、下标、分母、单位、关系方向和因果方向必须与 evidence_text 完全一致。
 5. 含复杂公式的节点必须同时输出 formula_text 与 formula_latex；formula_text 使用 ^ 表示上标、_ 表示下标。type=result 时 role 使用 other，不要输出 role=result。
 6. 指数的正负号和数字必须逐字保留，不得把 10^-k 恢复为 10^k；不得遗漏公式中的下标、分母、微分项或单位。
@@ -161,7 +166,8 @@ PDF_PAGE_KNOWLEDGE_PROMPT = """你是 PDF 单页知识节点抽取器。只依�
 9. 页面确实没有可发布知识时，has_knowledge=false、nodes=[]，并填写 no_knowledge_reason。
 10. 每页最多输出 12 个最重要的原子节点，宁可合并同一事实的重复表述，不得截断公式或证据。
 11. 首次尝试时 discarded_temp_ids 必须为空。修复尝试中，只有当系统列出的坏节点属于误抽取的孤立标签、低置信碎片或无法形成连续证据的非公式关系时，才可把原 temp_id 放入 discarded_temp_ids；公式、数字、单位、定义和关键事实不得撤回。
-12. 不要输出 Markdown 代码块或 JSON 之外的文字。"""
+12. 每个节点必须填写 terminal_gold_gate。name_teaches_novice 必须为 true；no_further_bullet_decomposition 表示该知识已不适合继续分条列点，minimum_knowledge_atom 表示该知识已是最小知识原子，后两项是严格或关系。只有名称教学充分且两个终止条件至少一个为 true 时才是可发布基节点；两个终止条件都为 false 时必须继续拆分，不能输出该节点。
+13. 不要输出 Markdown 代码块或 JSON 之外的文字。"""
 
 PDF_PAGE_KNOWLEDGE_PROMPT_SHA256 = hashlib.sha256(
     PDF_PAGE_KNOWLEDGE_PROMPT.encode("utf-8")
@@ -200,6 +206,7 @@ class PageKnowledgeNode(BaseModel):
     formula_latex: str = ""
     bbox: list[float]
     confidence: float = Field(ge=0, le=1)
+    terminal_gold_gate: TerminalGoldGate | None = None
 
     @field_validator(
         "temp_id",
@@ -597,6 +604,8 @@ def _page_node_issues(
         issues.append(f"{prefix}:residual_private_use_glyph")
     if _MARKDOWN_FENCE.search(combined):
         issues.append(f"{prefix}:markdown_fence")
+    if node.terminal_gold_gate is None:
+        issues.append(f"{prefix}:terminal_gold_gate_missing")
     field_disposition = _page_node_field_disposition(node)
     issues.extend(
         f"{prefix}:label_{issue}"
@@ -1087,9 +1096,16 @@ def _repair_guidance(issues: list[str]) -> str:
     ):
         guidance.append(
             "每个 name 必须逐字取自同一证据块中的连续片段，"
-            "长度为 2..48 个字符，保持单行、名词性和自足；"
+            "长度为 2..48 个字符，保持单行和自足；"
             "不得使用章节编号、句子开头、连接词、句末标点、"
-            "未闭合括号或截断短语。"
+            "未闭合括号或截断短语。短词只有在其本身足以教会"
+            "零基础学生时才可作为 name。"
+        )
+    if any("terminal_gold_gate" in issue for issue in issues):
+        guidance.append(
+            "逐节点填写 terminal_gold_gate；name_teaches_novice 必须为 true，"
+            "且 no_further_bullet_decomposition 与 "
+            "minimum_knowledge_atom 至少一个为 true。"
         )
     if any("evidence_not_specific" in issue for issue in issues):
         guidance.append(
@@ -1259,8 +1275,7 @@ def _knowledge_records(
     document: ParsedDocument,
     rendered_by_page: dict[int, RenderedPage],
     extractions: list[PageKnowledgeExtraction],
-) -> tuple[list[SourceBlock], list[ContentUnit], list[NodeCandidateIn]]:
-    blocks: list[SourceBlock] = []
+) -> tuple[list[ContentUnit], list[NodeCandidateIn]]:
     units: list[ContentUnit] = []
     candidates: list[NodeCandidateIn] = []
     for extraction in sorted(extractions, key=lambda item: item.page):
@@ -1270,7 +1285,7 @@ def _knowledge_records(
             unit = ContentUnit(
                 id=unit_id,
                 document_id=document.document_id,
-                kind="text",
+                kind="visual",
                 branch_hint=extraction.heading or None,
                 importance=_node_importance(node),
                 status="uncovered",
@@ -1285,6 +1300,10 @@ def _knowledge_records(
                 page=extraction.page,
                 bbox=node.bbox,
                 asset_id=rendered_page.asset_id,
+                visual_kind="direct_page_knowledge",
+                visual_action="standalone_node",
+                summary=node.definition,
+                knowledge_claims=[node.definition],
             )
             evidence = EvidenceRef(
                 unit_id=unit_id,
@@ -1307,16 +1326,9 @@ def _knowledge_records(
                 evidence=[evidence],
                 support_unit_ids=[unit_id],
             )
-            blocks.append(
-                SourceBlock(
-                    text=node.evidence_text,
-                    page=extraction.page,
-                    heading=extraction.heading or None,
-                )
-            )
             units.append(unit)
             candidates.append(candidate)
-    return blocks, units, candidates
+    return units, candidates
 
 
 def _formula_audit_risk_pages(
@@ -1818,7 +1830,7 @@ def _merge_profile_results(
     warnings = list(dict.fromkeys(warnings))
 
     rendered_by_page = {page.page: page for page in rendered.pages}
-    blocks, units, candidates = _knowledge_records(
+    units, candidates = _knowledge_records(
         document=document,
         rendered_by_page=rendered_by_page,
         extractions=extractions,
@@ -1879,6 +1891,8 @@ def _merge_profile_results(
             else []
         ),
         "node_count": len(candidates),
+        "source_projection": "direct_visual_nodes",
+        "text_intermediate_built": False,
         "pages": [
             extraction.model_dump(mode="json")
             for extraction in extractions
@@ -1886,7 +1900,7 @@ def _merge_profile_results(
     }
     updated_document = document.model_copy(
         update={
-            "blocks": blocks,
+            "blocks": [],
             "warnings": list(
                 dict.fromkeys([*document.warnings, *warnings])
             ),
@@ -2937,7 +2951,7 @@ async def extract_pdf_page_knowledge(
             f"失败或缺失 {len(failed_pages)} 页。"
         )
 
-    blocks, units, candidates = _knowledge_records(
+    units, candidates = _knowledge_records(
         document=document,
         rendered_by_page=rendered_by_page,
         extractions=extractions,
@@ -2962,6 +2976,8 @@ async def extract_pdf_page_knowledge(
         "reused_pages": reused_pages,
         "called_pages": called_pages,
         "node_count": len(candidates),
+        "source_projection": "direct_visual_nodes",
+        "text_intermediate_built": False,
         "pages": [
             extraction.model_dump(mode="json")
             for extraction in sorted(
@@ -2972,7 +2988,7 @@ async def extract_pdf_page_knowledge(
     }
     updated_document = document.model_copy(
         update={
-            "blocks": blocks,
+            "blocks": [],
             "warnings": list(
                 dict.fromkeys([*document.warnings, *warnings])
             ),

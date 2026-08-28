@@ -264,7 +264,7 @@ class SQLiteBlackboard:
                     stage = excluded.stage,
                     progress = CASE
                         WHEN excluded.status = 'queued'
-                            AND excluded.stage = 'recovered'
+                            AND excluded.stage IN ('queued', 'recovered')
                             THEN excluded.progress
                         ELSE MAX(jobs.progress, excluded.progress)
                     END,
@@ -313,6 +313,47 @@ class SQLiteBlackboard:
                     now,
                 ),
             )
+
+    def update_job_manifest(
+        self,
+        task_id: str,
+        manifest: dict[str, Any],
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET manifest_json = ?, updated_at = ?
+                WHERE task_id = ?
+                """,
+                (_json_value(manifest), utc_now(), task_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(task_id)
+
+    def reassign_owner(self, old_owner_id: str, new_owner_id: str) -> int:
+        """Move legacy workbench records to the first registered account."""
+
+        if not new_owner_id or old_owner_id == new_owner_id:
+            return 0
+        with self._lock, self._connect() as connection:
+            jobs = connection.execute(
+                """
+                UPDATE jobs
+                SET owner_id = ?
+                WHERE owner_id = ?
+                """,
+                (new_owner_id, old_owner_id),
+            ).rowcount
+            runs = connection.execute(
+                """
+                UPDATE runs
+                SET owner_id = ?
+                WHERE owner_id = ?
+                """,
+                (new_owner_id, old_owner_id),
+            ).rowcount
+        return int(jobs or 0) + int(runs or 0)
 
     @staticmethod
     def _job_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -1035,7 +1076,8 @@ class SQLiteBlackboard:
                 JOIN runs ON runs.run_id = graph_versions.run_id
                 WHERE runs.task_id = ?
                 {owner_clause}
-                ORDER BY graph_versions.version DESC
+                ORDER BY graph_versions.created_at DESC,
+                    graph_versions.version DESC
                 LIMIT 1
                 """,
                 values,

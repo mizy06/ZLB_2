@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -78,6 +80,24 @@ def _length_limited_chat_response() -> httpx.Response:
     )
 
 
+def _incomplete_length_limited_chat_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {"content": '{"ok":'},
+                    "finish_reason": "length",
+                }
+            ],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://qwen.invalid/compatible-mode/v1/chat/completions",
+        ),
+    )
+
+
 def _chat_response_with_finish_reason(
     finish_reason: str | None,
     *,
@@ -98,6 +118,50 @@ def _chat_response_with_finish_reason(
     )
 
 
+def _responses_response(
+    *,
+    response_id: str = "resp_test_123",
+    status: str = "completed",
+    text: str = '{"ok": true}',
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "id": response_id,
+            "object": "response",
+            "status": status,
+            "output": [
+                {
+                    "type": "reasoning",
+                    "content": [],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": text,
+                        }
+                    ],
+                },
+            ],
+            "usage": {
+                "input_tokens": 1400,
+                "output_tokens": 120,
+                "total_tokens": 1520,
+                "input_tokens_details": {
+                    "cached_tokens": 1100,
+                },
+            },
+        },
+        request=httpx.Request(
+            "POST",
+            "https://qwen.invalid/compatible-mode/v1/responses",
+        ),
+    )
+
+
 class _CapturingHttpClient:
     def __init__(self, response: httpx.Response | None = None) -> None:
         self.response = response or _chat_response()
@@ -106,6 +170,38 @@ class _CapturingHttpClient:
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
         self.calls.append({"url": url, **kwargs})
         return self.response
+
+
+class _TemporaryUploadHttpClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        self.calls.append({"method": "get", "url": url, **kwargs})
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "upload_host": (
+                        "https://bucket.oss-cn-beijing.aliyuncs.com"
+                    ),
+                    "upload_dir": "temporary/session-123",
+                    "oss_access_key_id": "temporary-access-id",
+                    "signature": "temporary-signature",
+                    "policy": "temporary-policy",
+                    "x_oss_object_acl": "private",
+                    "x_oss_forbid_overwrite": "true",
+                }
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        self.calls.append({"method": "post", "url": url, **kwargs})
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+        )
 
 
 class _LeakyTimeoutHttpClient:
@@ -125,6 +221,206 @@ class _SlowHttpClient:
 
 
 class QwenProviderPolicyTDDTests(unittest.IsolatedAsyncioTestCase):
+    async def test_responses_initial_image_call_uses_session_cache_and_oss(
+        self,
+    ) -> None:
+        records: list[dict[str, Any]] = []
+        http_client = _CapturingHttpClient(_responses_response())
+        client = QwenClient(_settings())
+        client._injected_http_client = http_client
+        client.attempt_recorder = records.append
+
+        result = await client.complete_response_json(
+            model="qwen3.7-plus",
+            system_prompt="PRIVATE-SYSTEM-PROMPT",
+            user_prompt="PRIVATE-SOURCE-TEXT",
+            images=[
+                ("slide_0001", "oss://temporary/slide_0001.jpg"),
+                ("slide_0002", "oss://temporary/slide_0002.jpg"),
+            ],
+            session_cache=True,
+            max_attempts=1,
+            reasoning_effort="low",
+            max_output_tokens=24_000,
+            timeout_seconds=90,
+        )
+
+        self.assertEqual(result.payload, {"ok": True})
+        self.assertEqual(result.response_id, "resp_test_123")
+        self.assertEqual(
+            result.usage["input_tokens_details"]["cached_tokens"],
+            1100,
+        )
+        request = http_client.calls[0]
+        self.assertTrue(request["url"].endswith("/responses"))
+        self.assertEqual(
+            request["headers"]["x-dashscope-session-cache"],
+            "enable",
+        )
+        self.assertEqual(
+            request["headers"]["X-DashScope-OssResourceResolve"],
+            "enable",
+        )
+        self.assertTrue(request["json"]["store"])
+        self.assertNotIn("previous_response_id", request["json"])
+        self.assertEqual(
+            request["json"]["reasoning"],
+            {"effort": "low"},
+        )
+        self.assertEqual(request["json"]["max_output_tokens"], 24_000)
+        response_input = request["json"]["input"]
+        self.assertEqual(len(response_input), 2)
+        image_blocks = response_input[0]["content"]
+        self.assertEqual(
+            [block["type"] for block in image_blocks[:4]],
+            [
+                "input_text",
+                "input_image",
+                "input_text",
+                "input_image",
+            ],
+        )
+        self.assertEqual(len(records), 1)
+        policy = records[0]["details"]["request_policy"]
+        self.assertEqual(policy["image_count"], 2)
+        self.assertFalse(policy["previous_response_id_present"])
+        self.assertTrue(policy["session_cache_enabled"])
+        self.assertEqual(policy["max_output_tokens"], 24_000)
+        self.assertEqual(
+            records[0]["details"]["usage"]["input_tokens_details"][
+                "cached_tokens"
+            ],
+            1100,
+        )
+        serialized = json.dumps(records, ensure_ascii=False)
+        self.assertNotIn("PRIVATE-SYSTEM-PROMPT", serialized)
+        self.assertNotIn("PRIVATE-SOURCE-TEXT", serialized)
+        self.assertNotIn("oss://temporary", serialized)
+
+    async def test_responses_follow_up_sends_only_previous_response_id(
+        self,
+    ) -> None:
+        http_client = _CapturingHttpClient(
+            _responses_response(response_id="resp_follow_up")
+        )
+        client = QwenClient(_settings())
+        client._injected_http_client = http_client
+
+        result = await client.complete_response_json(
+            model="qwen3.7-plus",
+            system_prompt="review instructions",
+            user_prompt="review current graph",
+            previous_response_id="resp_test_123",
+            session_cache=True,
+            max_attempts=1,
+            reasoning_effort="minimal",
+        )
+
+        self.assertEqual(result.response_id, "resp_follow_up")
+        request = http_client.calls[0]
+        self.assertEqual(
+            request["json"]["previous_response_id"],
+            "resp_test_123",
+        )
+        self.assertEqual(request["json"]["input"], "review current graph")
+        self.assertNotIn(
+            "X-DashScope-OssResourceResolve",
+            request["headers"],
+        )
+
+    async def test_responses_reject_inline_image_data(self) -> None:
+        client = QwenClient(_settings())
+
+        with self.assertRaisesRegex(ValueError, "stable URLs"):
+            await client.complete_response_json(
+                model="qwen3.7-plus",
+                system_prompt="system",
+                user_prompt="user",
+                images=[
+                    (
+                        "slide_0001",
+                        "data:image/jpeg;base64,PRIVATE",
+                    )
+                ],
+                session_cache=True,
+            )
+
+    async def test_qwen_temporary_upload_reuses_one_policy_for_all_files(
+        self,
+    ) -> None:
+        http_client = _TemporaryUploadHttpClient()
+        client = QwenClient(_settings())
+        client._injected_http_client = http_client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "slide_0001.jpg"
+            second = root / "slide_0002.jpg"
+            first.write_bytes(b"first-image")
+            second.write_bytes(b"second-image")
+
+            urls = await client.upload_temporary_files(
+                model="qwen3.7-plus",
+                files=[
+                    ("slide_0001", first),
+                    ("slide_0002", second),
+                ],
+                concurrency=2,
+                timeout_seconds=90,
+            )
+
+        self.assertEqual(
+            urls,
+            [
+                (
+                    "slide_0001",
+                    "oss://temporary/session-123/slide_0001.jpg",
+                ),
+                (
+                    "slide_0002",
+                    "oss://temporary/session-123/slide_0002.jpg",
+                ),
+            ],
+        )
+        policy_calls = [
+            call for call in http_client.calls if call["method"] == "get"
+        ]
+        upload_calls = [
+            call for call in http_client.calls if call["method"] == "post"
+        ]
+        self.assertEqual(len(policy_calls), 1)
+        self.assertEqual(
+            policy_calls[0]["params"],
+            {"action": "getPolicy", "model": "qwen3.7-plus"},
+        )
+        self.assertEqual(len(upload_calls), 2)
+        self.assertEqual(
+            {
+                call["data"]["key"]
+                for call in upload_calls
+            },
+            {
+                "temporary/session-123/slide_0001.jpg",
+                "temporary/session-123/slide_0002.jpg",
+            },
+        )
+
+    def test_qwen_temporary_upload_rejects_untrusted_host(self) -> None:
+        with self.assertRaisesRegex(ModelProviderError, "unsafe host"):
+            QwenClient._validated_upload_policy(
+                {
+                    "data": {
+                        "upload_host": "https://attacker.example/upload",
+                        "upload_dir": "temporary/session-123",
+                        "oss_access_key_id": "temporary-access-id",
+                        "signature": "temporary-signature",
+                        "policy": "temporary-policy",
+                        "x_oss_object_acl": "private",
+                        "x_oss_forbid_overwrite": "true",
+                    }
+                }
+            )
+
     def test_explicit_total_completion_budget_replaces_max_tokens(self) -> None:
         client = QwenClient(_settings())
 
@@ -157,6 +453,41 @@ class QwenProviderPolicyTDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["thinking_budget"], 1024)
         self.assertNotIn("reasoning_effort", payload)
+
+    def test_qwen_omits_disabled_thinking_budget(self) -> None:
+        client = QwenClient(_settings())
+
+        payload = client._chat_payload(
+            model="qwen3.8-max",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=2400,
+            max_completion_tokens=2400,
+            json_mode=True,
+            thinking_budget=0,
+        )
+
+        self.assertNotIn("thinking_budget", payload)
+
+    def test_non_qwen_keeps_explicit_disabled_thinking_budget(self) -> None:
+        client = OpenAICompatibleClient(
+            settings=_settings(),
+            api_key="ordinary-key",
+            base_url="https://ordinary.invalid/v1",
+            provider_name="ordinary",
+            api_key_env_name="ORDINARY_API_KEY",
+            temperature=0.2,
+        )
+
+        payload = client._chat_payload(
+            model="ordinary-model",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=2400,
+            max_completion_tokens=2400,
+            json_mode=True,
+            thinking_budget=0,
+        )
+
+        self.assertEqual(payload["thinking_budget"], 0)
 
     def test_thinking_budget_and_reasoning_effort_are_mutually_exclusive(
         self,
@@ -328,6 +659,39 @@ class QwenProviderPolicyTDDTests(unittest.IsolatedAsyncioTestCase):
                 max_attempts=1,
                 reasoning_effort="low",
                 timeout_seconds=90,
+            )
+
+    async def test_complete_json_can_opt_in_to_salvage_complete_length_output(
+        self,
+    ):
+        client = QwenClient(_settings())
+        client._injected_http_client = _CapturingHttpClient(
+            _length_limited_chat_response()
+        )
+
+        result = await client.complete_json(
+            model="qwen3.8-max-preview",
+            system_prompt="system",
+            user_prompt="user",
+            max_attempts=1,
+            accept_complete_json_on_length=True,
+        )
+
+        self.assertEqual(result, {"ok": True})
+
+    async def test_length_salvage_still_rejects_incomplete_json(self):
+        client = QwenClient(_settings())
+        client._injected_http_client = _CapturingHttpClient(
+            _incomplete_length_limited_chat_response()
+        )
+
+        with self.assertRaisesRegex(ModelProviderError, "截断"):
+            await client.complete_json(
+                model="qwen3.8-max-preview",
+                system_prompt="system",
+                user_prompt="user",
+                max_attempts=1,
+                accept_complete_json_on_length=True,
             )
 
     async def test_content_filter_finish_reason_is_not_accepted_as_complete_json(

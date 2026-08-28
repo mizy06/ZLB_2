@@ -33,6 +33,13 @@ from backend.app.pdf_page_knowledge import (
 from backend.app.schemas import ParsedDocument, SourceBlock
 
 
+TERMINAL_GOLD_GATE = {
+    "name_teaches_novice": True,
+    "no_further_bullet_decomposition": True,
+    "minimum_knowledge_atom": False,
+}
+
+
 class _FakePageKnowledgeClient:
     supports_multimodal = True
 
@@ -108,6 +115,7 @@ class _FakeLayoutKnowledgeClient:
                     "block_id": f"p{page:04d}:b000",
                     "formula_index": 0,
                     "confidence": 0.98,
+                    "terminal_gold_gate": TERMINAL_GOLD_GATE,
                 }
             ],
         }
@@ -175,6 +183,7 @@ def _page_payload(
                 ),
                 "bbox": [0.1, 0.2, 0.7, 0.2],
                 "confidence": confidence,
+                "terminal_gold_gate": TERMINAL_GOLD_GATE,
             }
         ],
     }
@@ -203,6 +212,7 @@ def _short_relation_payload(page: int) -> dict:
                 "formula_latex": "",
                 "bbox": [0.1, 0.1, 0.5, 0.1],
                 "confidence": 0.98,
+                "terminal_gold_gate": TERMINAL_GOLD_GATE,
             }
         ],
     }
@@ -259,6 +269,7 @@ def _concept_payload(
                 "evidence_text": "稳定的普通概念具有清晰且连续的定义。",
                 "bbox": [0.1, 0.1, 0.6, 0.1],
                 "confidence": confidence,
+                "terminal_gold_gate": TERMINAL_GOLD_GATE,
             }
         ],
     }
@@ -283,6 +294,7 @@ def _algebra_node(
         "formula_latex": formula_latex,
         "bbox": [0.1, y, 0.5, 0.1],
         "confidence": 0.98,
+        "terminal_gold_gate": TERMINAL_GOLD_GATE,
     }
 
 
@@ -453,6 +465,28 @@ def _materialized_layout(
 
 
 class PdfPageKnowledgeSchemaTDDTests(unittest.TestCase):
+    def test_terminal_gold_gate_requires_novice_name_and_or_stop_condition(self):
+        missing_gate = _page_payload(1)
+        missing_gate["nodes"][0].pop("terminal_gold_gate")
+        extraction = PageKnowledgeExtraction.model_validate(missing_gate)
+        self.assertIn(
+            "node_0:terminal_gold_gate_missing",
+            page_knowledge_issues(
+                extraction,
+                expected_page=1,
+                min_confidence=0.85,
+            ),
+        )
+
+        failed_or_gate = _page_payload(1)
+        failed_or_gate["nodes"][0]["terminal_gold_gate"] = {
+            "name_teaches_novice": True,
+            "no_further_bullet_decomposition": False,
+            "minimum_knowledge_atom": False,
+        }
+        with self.assertRaises(ValidationError):
+            PageKnowledgeExtraction.model_validate(failed_or_gate)
+
     def test_formula_nodes_require_canonical_latex_and_valid_bbox(self):
         with self.assertRaises(ValidationError):
             PageKnowledgeNode(
@@ -1409,6 +1443,7 @@ class PdfPageKnowledgeRuntimeTDDTests(unittest.IsolatedAsyncioTestCase):
                                 ),
                                 "bbox": [0.2, 0.22, 0.3, 0.08],
                                 "confidence": 0.98,
+                                "terminal_gold_gate": TERMINAL_GOLD_GATE,
                             }
                         ],
                     }
@@ -3006,6 +3041,7 @@ class PdfPageKnowledgeRuntimeTDDTests(unittest.IsolatedAsyncioTestCase):
             "formula_latex": "",
             "bbox": [0.1, 0.4, 0.2, 0.1],
             "confidence": 0.98,
+            "terminal_gold_gate": TERMINAL_GOLD_GATE,
         }
         discard = _algebra_payload(1, [])
         discard["discarded_temp_ids"] = ["wavelength-label"]

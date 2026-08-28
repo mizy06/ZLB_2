@@ -140,12 +140,27 @@ class VNextSourceShadowTests(unittest.TestCase):
             table_shape.table.cell(0, 1).text = "Property"
             table_shape.table.cell(1, 0).text = "Aldehyde"
             table_shape.table.cell(1, 1).text = "Terminal"
-            slide.shapes.add_picture(
+            picture = slide.shapes.add_picture(
                 str(image_path),
                 Inches(5.2),
                 Inches(1.3),
                 width=Inches(1.5),
             )
+            picture._element.nvPicPr.cNvPr.set(
+                "descr",
+                "Carbonyl reaction diagram",
+            )
+            off_slide = slide.shapes.add_textbox(
+                Inches(11.0),
+                Inches(1.0),
+                Inches(1.0),
+                Inches(0.5),
+            )
+            off_slide.text = "Off-slide source note"
+            slide.notes_slide.notes_text_frame.text = (
+                "Instructor-only explanation"
+            )
+            slide._element.set("show", "0")
             presentation.slides.add_slide(presentation.slide_layouts[6])
             presentation.save(source_path)
 
@@ -187,6 +202,49 @@ class VNextSourceShadowTests(unittest.TestCase):
                 )
             )
             self.assertEqual(source, parse_source(source_path))
+            shadow = run_source_shadow(
+                source_path,
+                owner_id="tenant-a",
+                store=LocalArtifactStore(root / "raw-manifest-shadow"),
+            )
+            raw = shadow.source_inventory.raw_manifest
+            self.assertEqual(raw.native_page_count, 2)
+            self.assertGreaterEqual(raw.native_object_count or 0, 5)
+            self.assertEqual(raw.hidden_page_count, 1)
+            self.assertGreaterEqual(raw.notes_count, 1)
+            self.assertGreaterEqual(raw.alt_text_count, 1)
+            self.assertGreaterEqual(raw.off_slide_object_count, 1)
+            self.assertEqual(
+                raw.parser_off_slide_object_count,
+                raw.off_slide_object_count,
+            )
+            self.assertIn(
+                "native_parser_hidden_page_state_mismatch",
+                raw.mismatch_codes,
+            )
+            self.assertIn(
+                "native_parser_notes_count_mismatch",
+                raw.mismatch_codes,
+            )
+            self.assertIn(
+                "native_parser_alt_text_count_mismatch",
+                raw.mismatch_codes,
+            )
+            self.assertNotIn(
+                "native_parser_off_slide_object_count_mismatch",
+                raw.mismatch_codes,
+            )
+            unresolved_roles = {
+                item.declared_role
+                for item in shadow.source_inventory.unresolved_entries
+            }
+            self.assertTrue(
+                {
+                    "native_parser_hidden_page_state_mismatch",
+                    "native_parser_notes_count_mismatch",
+                    "native_parser_alt_text_count_mismatch",
+                }.issubset(unresolved_roles)
+            )
 
     def test_pdf_retains_blank_pages_and_nested_outline(self):
         with tempfile.TemporaryDirectory() as tmp:

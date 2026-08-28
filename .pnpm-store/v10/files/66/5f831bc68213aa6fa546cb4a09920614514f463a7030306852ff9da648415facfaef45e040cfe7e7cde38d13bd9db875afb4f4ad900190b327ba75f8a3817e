@@ -1,0 +1,15 @@
+
+interface ThresholdInput {
+    R: number;
+    H?: number;
+    B?: number;
+}
+declare function recommendWorkerThreshold({ R, H, B }: ThresholdInput): number;
+declare function estimateRByFormula(sample: string): 'simple' | 'medium' | 'complex';
+declare function defaultRByClass(cls: 'simple' | 'medium' | 'complex'): number;
+declare function recommendNForSamples(formulas: string[], opts?: {
+    H?: number;
+    B?: number;
+}): number;
+
+export { ThresholdInput, defaultRByClass, estimateRByFormula, recommendNForSamples, recommendWorkerThreshold };

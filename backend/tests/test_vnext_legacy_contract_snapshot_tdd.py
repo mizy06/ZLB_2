@@ -46,7 +46,7 @@ class VNextLegacyContractSnapshotTests(unittest.TestCase):
             SNAPSHOT_PATH.read_text(encoding="ascii")
         )
 
-    def test_legacy_openapi_contract_is_unchanged(self):
+    def test_legacy_openapi_contract_matches_approved_snapshot(self):
         openapi = app.openapi()
 
         self.assertEqual(

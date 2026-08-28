@@ -1,0 +1,1 @@
+{"version":3,"file":"stateStorage.d.ts","names":[],"sources":["../../src/editor/stateStorage.ts"],"mappings":";;;UAEiB,aAAA;;EAEf,GAAA,CACE,QAAA,WACC,WAAA,eAA0B,OAAA,CAAQ,WAAA;EAJT;EAM5B,GAAA,CAAI,QAAA,UAAkB,KAAA,EAAO,WAAA,UAAqB,OAAA;AAAA;AAAA,KAGxC,mBAAA,8BAAiD,aAAa;AAAA,iBAE1D,gBAAA,CAAiB,KAAA,EAAO,WAAA,GAAc,WAAW;AAAA,iBAWjD,kBAAA,CACd,OAAA,EAAS,mBAAA,GACR,aAAa"}

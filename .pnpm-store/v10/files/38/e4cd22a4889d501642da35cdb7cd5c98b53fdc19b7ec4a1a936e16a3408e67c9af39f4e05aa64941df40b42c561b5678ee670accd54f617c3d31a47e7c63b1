@@ -1,0 +1,1814 @@
+import { C as isValidEntityCode, O as Token, _ as runWithKnownGlobalMarkdownState, a as getParseDiagnostics, d as detectGlobalMarkdownState, g as resetKnownGlobalMarkdownState, h as markKnownGlobalMarkdownState, m as getKnownGlobalMarkdownState, n as beginParseDiagnostics, o as setChunkDiagnostics, p as finalizeKnownGlobalMarkdownState, u as setUnboundedDiagnostics, v as countLines, y as fromCodePoint } from "./strategy_diagnostics-DKBiEbYW.js";
+import { decodeHTML } from "entities";
+
+//#region src/parse/stock_fast.ts
+const INLINE_TERMINATOR_RE = /[\n!#$%&*+\-:<=>@[\]\\^_`{}~]/;
+const INLINE_AST_JSON_UNSAFE_RE = /* @__PURE__ */ new RegExp(`[\\u0000-\\u001F"!#$%&*+\\-:<=>@[\\]\\\\^_\`{}~]`);
+function isPlainInlineText(src) {
+	return !INLINE_TERMINATOR_RE.test(src);
+}
+function lineEnd$1(src, pos) {
+	const next = src.indexOf("\n", pos);
+	return next === -1 ? src.length : next;
+}
+function isBlankLine$3(src, start, end) {
+	for (let pos = start; pos < end; pos++) {
+		const ch = src.charCodeAt(pos);
+		if (ch !== 32 && ch !== 9) return false;
+	}
+	return true;
+}
+function startsWithFence$1(src, pos, end) {
+	return pos + 2 < end && src.charCodeAt(pos) === 96 && src.charCodeAt(pos + 1) === 96 && src.charCodeAt(pos + 2) === 96;
+}
+function startsWithBulletItem$1(src, pos, end) {
+	return pos + 1 < end && src.charCodeAt(pos) === 45 && src.charCodeAt(pos + 1) === 32;
+}
+function isShortPlainInlineText(src) {
+	if (src.length > 3) return isPlainInlineText(src);
+	for (let pos = 0; pos < src.length; pos++) switch (src.charCodeAt(pos)) {
+		case 10:
+		case 33:
+		case 35:
+		case 36:
+		case 37:
+		case 38:
+		case 42:
+		case 43:
+		case 45:
+		case 58:
+		case 60:
+		case 61:
+		case 62:
+		case 64:
+		case 91:
+		case 92:
+		case 93:
+		case 94:
+		case 95:
+		case 96:
+		case 123:
+		case 125:
+		case 126: return false;
+	}
+	return true;
+}
+function isShortPlainInlineTextRange(src, start, end) {
+	if (end - start > 3) return isPlainInlineText(src.slice(start, end));
+	for (let pos = start; pos < end; pos++) switch (src.charCodeAt(pos)) {
+		case 10:
+		case 33:
+		case 35:
+		case 36:
+		case 37:
+		case 38:
+		case 42:
+		case 43:
+		case 45:
+		case 58:
+		case 60:
+		case 61:
+		case 62:
+		case 64:
+		case 91:
+		case 92:
+		case 93:
+		case 94:
+		case 95:
+		case 96:
+		case 123:
+		case 125:
+		case 126: return false;
+	}
+	return true;
+}
+function rangeEqualsString(src, start, end, value) {
+	if (end - start !== value.length) return false;
+	for (let i = 0; i < value.length; i++) if (src.charCodeAt(start + i) !== value.charCodeAt(i)) return false;
+	return true;
+}
+const HEADING_TAGS = [
+	"",
+	"h1",
+	"h2",
+	"h3",
+	"h4",
+	"h5",
+	"h6"
+];
+const HEADING_MARKUPS = [
+	"",
+	"#",
+	"##",
+	"###",
+	"####",
+	"#####",
+	"######"
+];
+const PLAIN_CACHE_UNKNOWN = 0;
+const PLAIN_CACHE_ENABLED = 1;
+const PLAIN_CACHE_DISABLED = 2;
+function blockToken(type, tag, nesting, level) {
+	const token = new Token(type, tag, nesting);
+	token.level = level;
+	token.block = true;
+	return token;
+}
+function inlineToken(content, line, level) {
+	const token = blockToken("inline", "", 0, level);
+	token.map = [line, line + 1];
+	token.content = content;
+	const child = new Token("text", "", 0);
+	child.content = content;
+	token.children = [child];
+	return token;
+}
+function pushAtxHeading(tokens, src, pos, end, line) {
+	let level = 0;
+	let markerEnd = pos;
+	while (markerEnd < end && src.charCodeAt(markerEnd) === 35 && level < 6) {
+		markerEnd++;
+		level++;
+	}
+	if (level === 0 || markerEnd >= end || src.charCodeAt(markerEnd) !== 32) return false;
+	let contentStart = markerEnd + 1;
+	while (contentStart < end && src.charCodeAt(contentStart) === 32) contentStart++;
+	let contentEnd = end;
+	while (contentEnd > contentStart && src.charCodeAt(contentEnd - 1) === 32) contentEnd--;
+	let markerStart = contentEnd;
+	while (markerStart > contentStart && src.charCodeAt(markerStart - 1) === 35) markerStart--;
+	if (markerStart > contentStart && src.charCodeAt(markerStart - 1) === 32) {
+		contentEnd = markerStart - 1;
+		while (contentEnd > contentStart && src.charCodeAt(contentEnd - 1) === 32) contentEnd--;
+	}
+	const content = src.slice(contentStart, contentEnd);
+	if (!isPlainInlineText(content)) return false;
+	const tag = HEADING_TAGS[level];
+	const markup = HEADING_MARKUPS[level];
+	const open = blockToken("heading_open", tag, 1, 0);
+	open.map = [line, line + 1];
+	open.markup = markup;
+	tokens.push(open);
+	tokens.push(inlineToken(content, line, 1));
+	const close = blockToken("heading_close", tag, -1, 0);
+	close.markup = markup;
+	tokens.push(close);
+	return true;
+}
+function pushParagraph(tokens, content, line) {
+	const open = blockToken("paragraph_open", "p", 1, 0);
+	open.map = [line, line + 1];
+	tokens.push(open);
+	tokens.push(inlineToken(content, line, 1));
+	tokens.push(blockToken("paragraph_close", "p", -1, 0));
+}
+function paragraphContent$1(src, start, end) {
+	const lastCh = src.charCodeAt(end - 1);
+	return lastCh === 32 || lastCh === 9 ? src.slice(start, end).trim() : src.slice(start, end);
+}
+function skipEmptyLines$1(src, pos) {
+	while (pos < src.length && src.charCodeAt(pos) === 10) pos++;
+	return pos;
+}
+function pushTightBulletListOpen(tokens, startLine) {
+	const listOpen = blockToken("bullet_list_open", "ul", 1, 0);
+	listOpen.map = [startLine, startLine];
+	listOpen.markup = "-";
+	tokens.push(listOpen);
+	return listOpen;
+}
+function pushTightBulletListItem(tokens, content, line) {
+	const itemOpen = blockToken("list_item_open", "li", 1, 1);
+	itemOpen.map = [line, line + 1];
+	itemOpen.markup = "-";
+	tokens.push(itemOpen);
+	const paraOpen = blockToken("paragraph_open", "p", 1, 2);
+	paraOpen.map = [line, line + 1];
+	paraOpen.hidden = true;
+	tokens.push(paraOpen);
+	tokens.push(inlineToken(content, line, 3));
+	const paraClose = blockToken("paragraph_close", "p", -1, 2);
+	paraClose.hidden = true;
+	tokens.push(paraClose);
+	const itemClose = blockToken("list_item_close", "li", -1, 1);
+	itemClose.markup = "-";
+	tokens.push(itemClose);
+	return itemOpen;
+}
+function pushTightBulletListClose(tokens) {
+	const listClose = blockToken("bullet_list_close", "ul", -1, 0);
+	listClose.markup = "-";
+	tokens.push(listClose);
+}
+function parseFence(src, pos, end, line) {
+	if (!startsWithFence$1(src, pos, end)) return null;
+	const info = src.slice(pos + 3, end);
+	if (info.includes("`")) return null;
+	const contentStart = end < src.length ? end + 1 : end;
+	let contentEnd = contentStart;
+	let scan = contentStart;
+	let scanLine = line + 1;
+	while (scan < src.length) {
+		const closeEnd = lineEnd$1(src, scan);
+		if (startsWithFence$1(src, scan, closeEnd) && isBlankLine$3(src, scan + 3, closeEnd)) {
+			const token = blockToken("fence", "code", 0, 0);
+			token.map = [line, scanLine + 1];
+			token.markup = "```";
+			token.info = info;
+			token.content = src.slice(contentStart, contentEnd);
+			return {
+				token,
+				nextPos: closeEnd < src.length ? closeEnd + 1 : closeEnd,
+				nextLine: scanLine + 1
+			};
+		}
+		scan = closeEnd < src.length ? closeEnd + 1 : closeEnd;
+		contentEnd = scan;
+		scanLine++;
+	}
+	return null;
+}
+function codeAstJsonParts(rawInfo, cache) {
+	const cached = cache.get(rawInfo);
+	if (cached) return cached;
+	if (rawInfo.includes("`")) return null;
+	const info = rawInfo.trim();
+	let parts;
+	if (!info) parts = ["{\"type\":\"code\",\"value\":", "}"];
+	else {
+		let langEnd = info.length;
+		for (let i = 0; i < info.length; i++) {
+			const ch = info.charCodeAt(i);
+			if (ch === 32 || ch === 9) {
+				langEnd = i;
+				break;
+			}
+		}
+		const lang = JSON.stringify(info.slice(0, langEnd));
+		const meta = info.slice(langEnd).trim();
+		parts = meta ? [`{"type":"code","lang":${lang},"meta":${JSON.stringify(meta)},"value":`, "}"] : [`{"type":"code","lang":${lang},"value":`, "}"];
+	}
+	cache.set(rawInfo, parts);
+	return parts;
+}
+function parseFenceAstJson(src, pos, end, cache) {
+	if (!startsWithFence$1(src, pos, end)) return null;
+	const parts = codeAstJsonParts(src.slice(pos + 3, end), cache);
+	if (parts === null) return null;
+	const contentStart = end < src.length ? end + 1 : end;
+	let contentEnd = contentStart;
+	let scan = contentStart;
+	while (scan < src.length) {
+		const closeEnd = lineEnd$1(src, scan);
+		if (startsWithFence$1(src, scan, closeEnd) && isBlankLine$3(src, scan + 3, closeEnd)) {
+			const content = JSON.stringify(src.slice(contentStart, contentEnd));
+			return {
+				json: parts[0] + content + parts[1],
+				nextPos: closeEnd < src.length ? closeEnd + 1 : closeEnd
+			};
+		}
+		scan = closeEnd < src.length ? closeEnd + 1 : closeEnd;
+		contentEnd = scan;
+	}
+	return null;
+}
+function jsonShortInlineValue(src) {
+	if (src.length > 3) return JSON.stringify(src);
+	for (let i = 0; i < src.length; i++) {
+		const ch = src.charCodeAt(i);
+		if (ch === 34 || ch < 32) return JSON.stringify(src);
+	}
+	return `"${src}"`;
+}
+function plainInlineAstJsonValue(src) {
+	if (!INLINE_AST_JSON_UNSAFE_RE.test(src)) return `"${src}"`;
+	if (!isPlainInlineText(src)) return null;
+	return JSON.stringify(src);
+}
+function buildTightBulletListAstJson(src, pos, nextPos) {
+	let listJson = "{\"type\":\"list\",\"ordered\":false,\"spread\":false,\"children\":[";
+	let firstItem = true;
+	let itemPos = pos;
+	while (itemPos < nextPos) {
+		const itemEnd = lineEnd$1(src, itemPos);
+		const content = src.slice(itemPos + 2, itemEnd);
+		listJson += `${firstItem ? "" : ","}{"type":"listItem","spread":false,"children":[{"type":"paragraph","children":[{"type":"text","value":${jsonShortInlineValue(content)}}]}]}`;
+		firstItem = false;
+		itemPos = itemEnd < src.length ? itemEnd + 1 : itemEnd;
+	}
+	return `${listJson}]}`;
+}
+function atxHeadingAstJson(src, pos, end) {
+	let level = 0;
+	let markerEnd = pos;
+	while (markerEnd < end && src.charCodeAt(markerEnd) === 35 && level < 6) {
+		markerEnd++;
+		level++;
+	}
+	if (level === 0 || markerEnd >= end || src.charCodeAt(markerEnd) !== 32) return null;
+	let contentStart = markerEnd + 1;
+	while (contentStart < end && src.charCodeAt(contentStart) === 32) contentStart++;
+	let contentEnd = end;
+	while (contentEnd > contentStart && src.charCodeAt(contentEnd - 1) === 32) contentEnd--;
+	let markerStart = contentEnd;
+	while (markerStart > contentStart && src.charCodeAt(markerStart - 1) === 35) markerStart--;
+	if (markerStart > contentStart && src.charCodeAt(markerStart - 1) === 32) {
+		contentEnd = markerStart - 1;
+		while (contentEnd > contentStart && src.charCodeAt(contentEnd - 1) === 32) contentEnd--;
+	}
+	const value = plainInlineAstJsonValue(src.slice(contentStart, contentEnd));
+	if (value === null) return null;
+	return `{"type":"heading","depth":${level},"children":[{"type":"text","value":${value}}]}`;
+}
+function parseStockFastAstJson(src) {
+	if (src.length === 0) return "{\"type\":\"root\",\"children\":[]}";
+	if (src.includes("\r") || src.includes("\0")) return null;
+	const useChunks = src.length >= 15e5;
+	const compareListByRange = src.length >= 75e4;
+	const chunks = [];
+	let json = "{\"type\":\"root\",\"children\":[";
+	let first = true;
+	let pos = 0;
+	const fenceInfoCache = /* @__PURE__ */ new Map();
+	let lastListSource = "";
+	let lastListJson = "";
+	let lastParagraph = "";
+	let lastParagraphJson = "";
+	while (pos < src.length) {
+		const end = lineEnd$1(src, pos);
+		const ch = src.charCodeAt(pos);
+		if (pos === end) {
+			pos = end < src.length ? end + 1 : end;
+			continue;
+		}
+		if (ch === 32 || ch === 9) {
+			if (!isBlankLine$3(src, pos, end)) return null;
+			pos = end < src.length ? end + 1 : end;
+			continue;
+		}
+		let node = null;
+		if (ch === 35) {
+			node = atxHeadingAstJson(src, pos, end);
+			if (node === null) return null;
+			pos = skipEmptyLines$1(src, end < src.length ? end + 1 : end);
+		} else if (ch === 45) {
+			if (!startsWithBulletItem$1(src, pos, end)) return null;
+			let firstItem = true;
+			let nextPos = pos;
+			while (nextPos < src.length) {
+				const itemEnd = lineEnd$1(src, nextPos);
+				if (!startsWithBulletItem$1(src, nextPos, itemEnd)) break;
+				if (!isShortPlainInlineTextRange(src, nextPos + 2, itemEnd)) return null;
+				firstItem = false;
+				nextPos = itemEnd < src.length ? itemEnd + 1 : itemEnd;
+			}
+			if (firstItem) return null;
+			let lookahead = nextPos;
+			while (lookahead < src.length) {
+				if (src.charCodeAt(lookahead) === 10) {
+					lookahead++;
+					continue;
+				}
+				const lookaheadEnd = lineEnd$1(src, lookahead);
+				if (!isBlankLine$3(src, lookahead, lookaheadEnd)) {
+					if (startsWithBulletItem$1(src, lookahead, lookaheadEnd)) return null;
+					break;
+				}
+				lookahead = lookaheadEnd < src.length ? lookaheadEnd + 1 : lookaheadEnd;
+			}
+			if (compareListByRange) if (rangeEqualsString(src, pos, nextPos, lastListSource)) node = lastListJson;
+			else {
+				node = buildTightBulletListAstJson(src, pos, nextPos);
+				lastListSource = src.slice(pos, nextPos);
+				lastListJson = node;
+			}
+			else {
+				const listSource = src.slice(pos, nextPos);
+				if (listSource === lastListSource) node = lastListJson;
+				else {
+					node = buildTightBulletListAstJson(src, pos, nextPos);
+					lastListSource = listSource;
+					lastListJson = node;
+				}
+			}
+			pos = lookahead;
+		} else if (ch === 96) {
+			const fence = parseFenceAstJson(src, pos, end, fenceInfoCache);
+			if (!fence) return null;
+			node = fence.json;
+			pos = skipEmptyLines$1(src, fence.nextPos);
+		} else {
+			const paragraph = paragraphContent$1(src, pos, end);
+			if (paragraph === lastParagraph) node = lastParagraphJson;
+			else {
+				const paragraphValue = plainInlineAstJsonValue(paragraph);
+				if (paragraphValue === null) return null;
+				node = `{"type":"paragraph","children":[{"type":"text","value":${paragraphValue}}]}`;
+				lastParagraph = paragraph;
+				lastParagraphJson = node;
+			}
+			const nextPos = end < src.length ? end + 1 : end;
+			if (nextPos < src.length && src.charCodeAt(nextPos) !== 10) {
+				if (!isBlankLine$3(src, nextPos, lineEnd$1(src, nextPos))) return null;
+			}
+			pos = skipEmptyLines$1(src, nextPos);
+		}
+		if (node === null) return null;
+		if (useChunks) chunks.push(first ? node : `,${node}`);
+		else json += first ? node : `,${node}`;
+		first = false;
+	}
+	return useChunks ? `${json}${chunks.join("")}]}` : `${json}]}`;
+}
+function parseStockFast(src, diagnostics) {
+	if (src.length === 0) {
+		if (diagnostics) diagnostics.matched = true;
+		return [];
+	}
+	if (src.includes("\r") || src.includes("\0")) return null;
+	const tokens = [];
+	let plainInlineCacheMode = src.length >= 1e5 ? PLAIN_CACHE_UNKNOWN : PLAIN_CACHE_DISABLED;
+	let lastPlainInline = "";
+	let lastPlainInlineOk = false;
+	let lastPlainInlineSeen = false;
+	let pos = 0;
+	let line = 0;
+	while (pos < src.length) {
+		const end = lineEnd$1(src, pos);
+		if (pos === end) {
+			pos = end < src.length ? end + 1 : end;
+			line++;
+			continue;
+		}
+		const ch = src.charCodeAt(pos);
+		if (ch === 32 || ch === 9) {
+			if (!isBlankLine$3(src, pos, end)) return null;
+			pos = end < src.length ? end + 1 : end;
+			line++;
+			continue;
+		}
+		if (ch === 35) {
+			if (!pushAtxHeading(tokens, src, pos, end, line)) return null;
+			if (diagnostics) {
+				diagnostics.blocks++;
+				diagnostics.headings++;
+			}
+			const nextPos$1 = end < src.length ? end + 1 : end;
+			pos = skipEmptyLines$1(src, nextPos$1);
+			line += 1 + pos - nextPos$1;
+			continue;
+		}
+		if (ch === 45) {
+			if (!startsWithBulletItem$1(src, pos, end)) return null;
+			const startLine = line;
+			let nextPos$1 = pos;
+			let nextLine = line;
+			let listOpen = null;
+			let lastItemOpen = null;
+			while (nextPos$1 < src.length) {
+				const itemEnd = lineEnd$1(src, nextPos$1);
+				if (!startsWithBulletItem$1(src, nextPos$1, itemEnd)) break;
+				const contentStart = nextPos$1 + 2;
+				const content = itemEnd === contentStart + 1 ? src[contentStart] : src.slice(contentStart, itemEnd);
+				if (!isShortPlainInlineText(content)) return null;
+				if (listOpen === null) listOpen = pushTightBulletListOpen(tokens, startLine);
+				lastItemOpen = pushTightBulletListItem(tokens, content, nextLine);
+				nextPos$1 = itemEnd < src.length ? itemEnd + 1 : itemEnd;
+				nextLine++;
+			}
+			if (listOpen === null || lastItemOpen === null) return null;
+			let lookahead = nextPos$1;
+			let lookaheadLine = nextLine;
+			while (lookahead < src.length) {
+				if (src.charCodeAt(lookahead) === 10) {
+					lookahead++;
+					lookaheadLine++;
+					continue;
+				}
+				const lookaheadEnd = lineEnd$1(src, lookahead);
+				if (!isBlankLine$3(src, lookahead, lookaheadEnd)) {
+					if (startsWithBulletItem$1(src, lookahead, lookaheadEnd)) return null;
+					break;
+				}
+				lookahead = lookaheadEnd < src.length ? lookaheadEnd + 1 : lookaheadEnd;
+				lookaheadLine++;
+			}
+			listOpen.map[1] = lookaheadLine;
+			lastItemOpen.map[1] = lookaheadLine;
+			pushTightBulletListClose(tokens);
+			if (diagnostics) {
+				diagnostics.blocks++;
+				diagnostics.lists++;
+			}
+			pos = lookahead;
+			line = lookaheadLine;
+			continue;
+		}
+		if (ch === 96) {
+			const fence = parseFence(src, pos, end, line);
+			if (!fence) return null;
+			tokens.push(fence.token);
+			if (diagnostics) {
+				diagnostics.blocks++;
+				diagnostics.fences++;
+			}
+			pos = skipEmptyLines$1(src, fence.nextPos);
+			line = fence.nextLine + pos - fence.nextPos;
+			continue;
+		}
+		const paragraph = paragraphContent$1(src, pos, end);
+		let paragraphIsPlain;
+		if (plainInlineCacheMode === PLAIN_CACHE_DISABLED) {
+			if (diagnostics) diagnostics.paragraphCacheBypasses++;
+			paragraphIsPlain = isPlainInlineText(paragraph);
+		} else if (plainInlineCacheMode === PLAIN_CACHE_ENABLED && paragraph === lastPlainInline) {
+			if (diagnostics) diagnostics.paragraphCacheHits++;
+			paragraphIsPlain = lastPlainInlineOk;
+		} else {
+			if (diagnostics) diagnostics.paragraphCacheMisses++;
+			paragraphIsPlain = isPlainInlineText(paragraph);
+			if (plainInlineCacheMode === PLAIN_CACHE_UNKNOWN) {
+				if (lastPlainInlineSeen) plainInlineCacheMode = paragraph === lastPlainInline ? PLAIN_CACHE_ENABLED : PLAIN_CACHE_DISABLED;
+				lastPlainInline = paragraph;
+				lastPlainInlineOk = paragraphIsPlain;
+				lastPlainInlineSeen = true;
+			} else if (plainInlineCacheMode === PLAIN_CACHE_ENABLED) {
+				lastPlainInline = paragraph;
+				lastPlainInlineOk = paragraphIsPlain;
+			}
+		}
+		if (!paragraphIsPlain) return null;
+		const nextPos = end < src.length ? end + 1 : end;
+		if (nextPos < src.length && src.charCodeAt(nextPos) !== 10) {
+			if (!isBlankLine$3(src, nextPos, lineEnd$1(src, nextPos))) return null;
+		}
+		pushParagraph(tokens, paragraph, line);
+		if (diagnostics) {
+			diagnostics.blocks++;
+			diagnostics.paragraphs++;
+		}
+		pos = skipEmptyLines$1(src, nextPos);
+		line += 1 + pos - nextPos;
+	}
+	if (diagnostics) diagnostics.matched = true;
+	return tokens;
+}
+
+//#endregion
+//#region src/render/utils.ts
+const HTML_ESCAPE_TEST_RE = /[&<>"]/;
+const HTML_ESCAPE_REPLACE_RE = /[&<>"]/g;
+const HTML_ESCAPE_AMP_RE = /&/g;
+const HTML_ESCAPE_NO_AMP_RE = /[<>"]/g;
+const HTML_REPLACEMENTS = {
+	"&": "&amp;",
+	"<": "&lt;",
+	">": "&gt;",
+	"\"": "&quot;"
+};
+function replaceUnsafeChar(ch) {
+	return HTML_REPLACEMENTS[ch] || ch;
+}
+/**
+* Escape HTML characters to prevent XSS
+*/
+function escapeHtml(str) {
+	if (str.length === 0) return "";
+	if (str.length < 32) {
+		if (HTML_ESCAPE_TEST_RE.test(str)) return str.replace(HTML_ESCAPE_REPLACE_RE, replaceUnsafeChar);
+		return str;
+	}
+	const hasAmp = str.includes("&");
+	const hasLt = str.includes("<");
+	const hasGt = str.includes(">");
+	const hasQuot = str.includes("\"");
+	if (!hasAmp && !hasLt && !hasGt && !hasQuot) return str;
+	if (hasAmp && !hasLt && !hasGt && !hasQuot) return str.replace(HTML_ESCAPE_AMP_RE, "&amp;");
+	if (!hasAmp) return str.replace(HTML_ESCAPE_NO_AMP_RE, replaceUnsafeChar);
+	return str.replace(HTML_ESCAPE_REPLACE_RE, replaceUnsafeChar);
+}
+const UNESCAPE_ALL_RE = new RegExp(`${/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g.source}|${/&([a-z#][a-z0-9]{1,31});/gi.source}`, "gi");
+const DIGITAL_ENTITY_TEST_RE = /^#(?:x[a-f0-9]{1,8}|\d{1,8})$/i;
+/**
+* Unescape all backslash escapes and HTML entities
+*/
+function unescapeAll(str) {
+	if (!str.includes("\\") && !str.includes("&")) return str;
+	return str.replace(UNESCAPE_ALL_RE, (match, escaped, entity) => {
+		if (escaped) return escaped;
+		if (DIGITAL_ENTITY_TEST_RE.test(entity)) {
+			const code = entity[1].toLowerCase() === "x" ? Number.parseInt(entity.slice(2), 16) : Number.parseInt(entity.slice(1), 10);
+			return isValidEntityCode(code) ? fromCodePoint(code) : "�";
+		}
+		const decoded = decodeHTML(match);
+		return decoded !== match ? decoded : match;
+	});
+}
+
+//#endregion
+//#region src/render/stock_fast.ts
+const INLINE_FALLBACK_RE = /[\n!#$%&*+\-:<=>@[\]\\^_`{}~]/;
+const INLINE_SPECIAL_RE = /[\n!"#$%&*+\-:<=>@[\]\\^_`{}~]/;
+const INLINE_QUOTE_RE = /"/g;
+function lineEnd(src, pos) {
+	const next = src.indexOf("\n", pos);
+	return next === -1 ? src.length : next;
+}
+function isBlankLine$2(src, start, end) {
+	for (let pos = start; pos < end; pos++) {
+		const ch = src.charCodeAt(pos);
+		if (ch !== 32 && ch !== 9) return false;
+	}
+	return true;
+}
+function skipEmptyLines(src, pos) {
+	while (pos < src.length && src.charCodeAt(pos) === 10) pos++;
+	return pos;
+}
+function startsParagraphContinuation(src, pos) {
+	if (pos >= src.length || src.charCodeAt(pos) === 10) return false;
+	return !isBlankLine$2(src, pos, lineEnd(src, pos));
+}
+function startsWithFence(src, pos, end) {
+	return pos + 2 < end && src.charCodeAt(pos) === 96 && src.charCodeAt(pos + 1) === 96 && src.charCodeAt(pos + 2) === 96;
+}
+function paragraphContent(src, start, end) {
+	const lastCh = src.charCodeAt(end - 1);
+	return lastCh === 32 || lastCh === 9 ? src.slice(start, end).trim() : src.slice(start, end);
+}
+function renderPlainInline(src) {
+	if (!INLINE_SPECIAL_RE.test(src)) return src;
+	if (INLINE_FALLBACK_RE.test(src)) return null;
+	return src.replace(INLINE_QUOTE_RE, "&quot;");
+}
+function renderAtxHeading(src, pos, end) {
+	let level = 0;
+	let markerEnd = pos;
+	while (markerEnd < end && src.charCodeAt(markerEnd) === 35 && level < 6) {
+		markerEnd++;
+		level++;
+	}
+	if (level === 0 || markerEnd >= end || src.charCodeAt(markerEnd) !== 32) return null;
+	let contentStart = markerEnd + 1;
+	while (contentStart < end && src.charCodeAt(contentStart) === 32) contentStart++;
+	let contentEnd = end;
+	while (contentEnd > contentStart && src.charCodeAt(contentEnd - 1) === 32) contentEnd--;
+	let markerStart = contentEnd;
+	while (markerStart > contentStart && src.charCodeAt(markerStart - 1) === 35) markerStart--;
+	if (markerStart > contentStart && src.charCodeAt(markerStart - 1) === 32) {
+		contentEnd = markerStart - 1;
+		while (contentEnd > contentStart && src.charCodeAt(contentEnd - 1) === 32) contentEnd--;
+	}
+	const content = renderPlainInline(src.slice(contentStart, contentEnd));
+	if (content === null) return null;
+	return `<h${level}>${content}</h${level}>\n`;
+}
+function startsWithBulletItem(src, pos, end) {
+	return pos + 1 < end && src.charCodeAt(pos) === 45 && src.charCodeAt(pos + 1) === 32;
+}
+const BULLET_SAFE_TABLE = new Uint8Array(256).fill(1);
+for (const code of [
+	10,
+	33,
+	35,
+	36,
+	37,
+	38,
+	42,
+	43,
+	45,
+	58,
+	60,
+	61,
+	62,
+	64,
+	91,
+	92,
+	93,
+	94,
+	95,
+	96,
+	123,
+	125,
+	126
+]) BULLET_SAFE_TABLE[code] = 0;
+BULLET_SAFE_TABLE[34] = 0;
+function renderSingleCharBulletItem(src, pos) {
+	const ch = src.charCodeAt(pos);
+	if (ch === 34) return "<li>&quot;</li>\n";
+	if (ch < 256 && BULLET_SAFE_TABLE[ch] === 0) return null;
+	return `<li>${src[pos]}</li>\n`;
+}
+function renderBulletItem(src, pos, end) {
+	const contentStart = pos + 2;
+	if (end === contentStart + 1) return renderSingleCharBulletItem(src, contentStart);
+	const content = renderPlainInline(src.slice(pos + 2, end));
+	return content === null ? null : `<li>${content}</li>\n`;
+}
+function fenceLang(src, start, end) {
+	while (start < end) {
+		const ch = src.charCodeAt(start);
+		if (ch !== 32 && ch !== 9) break;
+		start++;
+	}
+	while (end > start) {
+		const ch = src.charCodeAt(end - 1);
+		if (ch !== 32 && ch !== 9) break;
+		end--;
+	}
+	let langEnd = end;
+	for (let pos = start; pos < end; pos++) {
+		const ch = src.charCodeAt(pos);
+		if (ch === 96) return null;
+		if (ch === 32 || ch === 9) {
+			langEnd = pos;
+			break;
+		}
+	}
+	return src.slice(start, langEnd);
+}
+function renderFence(src, pos, end, cache, diagnostics) {
+	if (!startsWithFence(src, pos, end)) return null;
+	const lang = fenceLang(src, pos + 3, end);
+	if (lang === null) return null;
+	const contentStart = end < src.length ? end + 1 : end;
+	let contentEnd = contentStart;
+	let scan = contentStart;
+	while (scan < src.length) {
+		const closeEnd = lineEnd(src, scan);
+		if (startsWithFence(src, scan, closeEnd) && isBlankLine$2(src, scan + 3, closeEnd)) {
+			const content = src.slice(contentStart, contentEnd);
+			let open;
+			if (lang === cache.lang) {
+				if (diagnostics) diagnostics.fenceCacheHits++;
+				open = cache.open;
+			} else {
+				if (diagnostics) diagnostics.fenceCacheMisses++;
+				open = lang ? `<pre><code class="language-${escapeHtml(lang)}">` : "<pre><code>";
+				cache.lang = lang;
+				cache.open = open;
+			}
+			return {
+				html: `${open}${escapeHtml(content)}</code></pre>\n`,
+				nextPos: closeEnd < src.length ? closeEnd + 1 : closeEnd
+			};
+		}
+		scan = closeEnd < src.length ? closeEnd + 1 : closeEnd;
+		contentEnd = scan;
+	}
+	return null;
+}
+/**
+* Experimental stock renderer fast path.
+*
+* Returns HTML for the supported stock subset, or null when the input needs
+* the normal markdown-it-compatible parser and renderer.
+*/
+function renderStockFastInternal(src, diagnostics) {
+	if (src.length === 0) {
+		if (diagnostics) diagnostics.matched = true;
+		return "";
+	}
+	if (src.includes("\r") || src.includes("\0")) return null;
+	let pos = 0;
+	let html = "";
+	const useChunks = src.length >= 25e4;
+	const chunks = [];
+	const fenceOpenCache = {
+		lang: null,
+		open: ""
+	};
+	let lastListSource = "";
+	let lastListHtml = "";
+	let lastParagraph = "";
+	let lastParagraphHtml = "";
+	while (pos < src.length) {
+		const end = lineEnd(src, pos);
+		if (pos === end) {
+			pos = end < src.length ? end + 1 : end;
+			continue;
+		}
+		const ch = src.charCodeAt(pos);
+		if (ch === 32 || ch === 9) {
+			if (!isBlankLine$2(src, pos, end)) return null;
+			pos = end < src.length ? end + 1 : end;
+			continue;
+		}
+		if (ch === 35) {
+			const heading = renderAtxHeading(src, pos, end);
+			if (heading === null) return null;
+			if (diagnostics) {
+				diagnostics.blocks++;
+				diagnostics.headings++;
+			}
+			if (useChunks) chunks.push(heading);
+			else html += heading;
+			pos = skipEmptyLines(src, end < src.length ? end + 1 : end);
+			continue;
+		}
+		if (ch === 45) {
+			let nextPos$1 = pos;
+			while (nextPos$1 < src.length) {
+				const itemEnd = lineEnd(src, nextPos$1);
+				if (!startsWithBulletItem(src, nextPos$1, itemEnd)) break;
+				nextPos$1 = itemEnd < src.length ? itemEnd + 1 : itemEnd;
+			}
+			if (nextPos$1 === pos) return null;
+			const listSource = src.slice(pos, nextPos$1);
+			let listHtml;
+			if (listSource === lastListSource) {
+				if (diagnostics) diagnostics.listCacheHits++;
+				listHtml = lastListHtml;
+			} else {
+				if (diagnostics) diagnostics.listCacheMisses++;
+				let itemPos = pos;
+				listHtml = "<ul>\n";
+				while (itemPos < nextPos$1) {
+					const itemEnd = lineEnd(src, itemPos);
+					const item = renderBulletItem(src, itemPos, itemEnd);
+					if (item === null) return null;
+					listHtml += item;
+					itemPos = itemEnd < src.length ? itemEnd + 1 : itemEnd;
+				}
+				listHtml += "</ul>\n";
+				lastListSource = listSource;
+				lastListHtml = listHtml;
+			}
+			let lookahead = skipEmptyLines(src, nextPos$1);
+			while (lookahead < src.length) {
+				if (src.charCodeAt(lookahead) === 10) {
+					lookahead++;
+					continue;
+				}
+				const lookaheadEnd = lineEnd(src, lookahead);
+				if (!isBlankLine$2(src, lookahead, lookaheadEnd)) {
+					if (startsWithBulletItem(src, lookahead, lookaheadEnd)) return null;
+					break;
+				}
+				lookahead = lookaheadEnd < src.length ? lookaheadEnd + 1 : lookaheadEnd;
+			}
+			if (diagnostics) {
+				diagnostics.blocks++;
+				diagnostics.lists++;
+			}
+			if (useChunks) chunks.push(listHtml);
+			else html += listHtml;
+			pos = lookahead;
+			continue;
+		}
+		if (ch === 96) {
+			const fence = renderFence(src, pos, end, fenceOpenCache, diagnostics);
+			if (!fence) return null;
+			if (diagnostics) {
+				diagnostics.blocks++;
+				diagnostics.fences++;
+			}
+			if (useChunks) chunks.push(fence.html);
+			else html += fence.html;
+			pos = skipEmptyLines(src, fence.nextPos);
+			continue;
+		}
+		const paragraph = paragraphContent(src, pos, end);
+		let paragraphHtml;
+		if (paragraph === lastParagraph) {
+			if (diagnostics) diagnostics.paragraphCacheHits++;
+			paragraphHtml = lastParagraphHtml;
+		} else {
+			if (diagnostics) diagnostics.paragraphCacheMisses++;
+			const paragraphHtmlContent = renderPlainInline(paragraph);
+			if (paragraphHtmlContent === null) return null;
+			paragraphHtml = `<p>${paragraphHtmlContent}</p>\n`;
+			lastParagraph = paragraph;
+			lastParagraphHtml = paragraphHtml;
+		}
+		const nextPos = end < src.length ? end + 1 : end;
+		if (nextPos < src.length && src.charCodeAt(nextPos) !== 10 && startsParagraphContinuation(src, nextPos)) return null;
+		if (diagnostics) {
+			diagnostics.blocks++;
+			diagnostics.paragraphs++;
+		}
+		if (useChunks) chunks.push(paragraphHtml);
+		else html += paragraphHtml;
+		pos = skipEmptyLines(src, nextPos);
+	}
+	if (diagnostics) diagnostics.matched = true;
+	return useChunks ? chunks.join("") : html;
+}
+function renderStockFast(src) {
+	return renderStockFastInternal(src);
+}
+function renderStockFastWithDiagnostics(src, diagnostics) {
+	return renderStockFastInternal(src, diagnostics);
+}
+
+//#endregion
+//#region src/stream/chunked.ts
+const DEFAULTS = {
+	maxChunkChars: 1e4,
+	maxChunkLines: 200,
+	fenceAware: true,
+	maxChunks: void 0,
+	fallbackOnGlobalState: true
+};
+/**
+* Chunk a markdown document on reasonably safe boundaries (blank-line separated)
+* and parse each chunk separately, then merge token streams with line map offsets.
+*
+* @experimental Markdown is not always chunk-local. The default path falls back
+* to a full parse for known document-level state and unsafe chunk boundaries;
+* disabling those fallbacks can produce output that differs from full parsing.
+*/
+function chunkedParse(md, src, env = {}, opts) {
+	beginParseDiagnostics(env);
+	const options = {
+		...DEFAULTS,
+		...opts || {}
+	};
+	const currentGlobalStateReason = detectGlobalMarkdownState(src);
+	if (options.fallbackOnGlobalState !== false && currentGlobalStateReason) {
+		setChunkDiagnostics(env, {
+			count: 1,
+			fallback: true,
+			fallbackReason: currentGlobalStateReason,
+			globalStateDetected: currentGlobalStateReason,
+			maxChunkChars: options.maxChunkChars,
+			maxChunkLines: options.maxChunkLines
+		});
+		return runWithKnownGlobalMarkdownState(env, currentGlobalStateReason, () => {
+			return md.core.parse(src, env, md).tokens;
+		});
+	}
+	let ranges = splitIntoChunkRanges(src, options);
+	if (options.maxChunks && ranges.length > options.maxChunks) ranges = rebalanceChunkRanges(ranges, options.maxChunks);
+	if (hasUnsafeChunkBoundary(src, ranges)) {
+		setChunkDiagnostics(env, {
+			count: 1,
+			fallback: true,
+			fallbackReason: "unsafe-chunk-boundary",
+			maxChunkChars: options.maxChunkChars,
+			maxChunkLines: options.maxChunkLines
+		});
+		return runWithKnownGlobalMarkdownState(env, currentGlobalStateReason, () => {
+			return md.core.parse(src, env, md).tokens;
+		});
+	}
+	let lineOffset = 0;
+	const out = [];
+	setChunkDiagnostics(env, {
+		count: ranges.length,
+		maxChunkChars: options.maxChunkChars,
+		maxChunkLines: options.maxChunkLines,
+		globalStateDetected: currentGlobalStateReason || void 0,
+		globalStateFallbackDisabled: options.fallbackOnGlobalState === false && !!currentGlobalStateReason
+	});
+	return runWithKnownGlobalMarkdownState(env, currentGlobalStateReason, () => {
+		for (let i = 0; i < ranges.length; i++) {
+			const range = ranges[i];
+			const ch = src.slice(range.start, range.end);
+			const tokens = md.core.parse(ch, env, md).tokens;
+			if (lineOffset !== 0 && tokens.length) shiftTokenLines$1(tokens, lineOffset);
+			appendTokens$1(out, tokens);
+			lineOffset += range.lineCount;
+		}
+		return out;
+	});
+}
+/**
+* Split text into chunks by blank lines without breaking fenced code blocks.
+* Keeps chunk sizes under maxChunkChars/maxChunkLines where possible.
+*/
+function splitIntoChunks(src, opts) {
+	const ranges = splitIntoChunkRanges(src, opts);
+	const chunks = new Array(ranges.length);
+	for (let i = 0; i < ranges.length; i++) chunks[i] = src.slice(ranges[i].start, ranges[i].end);
+	return chunks;
+}
+function splitIntoChunkRanges(src, opts, final = true) {
+	const chunks = [];
+	let charCount = 0;
+	let lineCount = 0;
+	let chunkStart = 0;
+	let chunkLines = 0;
+	let sinceBlankLines = 0;
+	let sinceBlankChars = 0;
+	let inFence = null;
+	function flush(end) {
+		if (end <= chunkStart) return;
+		chunks.push({
+			start: chunkStart,
+			end,
+			lineCount: chunkLines
+		});
+		chunkStart = end;
+		charCount = 0;
+		lineCount = 0;
+		chunkLines = 0;
+	}
+	for (let lineStart = 0; lineStart < src.length;) {
+		let lineEnd$2 = src.indexOf("\n", lineStart);
+		let lineEndWithNl = lineEnd$2;
+		if (lineEnd$2 === -1) {
+			lineEnd$2 = src.length;
+			lineEndWithNl = src.length;
+		} else lineEndWithNl = lineEnd$2 + 1;
+		const blank = isBlankLine$1(src, lineStart, lineEnd$2);
+		if (opts.fenceAware) {
+			let p = lineStart;
+			while (p < lineEnd$2) {
+				const c = src.charCodeAt(p);
+				if (c === 32 || c === 9) p++;
+				else break;
+			}
+			const ch = src[p];
+			if (ch === "`" || ch === "~") {
+				let q = p;
+				while (q < lineEnd$2 && src[q] === ch) q++;
+				const runLen = q - p;
+				if (runLen >= 3) {
+					if (!inFence) inFence = {
+						marker: ch,
+						length: runLen
+					};
+					else if (inFence.marker === ch && runLen >= inFence.length) inFence = null;
+				}
+			}
+		}
+		const lineWithNlLen = lineEndWithNl - lineStart;
+		charCount += lineWithNlLen;
+		lineCount += 1;
+		chunkLines += 1;
+		if (blank) {
+			sinceBlankLines = 0;
+			sinceBlankChars = 0;
+		} else {
+			sinceBlankLines += 1;
+			sinceBlankChars += lineWithNlLen;
+		}
+		const atBlankBoundary = blank;
+		if ((charCount >= opts.maxChunkChars || lineCount >= opts.maxChunkLines) && !inFence) if (atBlankBoundary) flush(lineEndWithNl);
+		else {
+			const maxSinceBlankLines = Math.max(10, Math.floor(opts.maxChunkLines * .5));
+			const maxSinceBlankChars = Math.max(opts.maxChunkChars, 8e3);
+			if (sinceBlankLines >= maxSinceBlankLines || sinceBlankChars >= maxSinceBlankChars) flush(lineEndWithNl);
+		}
+		lineStart = lineEndWithNl;
+	}
+	if (final) flush(src.length);
+	return chunks;
+}
+function hasUnsafeChunkBoundary(src, ranges, options = { rangesCoverWholeSource: true }) {
+	const limit = options.rangesCoverWholeSource ? ranges.length - 1 : ranges.length;
+	for (let i = 0; i < limit; i++) if (!endsAtBlankLine(src, ranges[i].end)) return true;
+	return false;
+}
+function endsAtBlankLine(src, end) {
+	if (end <= 0 || end > src.length || src.charCodeAt(end - 1) !== 10) return false;
+	let lineStart = end - 2;
+	while (lineStart >= 0 && src.charCodeAt(lineStart) !== 10) lineStart--;
+	for (let i = lineStart + 1; i < end - 1; i++) {
+		const ch = src.charCodeAt(i);
+		if (ch !== 32 && ch !== 9 && ch !== 13) return false;
+	}
+	return true;
+}
+function shiftTokenLines$1(tokens, offset) {
+	if (offset === 0) return;
+	const stack = [];
+	for (let i = tokens.length - 1; i >= 0; i--) stack.push(tokens[i]);
+	while (stack.length) {
+		const t = stack.pop();
+		if (t.map) {
+			t.map[0] += offset;
+			t.map[1] += offset;
+		}
+		if (t.children) for (let i = t.children.length - 1; i >= 0; i--) stack.push(t.children[i]);
+	}
+}
+function appendTokens$1(out, tokens) {
+	for (let i = 0; i < tokens.length; i++) out.push(tokens[i]);
+}
+function rebalanceChunkRanges(chunks, maxChunks) {
+	if (chunks.length <= maxChunks) return chunks;
+	const out = [];
+	let index = 0;
+	for (let group = 0; group < maxChunks; group++) {
+		const groupsLeft = maxChunks - group;
+		const chunksLeft = chunks.length - index;
+		const take = Math.ceil(chunksLeft / groupsLeft);
+		const slice = chunks.slice(index, index + take);
+		let lineCount = 0;
+		for (let i = 0; i < slice.length; i++) lineCount += slice[i].lineCount;
+		out.push({
+			start: slice[0].start,
+			end: slice[slice.length - 1].end,
+			lineCount
+		});
+		index += take;
+	}
+	return out;
+}
+function isBlankLine$1(src, start, end) {
+	for (let i = start; i < end; i++) {
+		const ch = src.charCodeAt(i);
+		if (ch !== 32 && ch !== 9 && ch !== 13) return false;
+	}
+	return true;
+}
+
+//#endregion
+//#region src/stream/unbounded.ts
+const DEFAULT_AUTO_UNBOUNDED_THRESHOLD_CHARS = 4e6;
+const DEFAULT_AUTO_UNBOUNDED_THRESHOLD_LINES = 8e4;
+const DEFAULT_FULL_CHUNK_CHARS = 1e4;
+const DEFAULT_FULL_CHUNK_LINES = 200;
+const DEFAULT_STREAM_CHUNK_CHARS = 1e4;
+const DEFAULT_STREAM_CHUNK_LINES = 200;
+function appendTokens(out, tokens) {
+	for (let i = 0; i < tokens.length; i++) out.push(tokens[i]);
+}
+function shiftTokenLines(tokens, offset) {
+	if (offset === 0) return;
+	const stack = [];
+	for (let i = tokens.length - 1; i >= 0; i--) stack.push(tokens[i]);
+	while (stack.length) {
+		const token = stack.pop();
+		if (token.map) {
+			token.map[0] += offset;
+			token.map[1] += offset;
+		}
+		if (token.children) for (let i = token.children.length - 1; i >= 0; i--) stack.push(token.children[i]);
+	}
+}
+function estimateLines(src) {
+	if (src.length === 0) return 0;
+	return countLines(src) + (src.charCodeAt(src.length - 1) === 10 ? 0 : 1);
+}
+function isBlankLine(src, start, end) {
+	for (let i = start; i < end; i++) {
+		const ch = src.charCodeAt(i);
+		if (ch !== 32 && ch !== 9 && ch !== 13) return false;
+	}
+	return true;
+}
+function endsInsideFence(src, fenceAware) {
+	if (!fenceAware || src.length === 0) return false;
+	let inFence = null;
+	for (let lineStart = 0; lineStart < src.length;) {
+		let lineEnd$2 = src.indexOf("\n", lineStart);
+		if (lineEnd$2 === -1) lineEnd$2 = src.length;
+		let p = lineStart;
+		while (p < lineEnd$2) {
+			const c = src.charCodeAt(p);
+			if (c === 32 || c === 9) p++;
+			else break;
+		}
+		const ch = src[p];
+		if (ch === "`" || ch === "~") {
+			let q = p;
+			while (q < lineEnd$2 && src[q] === ch) q++;
+			const runLen = q - p;
+			if (runLen >= 3) {
+				if (!inFence) inFence = {
+					marker: ch,
+					length: runLen
+				};
+				else if (inFence.marker === ch && runLen >= inFence.length) inFence = null;
+			}
+		}
+		lineStart = lineEnd$2 === src.length ? src.length : lineEnd$2 + 1;
+	}
+	return inFence !== null;
+}
+function endsAtBlankBoundary(src, fenceAware) {
+	if (src.length === 0 || src.charCodeAt(src.length - 1) !== 10) return false;
+	let prevNl = src.length - 2;
+	while (prevNl >= 0 && src.charCodeAt(prevNl) !== 10) prevNl--;
+	if (!isBlankLine(src, prevNl + 1, src.length - 1)) return false;
+	return !endsInsideFence(src, fenceAware);
+}
+function resolveWindow(md, totalChars, totalLines, opts = {}) {
+	const mode = opts.mode ?? "full";
+	const fenceAware = opts.fenceAware ?? (mode === "stream" ? md.options.streamChunkFenceAware ?? true : md.options.fullChunkFenceAware ?? true);
+	if (opts.maxChunkChars !== void 0 || opts.maxChunkLines !== void 0 || opts.autoTune === false) {
+		const maxChunkChars = opts.maxChunkChars ?? (mode === "stream" ? md.options.streamChunkSizeChars ?? DEFAULT_STREAM_CHUNK_CHARS : md.options.fullChunkSizeChars ?? DEFAULT_FULL_CHUNK_CHARS);
+		const maxChunkLines = opts.maxChunkLines ?? (mode === "stream" ? md.options.streamChunkSizeLines ?? DEFAULT_STREAM_CHUNK_LINES : md.options.fullChunkSizeLines ?? DEFAULT_FULL_CHUNK_LINES);
+		return {
+			maxChunkChars,
+			maxChunkLines,
+			holdBelowChars: maxChunkChars,
+			holdBelowLines: maxChunkLines,
+			fenceAware
+		};
+	}
+	if (mode === "stream") {
+		if (totalChars <= 5e3) return {
+			maxChunkChars: 16e3,
+			maxChunkLines: 250,
+			holdBelowChars: 16e3,
+			holdBelowLines: 250,
+			fenceAware
+		};
+		if (totalChars <= 2e4) return {
+			maxChunkChars: 16e3,
+			maxChunkLines: 200,
+			holdBelowChars: 16e3,
+			holdBelowLines: 200,
+			fenceAware
+		};
+		if (totalChars <= 5e4) return {
+			maxChunkChars: 16e3,
+			maxChunkLines: 250,
+			holdBelowChars: 16e3,
+			holdBelowLines: 250,
+			fenceAware
+		};
+		if (totalChars <= 5e5) return {
+			maxChunkChars: 32e3,
+			maxChunkLines: 350,
+			holdBelowChars: 32e3,
+			holdBelowLines: 350,
+			fenceAware
+		};
+		return {
+			maxChunkChars: 64e3,
+			maxChunkLines: 700,
+			holdBelowChars: 64e3,
+			holdBelowLines: 700,
+			fenceAware
+		};
+	}
+	if (totalChars <= 1e5 && totalLines <= 2500) return {
+		maxChunkChars: 32e3,
+		maxChunkLines: 350,
+		holdBelowChars: 1e5,
+		holdBelowLines: 2500,
+		fenceAware
+	};
+	if (totalChars <= 2e5) return {
+		maxChunkChars: 2e4,
+		maxChunkLines: 150,
+		holdBelowChars: 2e4,
+		holdBelowLines: 150,
+		fenceAware
+	};
+	if (totalChars <= 5e5) return {
+		maxChunkChars: 32e3,
+		maxChunkLines: 350,
+		holdBelowChars: 32e3,
+		holdBelowLines: 350,
+		fenceAware
+	};
+	return {
+		maxChunkChars: 64e3,
+		maxChunkLines: 700,
+		holdBelowChars: 64e3,
+		holdBelowLines: 700,
+		fenceAware
+	};
+}
+/**
+* Append-only parser for sources that already arrive as chunks.
+*
+* @experimental Streaming output can be committed before future document-level
+* definitions are known. Use full-string parsing when exact full-parse parity
+* matters for references, footnotes, abbreviations, or plugin global state.
+*/
+var UnboundedBuffer = class {
+	md;
+	options;
+	pending = "";
+	tokens = [];
+	committedChars = 0;
+	committedLines = 0;
+	fedChunks = 0;
+	parsedChunks = 0;
+	globalStateEnv = null;
+	markedGlobalStateReason = null;
+	constructor(md, opts = {}) {
+		this.md = md;
+		this.options = {
+			mode: "full",
+			autoTune: true,
+			retainTokens: true,
+			...opts
+		};
+		if (this.options.retainTokens === false && !this.options.onChunkTokens) throw new Error("UnboundedBuffer with retainTokens=false requires onChunkTokens");
+	}
+	feed(chunk) {
+		if (!chunk) return;
+		this.pending += chunk;
+		this.fedChunks += 1;
+	}
+	flushAvailable(env = {}) {
+		if (!this.pending) return null;
+		const window = this.resolveWindow();
+		const pendingLines = estimateLines(this.pending);
+		if (this.pending.length < window.holdBelowChars && pendingLines < window.holdBelowLines) {
+			this.updateEnvDiagnostics(env, window, pendingLines);
+			return null;
+		}
+		const ranges = splitIntoChunkRanges(this.pending, {
+			maxChunkChars: window.maxChunkChars,
+			maxChunkLines: window.maxChunkLines,
+			fenceAware: window.fenceAware,
+			maxChunks: void 0
+		}, false);
+		if (!ranges.length) {
+			this.updateEnvDiagnostics(env, window, pendingLines);
+			return null;
+		}
+		if (hasUnsafeChunkBoundary(this.pending, ranges, { rangesCoverWholeSource: false })) {
+			this.updateEnvDiagnostics(env, window, pendingLines);
+			return null;
+		}
+		const consumed = this.commitRanges(ranges, env);
+		this.pending = this.pending.slice(consumed);
+		this.updateEnvDiagnostics(env, window, estimateLines(this.pending));
+		return this.tokens;
+	}
+	flushIfBoundary(env = {}) {
+		if (!this.pending) return null;
+		const window = this.resolveWindow();
+		if (!endsAtBlankBoundary(this.pending, window.fenceAware)) {
+			this.updateEnvDiagnostics(env, window, estimateLines(this.pending));
+			return null;
+		}
+		const ranges = splitIntoChunkRanges(this.pending, {
+			maxChunkChars: window.maxChunkChars,
+			maxChunkLines: window.maxChunkLines,
+			fenceAware: window.fenceAware,
+			maxChunks: void 0
+		}, true);
+		if (!ranges.length) {
+			this.updateEnvDiagnostics(env, window, estimateLines(this.pending));
+			return null;
+		}
+		const rangesToCommit = hasUnsafeChunkBoundary(this.pending, ranges, { rangesCoverWholeSource: true }) ? [{
+			start: 0,
+			end: this.pending.length,
+			lineCount: estimateLines(this.pending)
+		}] : ranges;
+		this.commitRanges(rangesToCommit, env);
+		this.pending = "";
+		this.updateEnvDiagnostics(env, window, 0);
+		return this.tokens;
+	}
+	flushForce(env = {}) {
+		if (!this.pending) {
+			this.prepareGlobalStateEnv(env, "");
+			const window$1 = this.resolveWindow();
+			this.updateEnvDiagnostics(env, window$1, 0);
+			return this.tokens;
+		}
+		const window = this.resolveWindow();
+		const ranges = splitIntoChunkRanges(this.pending, {
+			maxChunkChars: window.maxChunkChars,
+			maxChunkLines: window.maxChunkLines,
+			fenceAware: window.fenceAware,
+			maxChunks: void 0
+		}, true);
+		if (ranges.length) {
+			const rangesToCommit = hasUnsafeChunkBoundary(this.pending, ranges, { rangesCoverWholeSource: true }) ? [{
+				start: 0,
+				end: this.pending.length,
+				lineCount: estimateLines(this.pending)
+			}] : ranges;
+			this.commitRanges(rangesToCommit, env);
+			this.pending = "";
+		}
+		this.updateEnvDiagnostics(env, window, 0);
+		return this.tokens;
+	}
+	reset() {
+		this.pending = "";
+		this.tokens = [];
+		this.committedChars = 0;
+		this.committedLines = 0;
+		this.fedChunks = 0;
+		this.parsedChunks = 0;
+		this.globalStateEnv = null;
+		this.markedGlobalStateReason = null;
+	}
+	peek() {
+		return this.tokens;
+	}
+	pendingText() {
+		return this.pending;
+	}
+	stats() {
+		return {
+			mode: this.options.mode ?? "full",
+			fedChunks: this.fedChunks,
+			parsedChunks: this.parsedChunks,
+			committedChars: this.committedChars,
+			committedLines: this.committedLines,
+			pendingChars: this.pending.length,
+			pendingLines: estimateLines(this.pending),
+			retainedTokens: this.options.retainTokens !== false
+		};
+	}
+	resolveWindow() {
+		const totalChars = this.committedChars + this.pending.length;
+		const totalLines = this.committedLines + estimateLines(this.pending);
+		return resolveWindow(this.md, totalChars, totalLines, this.options);
+	}
+	prepareGlobalStateEnv(env, srcAboutToParse) {
+		if (this.globalStateEnv !== env) {
+			if (getKnownGlobalMarkdownState(env)) resetKnownGlobalMarkdownState(env);
+			this.globalStateEnv = env;
+			this.markedGlobalStateReason = null;
+		}
+		if (this.markedGlobalStateReason) return;
+		const reason = detectGlobalMarkdownState(srcAboutToParse);
+		if (!reason) return;
+		markKnownGlobalMarkdownState(env, reason);
+		this.markedGlobalStateReason = reason;
+	}
+	commitRanges(ranges, env) {
+		if (!ranges.length) return 0;
+		this.prepareGlobalStateEnv(env, this.pending);
+		let consumed = 0;
+		try {
+			for (let i = 0; i < ranges.length; i++) {
+				const range = ranges[i];
+				const src = this.pending.slice(range.start, range.end);
+				const nextTokens = this.md.core.parse(src, env, this.md).tokens;
+				const startOffset = this.committedChars;
+				const startLine = this.committedLines;
+				if (startLine !== 0 && nextTokens.length) shiftTokenLines(nextTokens, startLine);
+				if (this.options.retainTokens !== false) appendTokens(this.tokens, nextTokens);
+				this.committedChars += src.length;
+				this.committedLines += range.lineCount;
+				this.parsedChunks += 1;
+				if (this.options.onChunkTokens) this.options.onChunkTokens(nextTokens, {
+					chunkIndex: this.parsedChunks,
+					chunkChars: src.length,
+					chunkLines: range.lineCount,
+					tokenCount: nextTokens.length,
+					startOffset,
+					endOffset: this.committedChars,
+					startLine,
+					endLine: this.committedLines
+				});
+				consumed = range.end;
+			}
+			if (this.markedGlobalStateReason) finalizeKnownGlobalMarkdownState(env);
+			return consumed;
+		} catch (error) {
+			if (this.markedGlobalStateReason) {
+				resetKnownGlobalMarkdownState(env);
+				this.globalStateEnv = null;
+				this.markedGlobalStateReason = null;
+			}
+			throw error;
+		}
+	}
+	updateEnvDiagnostics(env, window, pendingLines) {
+		setUnboundedDiagnostics(env, {
+			mode: this.options.mode ?? "full",
+			maxChunkChars: window.maxChunkChars,
+			maxChunkLines: window.maxChunkLines,
+			committedChars: this.committedChars,
+			committedLines: this.committedLines,
+			pendingChars: this.pending.length,
+			pendingLines,
+			fedChunks: this.fedChunks,
+			parsedChunks: this.parsedChunks,
+			globalStateDetected: this.markedGlobalStateReason || void 0
+		});
+	}
+};
+/**
+* Parse an iterable chunk source without first joining all chunks.
+*
+* @experimental This is for explicit chunk-stream inputs. It may flush earlier
+* chunks before later document-level definitions are observed.
+*/
+function parseIterable(md, chunks, env = {}, opts = {}) {
+	beginParseDiagnostics(env);
+	const buffer = new UnboundedBuffer(md, {
+		mode: "full",
+		...opts
+	});
+	for (const chunk of chunks) {
+		buffer.feed(chunk);
+		buffer.flushAvailable(env);
+	}
+	return buffer.flushForce(env);
+}
+/**
+* Parse an async iterable chunk source without first joining all chunks.
+*
+* @experimental This is for explicit chunk-stream inputs. It may flush earlier
+* chunks before later document-level definitions are observed.
+*/
+async function parseAsyncIterable(md, chunks, env = {}, opts = {}) {
+	beginParseDiagnostics(env);
+	const buffer = new UnboundedBuffer(md, {
+		mode: "full",
+		...opts
+	});
+	for await (const chunk of chunks) {
+		buffer.feed(chunk);
+		buffer.flushAvailable(env);
+	}
+	return buffer.flushForce(env);
+}
+/**
+* Parse iterable chunks and deliver token chunks to a sink.
+*
+* @experimental Sink output is streaming-oriented and can differ from a final
+* full parse when future document-level definitions affect earlier text.
+*/
+function parseIterableToSink(md, chunks, onChunkTokens, env = {}, opts = {}) {
+	beginParseDiagnostics(env);
+	const buffer = new UnboundedBuffer(md, {
+		mode: "full",
+		...opts,
+		retainTokens: false,
+		onChunkTokens
+	});
+	for (const chunk of chunks) {
+		buffer.feed(chunk);
+		buffer.flushAvailable(env);
+	}
+	buffer.flushForce(env);
+	return buffer.stats();
+}
+/**
+* Parse async iterable chunks and deliver token chunks to a sink.
+*
+* @experimental Sink output is streaming-oriented and can differ from a final
+* full parse when future document-level definitions affect earlier text.
+*/
+async function parseAsyncIterableToSink(md, chunks, onChunkTokens, env = {}, opts = {}) {
+	beginParseDiagnostics(env);
+	const buffer = new UnboundedBuffer(md, {
+		mode: "full",
+		...opts,
+		retainTokens: false,
+		onChunkTokens
+	});
+	for await (const chunk of chunks) {
+		buffer.feed(chunk);
+		buffer.flushAvailable(env);
+	}
+	buffer.flushForce(env);
+	return buffer.stats();
+}
+function shouldAutoUseUnbounded(md, totalChars, totalLines) {
+	if (md.options.autoUnbounded === false) return false;
+	const thresholdChars = md.options.autoUnboundedThresholdChars ?? DEFAULT_AUTO_UNBOUNDED_THRESHOLD_CHARS;
+	const thresholdLines = md.options.autoUnboundedThresholdLines ?? DEFAULT_AUTO_UNBOUNDED_THRESHOLD_LINES;
+	return totalChars >= thresholdChars || totalLines >= thresholdLines;
+}
+function getAutoUnboundedDecision(md, totalChars, totalLines) {
+	if (md.options.autoUnbounded === false) return "no";
+	if (totalChars >= (md.options.autoUnboundedThresholdChars ?? DEFAULT_AUTO_UNBOUNDED_THRESHOLD_CHARS)) return "yes";
+	const thresholdLines = md.options.autoUnboundedThresholdLines ?? DEFAULT_AUTO_UNBOUNDED_THRESHOLD_LINES;
+	if (totalLines !== void 0) return totalLines >= thresholdLines ? "yes" : "no";
+	if (totalChars < 2 * thresholdLines - 1) return "no";
+	return "need-lines";
+}
+/**
+* Parse a complete string through the unbounded chunking path.
+*
+* @experimental Defaults to correctness-first fallback for known global-state
+* constructs. Disabling the fallback is performance-oriented and can diverge
+* from normal full parsing.
+*/
+function parseStringUnbounded(md, src, env = {}, opts = {}) {
+	beginParseDiagnostics(env);
+	const currentGlobalStateReason = detectGlobalMarkdownState(src);
+	if (getKnownGlobalMarkdownState(env)) resetKnownGlobalMarkdownState(env);
+	if (opts.fallbackOnGlobalState !== false && currentGlobalStateReason) {
+		setUnboundedDiagnostics(env, {
+			mode: "full",
+			fallback: true,
+			fallbackReason: currentGlobalStateReason,
+			committedChars: src.length,
+			committedLines: countLines(src),
+			pendingChars: 0,
+			pendingLines: 0,
+			fedChunks: 1,
+			parsedChunks: 1,
+			globalStateDetected: currentGlobalStateReason
+		});
+		return runWithKnownGlobalMarkdownState(env, currentGlobalStateReason, () => {
+			return md.core.parse(src, env, md).tokens;
+		});
+	}
+	const tokens = [];
+	const buffer = new UnboundedBuffer(md, {
+		mode: "full",
+		...opts,
+		retainTokens: false,
+		onChunkTokens(nextTokens) {
+			appendTokens(tokens, nextTokens);
+		}
+	});
+	if (currentGlobalStateReason) markKnownGlobalMarkdownState(env, currentGlobalStateReason);
+	buffer.feed(src);
+	buffer.flushForce(env);
+	if (currentGlobalStateReason) {
+		finalizeKnownGlobalMarkdownState(env);
+		if (opts.fallbackOnGlobalState === false) {
+			const info = getParseDiagnostics(env)?.unbounded;
+			if (info) {
+				info.globalStateDetected = currentGlobalStateReason;
+				info.globalStateFallbackDisabled = true;
+			}
+		}
+	}
+	return tokens;
+}
+
+//#endregion
+//#region src/support/chunk_recommend.ts
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+function normalizeOptions(opts) {
+	return opts.experimental ? {
+		...opts,
+		...opts.experimental
+	} : opts;
+}
+const FULL_DISCRETE_RECOMMENDATIONS = [
+	{
+		max: 5e3,
+		strategy: "discrete",
+		maxChunkChars: 32e3,
+		maxChunkLines: 150,
+		maxChunks: 8,
+		notes: "<=5k"
+	},
+	{
+		max: 2e4,
+		strategy: "discrete",
+		maxChunkChars: 24e3,
+		maxChunkLines: 200,
+		maxChunks: 12,
+		notes: "<=20k"
+	},
+	{
+		max: 1e5,
+		strategy: "plain",
+		notes: "<=100k plain"
+	},
+	{
+		max: 2e5,
+		strategy: "discrete",
+		maxChunkChars: 2e4,
+		maxChunkLines: 150,
+		maxChunks: 12,
+		notes: "<=200k"
+	},
+	{
+		max: 5e5,
+		strategy: "discrete",
+		maxChunkChars: 64e3,
+		maxChunkLines: 700,
+		maxChunks: 16,
+		notes: "<=500k"
+	},
+	{
+		max: 5e6,
+		strategy: "discrete",
+		maxChunkChars: 64e3,
+		maxChunkLines: 700,
+		maxChunks: 16,
+		notes: "<=5M"
+	}
+];
+const STREAM_DISCRETE_RECOMMENDATIONS = [
+	{
+		max: 5e3,
+		strategy: "discrete",
+		maxChunkChars: 16e3,
+		maxChunkLines: 250,
+		maxChunks: 8,
+		notes: "<=5k"
+	},
+	{
+		max: 2e4,
+		strategy: "discrete",
+		maxChunkChars: 2e4,
+		maxChunkLines: 200,
+		maxChunks: 24,
+		notes: "<=20k"
+	},
+	{
+		max: 1e5,
+		strategy: "discrete",
+		maxChunkChars: 2e4,
+		maxChunkLines: 200,
+		maxChunks: 24,
+		notes: "<=100k"
+	},
+	{
+		max: 5e5,
+		strategy: "discrete",
+		maxChunkChars: 64e3,
+		maxChunkLines: 700,
+		maxChunks: 32,
+		notes: "<=500k"
+	},
+	{
+		max: 5e6,
+		strategy: "discrete",
+		maxChunkChars: 64e3,
+		maxChunkLines: 700,
+		maxChunks: 32,
+		notes: "<=5M"
+	}
+];
+function toRecommendation(fenceAware, discrete) {
+	return {
+		strategy: discrete.strategy,
+		maxChunkChars: discrete.maxChunkChars,
+		maxChunkLines: discrete.maxChunkLines,
+		maxChunks: discrete.maxChunks,
+		fenceAware,
+		notes: discrete.notes
+	};
+}
+/**
+* Suggest full-parse chunk settings for the current synthetic harness defaults.
+*
+* @experimental Recommendations are workload-dependent; validate on the corpus
+* you plan to parse.
+*/
+function recommendFullChunkStrategy(sizeChars, sizeLines = Math.max(0, sizeChars / 40 | 0), opts = {}) {
+	const options = normalizeOptions(opts);
+	const fenceAware = options.fullChunkFenceAware ?? true;
+	const target = options.fullChunkTargetChunks ?? 8;
+	const adaptive = options.fullChunkAdaptive !== false;
+	for (let i = 0; i < FULL_DISCRETE_RECOMMENDATIONS.length; i++) {
+		const rec = FULL_DISCRETE_RECOMMENDATIONS[i];
+		if (sizeChars <= rec.max) {
+			if (rec.strategy !== "adaptive") return toRecommendation(fenceAware, rec);
+			break;
+		}
+	}
+	if (sizeChars > 5e6) return {
+		strategy: "plain",
+		fenceAware,
+		notes: ">5M plain"
+	};
+	if (adaptive) return {
+		strategy: "adaptive",
+		maxChunkChars: clamp(Math.ceil(sizeChars / target), 8e3, 64e3),
+		maxChunkLines: clamp(Math.ceil(sizeLines / target), 150, 700),
+		maxChunks: clamp(Math.ceil(sizeChars / 64e3), target, 16),
+		fenceAware,
+		notes: "adaptive fallback"
+	};
+	return {
+		strategy: "discrete",
+		maxChunkChars: options.fullChunkSizeChars ?? 1e4,
+		maxChunkLines: options.fullChunkSizeLines ?? 200,
+		fenceAware,
+		maxChunks: options.fullChunkMaxChunks
+	};
+}
+/**
+* Suggest stream chunk settings for the current synthetic harness defaults.
+*
+* @experimental Recommendations are workload-dependent; validate on the corpus
+* you plan to parse.
+*/
+function recommendStreamChunkStrategy(sizeChars, sizeLines = Math.max(0, sizeChars / 40 | 0), opts = {}) {
+	const options = normalizeOptions(opts);
+	const fenceAware = options.streamChunkFenceAware ?? true;
+	const target = options.streamChunkTargetChunks ?? 8;
+	const adaptive = options.streamChunkAdaptive !== false;
+	for (let i = 0; i < STREAM_DISCRETE_RECOMMENDATIONS.length; i++) {
+		const rec = STREAM_DISCRETE_RECOMMENDATIONS[i];
+		if (sizeChars <= rec.max) {
+			if (rec.strategy !== "adaptive") return toRecommendation(fenceAware, rec);
+			break;
+		}
+	}
+	if (sizeChars > 5e6) return {
+		strategy: "plain",
+		fenceAware,
+		notes: ">5M plain"
+	};
+	if (adaptive) return {
+		strategy: "adaptive",
+		maxChunkChars: clamp(Math.ceil(sizeChars / target), 8e3, 64e3),
+		maxChunkLines: clamp(Math.ceil(sizeLines / target), 150, 700),
+		maxChunks: clamp(Math.ceil(sizeChars / 64e3), target, 32),
+		fenceAware,
+		notes: "adaptive fallback"
+	};
+	return {
+		strategy: "discrete",
+		maxChunkChars: options.streamChunkSizeChars ?? 1e4,
+		maxChunkLines: options.streamChunkSizeLines ?? 200,
+		maxChunks: options.streamChunkMaxChunks,
+		fenceAware
+	};
+}
+
+//#endregion
+export { unescapeAll as _, parseAsyncIterable as a, parseIterableToSink as c, chunkedParse as d, splitIntoChunkRanges as f, escapeHtml as g, renderStockFastWithDiagnostics as h, getAutoUnboundedDecision as i, parseStringUnbounded as l, renderStockFast as m, recommendStreamChunkStrategy as n, parseAsyncIterableToSink as o, splitIntoChunks as p, UnboundedBuffer as r, parseIterable as s, recommendFullChunkStrategy as t, shouldAutoUseUnbounded as u, parseStockFast as v, parseStockFastAstJson as y };

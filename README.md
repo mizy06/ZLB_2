@@ -1,6 +1,6 @@
 # ZLB Mind Map Agent
 
-将课程 PDF、PPTX、DOCX、TXT 或 Markdown 转换为带文本与视觉证据、唯一根和唯一主父节点的课程思维导图。
+将课程 PDF、PPT/PPTX、DOC/DOCX、TXT 或 Markdown 转换为带文本与视觉证据、唯一根和唯一主父节点的课程思维导图。
 
 ## C+ 架构
 
@@ -38,9 +38,12 @@
 - `backend/app/mindmap_engine/`：稳定归一、结构受限父池、CP-SAT、NetworkX 校验和视觉资产服务。
 - `backend/app/review_service.py`：人工保留、删除、改父、改名和版本写入。
 - `backend/app/mindmap_layout.py`：right-first 双侧实际尺寸布局、AABB 间距门和 raster 预算。
-- `frontend/src/`：right-first 树形工作台、任务恢复/取消、双质量门、证据 Inspector 和复核队列。
+- `frontend/src/`：中性品牌的 Agent 会话壳、Codex 式实时动作流、对话内高清
+  思维导图附件、right-first 树形数据视图、任务恢复/取消和证据 Inspector。
 
 详细设计到代码的映射见 [docs/CPLUS_IMPLEMENTATION.md](docs/CPLUS_IMPLEMENTATION.md)。
+TopoMind 前端采用范围与上游兼容性说明见
+[docs/AGENT_WEB_UI_ADOPTION.md](docs/AGENT_WEB_UI_ADOPTION.md)。
 
 ## 本地启动
 
@@ -323,7 +326,7 @@ MINDMAP_PDF_TRANSCRIPTION_CONCURRENCY
 MINDMAP_PDF_TRANSCRIPTION_MAX_ATTEMPTS
 MINDMAP_PDF_TRANSCRIPTION_MIN_CONFIDENCE
 MINDMAP_ENV
-MINDMAP_API_TOKEN
+MINDMAP_WORKBENCH_OWNER_ID
 MINDMAP_MAX_UPLOAD_BYTES
 MINDMAP_MAX_DOCUMENT_PAGES
 MINDMAP_MAX_IMAGE_PIXELS
@@ -349,10 +352,10 @@ ASSET_PUBLIC_BASE_URL
 
 默认密文和私钥位于仓库的 `runtime/secrets/`。可通过环境变量覆盖。解密过程不会生成明文文件，API Key 不会发送到前端、日志或 SQLite 决策记录。`runtime/` 已被 Git 忽略。
 
-浏览器视觉资产 URL 不再携带长期 query token；同源页面使用 HttpOnly session，
-非浏览器客户端使用 `Authorization` 或 `X-Engine-Token`。若设置跨域
-`ASSET_PUBLIC_BASE_URL`，浏览器不会自动继承当前同源 session，生产建议通过
-同源反向代理暴露资产。不要把 `ASSET_ACCESS_TOKEN` 放回 URL query。
+工作台是公开单工作区，不签发登录 session，也不要求浏览器访问令牌。
+`MINDMAP_WORKBENCH_OWNER_ID` 只用于稳定绑定历史记录，不是秘密。视觉资产随
+工作台公开读取；外部引擎写接口仍要求 `EXTERNAL_ENGINE_TOKEN`。不要把
+`ASSET_ACCESS_TOKEN` 放回 URL query。
 
 每次 Provider attempt 会关联 stage、branch 和 input unit；当前尚未记录
 token/cost，也没有全部模型角色的完整结果缓存。PDF 页转录 checkpoint 已包含
@@ -483,9 +486,8 @@ sudo chmod 0440 -- \
   runtime/secrets/qwen-age-identity.txt \
   runtime/secrets/qwen.enc.env.age
 
-export MINDMAP_API_TOKEN="..."
+export MINDMAP_WORKBENCH_OWNER_ID="public-workbench"
 export EXTERNAL_ENGINE_TOKEN="..."
-export ASSET_ACCESS_TOKEN="..."
 export QWEN_BASE_URL="https://正式生产端点/v1"
 export QWEN_MODEL="受支持的正式文本模型"
 export QWEN_VISION_MODEL="受支持的正式视觉模型"
@@ -499,6 +501,14 @@ Compose 只映射 `127.0.0.1:5173`，容器使用非 root UID、只读根文件�
 本地 Compose 的 file-secret 不支持用 YAML `mode/uid/gid` 改写宿主权限，
 因此宿主 `root:10001 0440` 和 preflight 是实际启动前置条件，不能只看
 `docker compose config` 成功。
+
+公开工作台使用本地账号和 HttpOnly 会话 Cookie：每位 contributor 注册后
+拥有独立身份，只能看到自己的任务、历史、上传源文件、图版本、导出物和继续
+修改操作。未登录访问受保护 API 会返回 `401`；账号注册、登录、登出和当前
+账号查询分别使用 `/api/auth/register`、`/api/auth/login`、`/api/auth/logout`
+和 `/api/auth/me`。旧版本写入临时 `public-workbench` owner 的任务会在本次
+升级后由首个注册账号接管，后续注册账号不会看到这些历史。部署密钥仍只用于
+服务端模型和内部引擎，不作为 contributor 的用户认证凭据。
 
 端点和两个模型变量必须与实际凭据一起显式配置，并写入新任务的 run
 manifest。`preview` 模型、Token Plan/Coding Plan endpoint 或 key、无效

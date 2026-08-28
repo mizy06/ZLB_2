@@ -1,0 +1,40 @@
+
+declare function setKaTeXWorker(w: Worker): void;
+
+declare function clearKaTeXWorker(): void;
+declare function setKaTeXWorkerDebug(enabled: boolean): void;
+declare function renderKaTeXInWorker(content: string, displayMode?: boolean, timeout?: number, signal?: AbortSignal): Promise<string>;
+declare function setKaTeXCache(content: string, displayMode: boolean, html: string): void;
+
+declare function getKaTeXWorkerLoad(): {
+    inFlight: number;
+    max: number;
+};
+declare function setKaTeXWorkerMaxConcurrency(n: number): void;
+declare const WORKER_BUSY_CODE = "WORKER_BUSY";
+declare function isKaTeXWorkerBusy(): boolean;
+declare function waitForKaTeXWorkerSlot(timeout?: number, signal?: AbortSignal): Promise<void>;
+interface BackpressureOptions {
+    timeout?: number;
+    waitTimeout?: number;
+    backoffMs?: number;
+    maxRetries?: number;
+    signal?: AbortSignal;
+}
+declare const defaultBackpressure: {
+    timeout: number;
+    waitTimeout: number;
+    backoffMs: number;
+    maxRetries: number;
+};
+declare function setKaTeXBackpressureDefaults(opts: Partial<typeof defaultBackpressure>): void;
+declare function getKaTeXBackpressureDefaults(): {
+    timeout: number;
+    waitTimeout: number;
+    backoffMs: number;
+    maxRetries: number;
+};
+
+declare function renderKaTeXWithBackpressure(content: string, displayMode?: boolean, opts?: BackpressureOptions): Promise<string>;
+
+export { BackpressureOptions, WORKER_BUSY_CODE, clearKaTeXWorker, getKaTeXBackpressureDefaults, getKaTeXWorkerLoad, isKaTeXWorkerBusy, renderKaTeXInWorker, renderKaTeXWithBackpressure, setKaTeXBackpressureDefaults, setKaTeXCache, setKaTeXWorker, setKaTeXWorkerDebug, setKaTeXWorkerMaxConcurrency, waitForKaTeXWorkerSlot };

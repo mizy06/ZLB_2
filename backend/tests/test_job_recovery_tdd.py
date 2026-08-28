@@ -136,7 +136,7 @@ class JobRecoveryTDDTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "jobs", in_memory_jobs),
                 patch.object(
                     main,
-                    "run_cplus_pipeline",
+                    "run_editorial_ppt_pipeline",
                     AsyncMock(side_effect=RuntimeError("provider failed")),
                 ),
             ):
@@ -197,7 +197,7 @@ class JobRecoveryTDDTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "job_runtime", runtime),
                 patch.object(
                     main,
-                    "run_cplus_pipeline",
+                    "run_editorial_ppt_pipeline",
                     interrupted_pipeline,
                 ),
             ):

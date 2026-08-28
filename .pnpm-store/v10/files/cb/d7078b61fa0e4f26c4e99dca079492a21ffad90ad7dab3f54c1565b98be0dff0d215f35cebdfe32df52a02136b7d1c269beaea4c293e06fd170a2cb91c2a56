@@ -1,0 +1,315 @@
+import * as vue from 'vue';
+import { InjectionKey } from 'vue';
+export * from 'stream-markdown-parser';
+
+interface CodeBlockMonacoThemeObject {
+    name: string;
+    base?: string;
+    inherit?: boolean;
+    colors?: Record<string, string>;
+    rules?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+}
+type CodeBlockMonacoTheme = string | CodeBlockMonacoThemeObject;
+type CodeBlockMonacoLanguage = string | ((...args: unknown[]) => unknown);
+interface CodeBlockDiffHideUnchangedRegionsOptions {
+    enabled?: boolean;
+    contextLineCount?: number;
+    minimumLineCount?: number;
+    revealLineCount?: number;
+}
+type CodeBlockDiffHideUnchangedRegions = boolean | CodeBlockDiffHideUnchangedRegionsOptions;
+type CodeBlockDiffLineStyle = 'background' | 'bar';
+type CodeBlockDiffAppearance = 'auto' | 'light' | 'dark';
+type CodeBlockDiffUnchangedRegionStyle = 'line-info' | 'line-info-basic' | 'metadata' | 'simple';
+type CodeBlockDiffHunkActionKind = 'revert' | 'stage';
+type CodeBlockDiffHunkSide = 'upper' | 'lower';
+interface CodeBlockDiffHunkActionContext {
+    action: CodeBlockDiffHunkActionKind;
+    side: CodeBlockDiffHunkSide;
+    lineChange: unknown;
+    originalModel: unknown;
+    modifiedModel: unknown;
+}
+interface CodeBlockMonacoOptions {
+    MAX_HEIGHT?: number | string;
+    fontSize?: number;
+    lineHeight?: number;
+    fontFamily?: string;
+    tabSize?: number;
+    padding?: {
+        top?: number;
+        bottom?: number;
+    };
+    readOnly?: boolean;
+    wordWrap?: 'off' | 'on' | 'wordWrapColumn' | 'bounded' | string;
+    diffWordWrap?: 'off' | 'on' | 'inherit';
+    wrappingIndent?: 'none' | 'same' | 'indent' | 'deepIndent' | string;
+    theme?: string;
+    themes?: CodeBlockMonacoTheme[];
+    languages?: CodeBlockMonacoLanguage[];
+    renderSideBySide?: boolean;
+    useInlineViewWhenSpaceIsLimited?: boolean;
+    renderSideBySideInlineBreakpoint?: number;
+    enableSplitViewResizing?: boolean;
+    ignoreTrimWhitespace?: boolean;
+    maxComputationTime?: number;
+    diffAlgorithm?: string;
+    renderIndicators?: boolean;
+    originalEditable?: boolean;
+    revealDebounceMs?: number;
+    revealStrategy?: 'bottom' | 'centerIfOutside' | 'center';
+    revealBatchOnIdleMs?: number;
+    updateThrottleMs?: number;
+    diffUpdateThrottleMs?: number;
+    diffAutoScroll?: boolean;
+    diffHideUnchangedRegions?: CodeBlockDiffHideUnchangedRegions;
+    diffLineStyle?: CodeBlockDiffLineStyle;
+    diffAppearance?: CodeBlockDiffAppearance;
+    diffUnchangedRegionStyle?: CodeBlockDiffUnchangedRegionStyle;
+    diffHunkActionsOnHover?: boolean;
+    diffHunkHoverHideDelayMs?: number;
+    onDiffHunkAction?: (context: CodeBlockDiffHunkActionContext) => void | boolean | Promise<void | boolean>;
+    scrollbar?: Record<string, unknown>;
+    [key: string]: unknown;
+}
+
+declare function isCodeBlockRuntimeReady(): boolean;
+
+interface MonacoDisposableLike {
+    dispose?: () => void;
+}
+interface MonacoModelLike {
+    getLineCount?: () => number;
+    getValue?: () => string;
+}
+interface MonacoEditorViewLike {
+    getModel?: () => MonacoModelLike | null | undefined;
+    getOption?: (option: unknown) => unknown;
+    updateOptions?: (options: Record<string, unknown>) => void;
+    layout?: (dimension?: {
+        width: number;
+        height: number;
+    }) => void;
+    getContentHeight?: () => number;
+    getScrollTop?: () => number;
+    setScrollTop?: (scrollTop: number) => void;
+    onDidContentSizeChange?: (listener: () => void) => MonacoDisposableLike | void;
+    onDidLayoutChange?: (listener: () => void) => MonacoDisposableLike | void;
+}
+interface MonacoDiffLineChangeLike {
+    originalStartLineNumber?: number;
+    originalEndLineNumber?: number;
+    modifiedStartLineNumber?: number;
+    modifiedEndLineNumber?: number;
+}
+interface MonacoDiffEditorViewLike extends MonacoEditorViewLike {
+    getOriginalEditor?: () => MonacoEditorViewLike | null | undefined;
+    getModifiedEditor?: () => MonacoEditorViewLike | null | undefined;
+    getLineChanges?: () => MonacoDiffLineChangeLike[] | null | undefined;
+    onDidUpdateDiff?: (listener: () => void) => MonacoDisposableLike | void;
+}
+interface MonacoNamespaceLike {
+    EditorOption?: {
+        fontInfo?: unknown;
+        lineHeight?: unknown;
+    };
+}
+interface MonacoRuntimeOptions extends Omit<CodeBlockMonacoOptions, 'theme'> {
+    theme?: CodeBlockMonacoTheme;
+    themes?: CodeBlockMonacoTheme[];
+    onThemeChange?: () => void;
+}
+interface MonacoHelpers {
+    createEditor?: (container: HTMLElement, code: string, language: string) => Promise<unknown> | unknown;
+    createDiffEditor?: (container: HTMLElement, original: string, modified: string, language: string) => Promise<unknown> | unknown;
+    updateCode?: (code: string, language: string) => Promise<unknown> | unknown;
+    updateDiff?: (original: string, modified: string, language: string) => Promise<unknown> | unknown;
+    getEditor?: () => MonacoNamespaceLike | null;
+    getEditorView?: () => MonacoEditorViewLike | null;
+    getDiffEditorView?: () => MonacoDiffEditorViewLike | null;
+    cleanupEditor?: () => void;
+    safeClean?: () => void;
+    refreshDiffPresentation?: () => Promise<unknown> | unknown;
+    setTheme?: (theme: CodeBlockMonacoTheme | undefined) => Promise<void> | void;
+    whenVisualReady?: () => Promise<boolean>;
+}
+interface MonacoModule {
+    useMonaco?: (options: MonacoRuntimeOptions) => MonacoHelpers | null | undefined;
+    detectLanguage?: (code: string) => string;
+    preloadMonacoWorkers?: () => Promise<unknown> | unknown;
+}
+
+type LanguageIconMap = Record<string, string>;
+interface IconTheme {
+    
+    readonly id: string;
+    
+    readonly core: LanguageIconMap;
+    
+    readonly fallback: string;
+    
+    loadExtended?: () => Promise<LanguageIconMap>;
+}
+
+declare function registerIconTheme(theme: IconTheme): void;
+declare function setIconTheme(id: string): void;
+declare function getRegisteredThemes(): string[];
+
+
+interface ThresholdInput {
+    R: number;
+    H?: number;
+    B?: number;
+}
+declare function recommendWorkerThreshold({ R, H, B }: ThresholdInput): number;
+declare function estimateRByFormula(sample: string): 'simple' | 'medium' | 'complex';
+declare function defaultRByClass(cls: 'simple' | 'medium' | 'complex'): number;
+declare function recommendNForSamples(formulas: string[], opts?: {
+    H?: number;
+    B?: number;
+}): number;
+
+type LanguageIconResolver = (lang: string) => string | undefined | null;
+declare const languageIconsRevision: vue.ShallowRef<number, number>;
+declare function setLanguageIconResolver(resolver?: LanguageIconResolver | null): void;
+declare function normalizeLanguageIdentifier(lang?: string | null): string;
+declare function resolveMonacoLanguageId(lang?: string | null): string;
+declare function preloadExtendedLanguageIcons(): Promise<void>;
+declare function getLanguageIcon(lang: string): string;
+declare const languageMap: Record<string, string>;
+
+interface MarkstreamNodeLifecycle {
+    reportHeight: (indexKey: string | number, height: number) => void;
+    markPending: (indexKey: string | number) => void;
+    markSettled: (indexKey: string | number) => void;
+}
+
+declare const MARKSTREAM_NODE_LIFECYCLE_KEY: InjectionKey<MarkstreamNodeLifecycle>;
+declare function useMarkstreamNodeLifecycle(): MarkstreamNodeLifecycle;
+
+
+interface RenderMetrics {
+    type: 'worker' | 'direct' | 'cache-hit';
+    duration: number;
+    formulaLength: number;
+    timestamp: number;
+    success: boolean;
+    error?: string;
+}
+declare class PerformanceMonitor {
+    private metrics;
+    private enabled;
+    private maxMetrics;
+    enable(): void;
+    disable(): void;
+    recordRender(metrics: RenderMetrics): void;
+    getStats(): {
+        totalRenders: number;
+        cacheHitRate: number;
+        averageWorkerTime: number;
+        averageDirectTime: number;
+        averageCacheHitTime: number;
+        workerSavings: number;
+        recommendation: string;
+        cacheHits?: undefined;
+        workerCalls?: undefined;
+        directCalls?: undefined;
+    } | {
+        totalRenders: number;
+        cacheHits: number;
+        cacheHitRate: string;
+        workerCalls: number;
+        directCalls: number;
+        averageWorkerTime: string;
+        averageDirectTime: string;
+        averageCacheHitTime: string;
+        workerSavings: string;
+        recommendation: string;
+    };
+    printReport(): {
+        totalRenders: number;
+        cacheHitRate: number;
+        averageWorkerTime: number;
+        averageDirectTime: number;
+        averageCacheHitTime: number;
+        workerSavings: number;
+        recommendation: string;
+        cacheHits?: undefined;
+        workerCalls?: undefined;
+        directCalls?: undefined;
+    } | {
+        totalRenders: number;
+        cacheHits: number;
+        cacheHitRate: string;
+        workerCalls: number;
+        directCalls: number;
+        averageWorkerTime: string;
+        averageDirectTime: string;
+        averageCacheHitTime: string;
+        workerSavings: string;
+        recommendation: string;
+    };
+    reset(): void;
+    exportMetrics(): {
+        metrics: RenderMetrics[];
+        stats: {
+            totalRenders: number;
+            cacheHitRate: number;
+            averageWorkerTime: number;
+            averageDirectTime: number;
+            averageCacheHitTime: number;
+            workerSavings: number;
+            recommendation: string;
+            cacheHits?: undefined;
+            workerCalls?: undefined;
+            directCalls?: undefined;
+        } | {
+            totalRenders: number;
+            cacheHits: number;
+            cacheHitRate: string;
+            workerCalls: number;
+            directCalls: number;
+            averageWorkerTime: string;
+            averageDirectTime: string;
+            averageCacheHitTime: string;
+            workerSavings: string;
+            recommendation: string;
+        };
+        timestamp: number;
+    };
+}
+declare const perfMonitor: PerformanceMonitor;
+declare function enablePerfMonitoring(): void;
+declare function disablePerfMonitoring(): void;
+declare function getPerfReport(): {
+    totalRenders: number;
+    cacheHitRate: number;
+    averageWorkerTime: number;
+    averageDirectTime: number;
+    averageCacheHitTime: number;
+    workerSavings: number;
+    recommendation: string;
+    cacheHits?: undefined;
+    workerCalls?: undefined;
+    directCalls?: undefined;
+} | {
+    totalRenders: number;
+    cacheHits: number;
+    cacheHitRate: string;
+    workerCalls: number;
+    directCalls: number;
+    averageWorkerTime: string;
+    averageDirectTime: string;
+    averageCacheHitTime: string;
+    workerSavings: string;
+    recommendation: string;
+};
+
+declare function safeRaf(cb: FrameRequestCallback): any;
+declare function safeCancelRaf(id: number | null): void;
+
+declare function preloadCodeBlockRuntime(): Promise<boolean>;
+declare function getUseMonaco(): Promise<MonacoModule>;
+
+export { IconTheme, LanguageIconResolver, MARKSTREAM_NODE_LIFECYCLE_KEY, MonacoDiffEditorViewLike, MonacoDiffLineChangeLike, MonacoDisposableLike, MonacoEditorViewLike, MonacoHelpers, MonacoModelLike, MonacoModule, MonacoNamespaceLike, MonacoRuntimeOptions, ThresholdInput, defaultRByClass, disablePerfMonitoring, enablePerfMonitoring, estimateRByFormula, getLanguageIcon, getPerfReport, getRegisteredThemes, getUseMonaco, isCodeBlockRuntimeReady, languageIconsRevision, languageMap, normalizeLanguageIdentifier, perfMonitor, preloadCodeBlockRuntime, preloadExtendedLanguageIcons, recommendNForSamples, recommendWorkerThreshold, registerIconTheme, resolveMonacoLanguageId, safeCancelRaf, safeRaf, setIconTheme, setLanguageIconResolver, useMarkstreamNodeLifecycle };

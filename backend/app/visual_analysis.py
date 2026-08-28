@@ -160,7 +160,8 @@ def _decision_location(
     rendered: RenderResponse,
     page_number: int,
 ) -> tuple[int | None, int | None]:
-    if Path(rendered.filename).suffix.lower() == ".pptx":
+    filename = Path(rendered.filename).name.casefold()
+    if filename.endswith(".pptx") or ".pptx" in filename:
         return None, page_number
     return page_number, None
 

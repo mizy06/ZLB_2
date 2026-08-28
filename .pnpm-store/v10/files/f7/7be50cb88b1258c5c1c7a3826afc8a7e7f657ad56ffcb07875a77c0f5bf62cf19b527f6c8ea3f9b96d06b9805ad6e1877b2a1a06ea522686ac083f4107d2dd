@@ -1,0 +1,420 @@
+import { d as DiffSurfaceInput, i as CodeStreamState, l as DiffStreamOptions, r as CodeStreamOptions, u as DiffSurfaceController$1, y as FinalizeOptions } from "./types-DbIfYsQX.mjs";
+import { DiffLineAnnotation, File, FileContents, FileDiff, FileDiffMetadata, LineAnnotation, SelectedLineRange, UnresolvedFile } from "@pierre/diffs";
+import { WorkerPoolManager } from "@pierre/diffs/worker";
+//#region src/DiffSurfaceController.d.ts
+type PierreInstance<LAnnotation> = File<LAnnotation> | FileDiff<LAnnotation> | UnresolvedFile<LAnnotation>;
+declare class DiffSurfaceController<LAnnotation = unknown> implements DiffSurfaceController$1<LAnnotation> {
+  private input;
+  private container?;
+  private surface?;
+  private instance?;
+  private diff?;
+  private selectedLines;
+  private disposed;
+  private renderListeners;
+  private visualRevision;
+  private visualReadyPromise;
+  private resolveVisualReady?;
+  constructor(input: DiffSurfaceInput<LAnnotation>);
+  mount(container: HTMLElement): Promise<void>;
+  update(input: DiffSurfaceInput<LAnnotation>): Promise<void>;
+  updateFile(file: FileContents, annotations?: LineAnnotation<LAnnotation>[]): Promise<void>;
+  updateDiff(oldFile: FileContents, newFile: FileContents, annotations?: DiffLineAnnotation<LAnnotation>[]): Promise<void>;
+  updateParsedDiff(fileDiff: FileDiffMetadata, annotations?: DiffLineAnnotation<LAnnotation>[]): Promise<void>;
+  updatePatch(patch: string, fileIndex?: number, annotations?: DiffLineAnnotation<LAnnotation>[], patchIndex?: number): Promise<void>;
+  updateMergeConflict(file: FileContents, annotations?: DiffLineAnnotation<LAnnotation>[]): Promise<void>;
+  setSelectedLines(range: SelectedLineRange | null): void;
+  setAnnotations(annotations: LineAnnotation<LAnnotation>[] | DiffLineAnnotation<LAnnotation>[]): void;
+  setThemeType(themeType: 'system' | 'light' | 'dark'): void;
+  setTheme(theme: any): Promise<void>;
+  setOptions(options: NonNullable<DiffSurfaceInput<LAnnotation>['options']>): Promise<void>;
+  acceptReject(hunkIndex: number, action: 'accept' | 'reject' | 'both' | {
+    type: 'accept' | 'reject' | 'both';
+    changeIndex: number;
+  }): FileDiffMetadata;
+  resolveConflict(conflictIndex: number, resolution: 'current' | 'incoming' | 'both'): FileContents | undefined;
+  getResolvedFile(): {
+    name: string;
+    contents: string;
+    lang: import("@pierre/diffs").SupportedLanguages | undefined;
+  } | undefined;
+  getDiff(): FileDiffMetadata | undefined;
+  getInput(): DiffSurfaceInput<LAnnotation>;
+  getNativeInstance(): PierreInstance<LAnnotation> | undefined;
+  onDidRender(listener: () => void): {
+    dispose: () => boolean;
+  };
+  whenVisualReady(): Promise<boolean>;
+  dispose(): void;
+  private module?;
+  private render;
+  private emitRender;
+  private beginVisualRender;
+  private markVisualReady;
+  private invalidateVisualReady;
+}
+declare function createDiffSurface<LAnnotation = unknown>(input: DiffSurfaceInput<LAnnotation>): DiffSurfaceController<LAnnotation>;
+//#endregion
+//#region src/CodeStreamController.d.ts
+/**
+ * Keeps streaming updates in one plain `<pre>`. Syntax highlighting is only
+ * created by finalize(), after the caller decides the block is complete.
+ */
+declare class CodeStreamController {
+  private options;
+  private state;
+  private stats;
+  private text;
+  private pending;
+  private scheduled?;
+  private generation;
+  private container?;
+  private shell?;
+  private surface?;
+  private finalizedSurface?;
+  private plainText?;
+  private finalizePromise?;
+  private renderListeners;
+  private finalizedRenderSubscription?;
+  constructor(options?: CodeStreamOptions);
+  mount(container: HTMLElement): Promise<void>;
+  append(chunk: string): void;
+  updateSnapshot(content: string): Promise<void> | undefined;
+  consume(source: ReadableStream<string> | AsyncIterable<string>): Promise<void>;
+  flush(): Promise<void>;
+  finalize<LAnnotation = unknown>(options?: FinalizeOptions<LAnnotation>): Promise<void>;
+  private performFinalize;
+  reset(initialContent?: string): Promise<void>;
+  setThemeType(type: 'system' | 'dark' | 'light'): void;
+  setTheme(theme: CodeStreamOptions['theme']): Promise<void>;
+  setLanguage(language: string): Promise<void>;
+  getText(): string;
+  getState(): CodeStreamState;
+  getStats(): {
+    characters: number;
+    lines: number;
+    writes: number;
+    resets: number;
+    renderMode: "highlighted" | "plain-text";
+    overflowed: boolean;
+    startedAt?: number;
+    finalizedAt?: number;
+  };
+  getElement(): HTMLElement | undefined;
+  getFinalizedSurface(): DiffSurfaceController<any> | undefined;
+  onDidRender(listener: () => void): {
+    dispose: () => boolean;
+  };
+  dispose(): void;
+  private scheduleFlush;
+  private cancelScheduledFlush;
+  private shouldFollowViewport;
+  private followViewport;
+  private mountPlainText;
+  private setState;
+  private emitRender;
+  private fail;
+}
+declare function createCodeStream(options?: CodeStreamOptions): CodeStreamController;
+//#endregion
+//#region src/DiffStreamController.d.ts
+/**
+ * A low-cost diff placeholder. It never tokenizes while either side changes;
+ * finalize() swaps the same shell to a single @pierre/diffs render.
+ */
+declare class DiffStreamController<LAnnotation = unknown> {
+  private options;
+  private state;
+  private generation;
+  private original;
+  private modified;
+  private container?;
+  private shell?;
+  private surface?;
+  private finalizedSurface?;
+  private finalizePromise?;
+  private renderListeners;
+  private finalizedRenderSubscription?;
+  constructor(options?: DiffStreamOptions<LAnnotation>);
+  mount(container: HTMLElement, original?: string, modified?: string): Promise<void>;
+  update(original: string, modified: string): Promise<void>;
+  finalize(annotations?: DiffLineAnnotation<LAnnotation>[]): Promise<DiffSurfaceController<LAnnotation> | undefined>;
+  private performFinalize;
+  setThemeType(type: 'system' | 'light' | 'dark'): void;
+  setTheme(theme: DiffStreamOptions<LAnnotation>['theme']): Promise<void>;
+  setLanguage(language: string): Promise<void>;
+  getOriginal(): string;
+  getModified(): string;
+  getState(): CodeStreamState;
+  getElement(): HTMLElement | undefined;
+  getFinalizedSurface(): DiffSurfaceController<LAnnotation> | undefined;
+  onDidRender(listener: () => void): {
+    dispose: () => boolean;
+  };
+  dispose(): void;
+  private renderPre;
+  private createPre;
+  private asFile;
+  private setState;
+  private emitRender;
+}
+declare function createDiffStream<LAnnotation = unknown>(options?: DiffStreamOptions<LAnnotation>): DiffStreamController<LAnnotation>;
+//#endregion
+//#region src/markstream.d.ts
+interface StreamDiffsRuntimeOptions {
+  MAX_HEIGHT?: number | string;
+  theme?: string | Record<string, unknown>;
+  themes?: Array<string | Record<string, unknown>>;
+  readOnly?: boolean;
+  lineNumbers?: boolean;
+  wordWrap?: 'on' | 'off' | string;
+  renderSideBySide?: boolean;
+  diffStyle?: 'unified' | 'split';
+  autoScrollOnUpdate?: boolean;
+  autoScrollThresholdPx?: number;
+  enableLineSelection?: boolean;
+  stream?: boolean;
+  mergeConflict?: boolean;
+  lineAnnotations?: unknown[];
+  onController?: (controller: CodeStreamController | DiffStreamController | DiffSurfaceController) => void;
+  workerManager?: WorkerPoolManager;
+  [key: string]: unknown;
+}
+declare function useMonaco(options?: StreamDiffsRuntimeOptions): {
+  runtimeKind: "stream-diffs";
+  createEditor: (target: HTMLElement, code: string, lang: string) => Promise<{
+    getModel: () => {
+      getValue: () => string;
+      getLineCount: () => number;
+    };
+    getContentHeight: () => number;
+    layout: () => void;
+    getOption(key: unknown): number | {
+      fontSize: number;
+    } | undefined;
+    updateOptions(next: Record<string, unknown>): void;
+    onDidContentSizeChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    onDidLayoutChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    setSelectedLines: (range: any) => void | undefined;
+    setAnnotations: (annotations: any[]) => void | undefined;
+    acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+    resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+  }>;
+  createDiffEditor: (target: HTMLElement, oldCode: string, newCode: string, lang: string) => Promise<{
+    getOriginalEditor: () => {
+      getModel: () => {
+        getValue: () => string;
+        getLineCount: () => number;
+      };
+      getContentHeight: () => number;
+      layout: () => void;
+      getOption(key: unknown): number | {
+        fontSize: number;
+      } | undefined;
+      updateOptions(next: Record<string, unknown>): void;
+      onDidContentSizeChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      onDidLayoutChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      setSelectedLines: (range: any) => void | undefined;
+      setAnnotations: (annotations: any[]) => void | undefined;
+      acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+      resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+    };
+    getModifiedEditor: () => {
+      getModel: () => {
+        getValue: () => string;
+        getLineCount: () => number;
+      };
+      getContentHeight: () => number;
+      layout: () => void;
+      getOption(key: unknown): number | {
+        fontSize: number;
+      } | undefined;
+      updateOptions(next: Record<string, unknown>): void;
+      onDidContentSizeChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      onDidLayoutChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      setSelectedLines: (range: any) => void | undefined;
+      setAnnotations: (annotations: any[]) => void | undefined;
+      acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+      resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+    };
+    getLineChanges: () => {
+      originalStartLineNumber: number;
+      originalEndLineNumber: number;
+      modifiedStartLineNumber: number;
+      modifiedEndLineNumber: number;
+    }[];
+    onDidUpdateDiff: (listener: () => void) => {
+      dispose(): void;
+    };
+    getModel: () => {
+      getValue: () => string;
+      getLineCount: () => number;
+    };
+    getContentHeight: () => number;
+    layout: () => void;
+    getOption(key: unknown): number | {
+      fontSize: number;
+    } | undefined;
+    updateOptions(next: Record<string, unknown>): void;
+    onDidContentSizeChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    onDidLayoutChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    setSelectedLines: (range: any) => void | undefined;
+    setAnnotations: (annotations: any[]) => void | undefined;
+    acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+    resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+  }>;
+  updateCode: (code: string, lang?: string) => Promise<void>;
+  appendCode(chunk: string): void;
+  finalizeCode(): Promise<DiffSurfaceController<any> | undefined>;
+  finalizeDiff(): Promise<DiffSurfaceController<unknown> | undefined>;
+  updateDiff: (oldCode: string, newCode: string, lang?: string) => Promise<void>;
+  updateOriginal(code: string, lang?: string): Promise<void>;
+  updateModified(code: string, lang?: string): Promise<void>;
+  appendOriginal(chunk: string, lang?: string): Promise<void>;
+  appendModified(chunk: string, lang?: string): Promise<void>;
+  cleanupEditor: () => void;
+  safeClean: () => void;
+  setTheme: (nextTheme: string | Record<string, unknown> | undefined) => Promise<void>;
+  setLanguage(next: string): Promise<void>;
+  getCurrentTheme: () => any;
+  getEditor: () => {
+    EditorOption: {
+      readonly fontInfo: 0;
+      readonly lineHeight: 1;
+    };
+  };
+  getEditorView: () => {
+    getModel: () => {
+      getValue: () => string;
+      getLineCount: () => number;
+    };
+    getContentHeight: () => number;
+    layout: () => void;
+    getOption(key: unknown): number | {
+      fontSize: number;
+    } | undefined;
+    updateOptions(next: Record<string, unknown>): void;
+    onDidContentSizeChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    onDidLayoutChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    setSelectedLines: (range: any) => void | undefined;
+    setAnnotations: (annotations: any[]) => void | undefined;
+    acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+    resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+  } | null;
+  getDiffEditorView: () => {
+    getOriginalEditor: () => {
+      getModel: () => {
+        getValue: () => string;
+        getLineCount: () => number;
+      };
+      getContentHeight: () => number;
+      layout: () => void;
+      getOption(key: unknown): number | {
+        fontSize: number;
+      } | undefined;
+      updateOptions(next: Record<string, unknown>): void;
+      onDidContentSizeChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      onDidLayoutChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      setSelectedLines: (range: any) => void | undefined;
+      setAnnotations: (annotations: any[]) => void | undefined;
+      acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+      resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+    };
+    getModifiedEditor: () => {
+      getModel: () => {
+        getValue: () => string;
+        getLineCount: () => number;
+      };
+      getContentHeight: () => number;
+      layout: () => void;
+      getOption(key: unknown): number | {
+        fontSize: number;
+      } | undefined;
+      updateOptions(next: Record<string, unknown>): void;
+      onDidContentSizeChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      onDidLayoutChange: (listener: () => void) => {
+        dispose(): void;
+      };
+      setSelectedLines: (range: any) => void | undefined;
+      setAnnotations: (annotations: any[]) => void | undefined;
+      acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+      resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+    };
+    getLineChanges: () => {
+      originalStartLineNumber: number;
+      originalEndLineNumber: number;
+      modifiedStartLineNumber: number;
+      modifiedEndLineNumber: number;
+    }[];
+    onDidUpdateDiff: (listener: () => void) => {
+      dispose(): void;
+    };
+    getModel: () => {
+      getValue: () => string;
+      getLineCount: () => number;
+    };
+    getContentHeight: () => number;
+    layout: () => void;
+    getOption(key: unknown): number | {
+      fontSize: number;
+    } | undefined;
+    updateOptions(next: Record<string, unknown>): void;
+    onDidContentSizeChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    onDidLayoutChange: (listener: () => void) => {
+      dispose(): void;
+    };
+    setSelectedLines: (range: any) => void | undefined;
+    setAnnotations: (annotations: any[]) => void | undefined;
+    acceptReject: (hunkIndex: number, action: any) => import("@pierre/diffs").FileDiffMetadata | undefined;
+    resolveConflict: (conflictIndex: number, resolution: any) => FileContents | undefined;
+  } | null;
+  getDiffModels: () => {
+    original: {
+      getValue: () => string;
+      getLineCount: () => number;
+    };
+    modified: {
+      getValue: () => string;
+      getLineCount: () => number;
+    };
+  };
+  getCode: () => string | {
+    original: string;
+    modified: string;
+  } | null;
+  refreshDiffPresentation: () => Promise<void> | undefined;
+  whenVisualReady: () => Promise<boolean>;
+};
+declare function preloadMonacoWorkers(): Promise<undefined>;
+declare function preloadStreamDiffs(): Promise<boolean>;
+declare function detectLanguage(code: string): "text" | "html" | "javascript" | "python" | "typescript";
+//#endregion
+export { useMonaco as a, CodeStreamController as c, createDiffSurface as d, preloadStreamDiffs as i, createCodeStream as l, detectLanguage as n, DiffStreamController as o, preloadMonacoWorkers as r, createDiffStream as s, StreamDiffsRuntimeOptions as t, DiffSurfaceController as u };

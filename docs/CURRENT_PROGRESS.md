@@ -1,6 +1,35 @@
 # 当前进度
 
-更新时间：2026-07-28
+更新时间：2026-07-30
+
+## vNext 竞赛执行状态
+
+`experiment/new_bone` 已按 `MINDMAP_EXECUTION_PLAYBOOK.md` 完成本机工具、Q0
+代码候选、自动攻击矩阵和全量验证。当前执行基线 HEAD 为
+`4b28c75025481509dccdb28fe3459ee33ea27f4d`。
+
+2026-07-30 项目所有者确认本项目为学生参赛项目，执行标准已切换为
+`STUDENT COMPETITION TRACK`。独立多人签署、60 份 Gold、20 人用户研究、完整
+灾备、internal allowlist 和 canary 不再是竞赛硬门；代码安全、失败诚实性、
+测试/构建、实际参赛材料演练和回退能力继续保留。
+
+- `gh 2.96.0` 已认证为 `mizy06`；GitHub-first CLI 复查完成。
+- 远端总控 issue 为 `#26`，Q0/Q1/epic/Gate 工作包为 `#1` 至 `#25`。
+- CodeGraph 1.5.0 已建立并同步：215 files、5774 nodes、17652 edges。
+- Q0 八项 P0 的本地实现完成；integrated red-team 为 13 tests。
+- vNext 为 182/182，完整 backend 为 718 tests、1 skip。
+- frontend 7/7、typecheck、build、Playwright 2/2 通过。
+- vNext renderer 的 1366x768、390x844、320px reflow、200% 文本、键盘、
+  DOM tree、Canvas pixel 和 overflow/overlap 检查通过。
+- schema 为 36 contracts、36 schema files 加 manifest。
+- legacy OpenAPI snapshot 未变化。
+
+当前结论为 `COMPETITION DEMO READY / OWNER REHEARSAL PENDING`。代码候选和自动
+验证已按竞赛 DoD 接受；提交作品前仍需使用实际参赛材料完成一次端到端演练。
+不声明生产级质量、生产 SLO、多租户公网发布或私有材料 live search 能力。
+
+完整证据与逐 Gate verdict：
+`docs/MINDMAP_EXECUTION_EVIDENCE_2026-07-30.md`。
 
 ## 总体状态
 
@@ -369,8 +398,9 @@ PDF 全页渲染与严格 PageExtraction（AI PDF）
   与对应凭据，并验证实际调用和 run manifest 记录。`preview`、Token Plan/
   Coding Plan、无效 endpoint 或 text-only 视觉模型会阻止生产启动。
 - 为视觉资产配置公网 HTTPS `ASSET_PUBLIC_BASE_URL`。
-- 配置 `MINDMAP_API_TOKEN`、`EXTERNAL_ENGINE_TOKEN` 和
-  `ASSET_ACCESS_TOKEN`，并用 TLS 反向代理转发回环端口。
+- 工作台采用公开单工作区，不再配置浏览器访问令牌、登录 session 或资产
+  读取令牌；仅为外部引擎写接口配置 `EXTERNAL_ENGINE_TOKEN`。公网入口仍应
+  由 TLS 反向代理转发回环端口。
 - 使用开发集、校准集和盲测集校准业务阈值。
 - 用真实源 PPTX 和人工多解金标评估节点摘要与直接父边；当前测试不能给出
   节点精确率、父边准确率或“30 分钟已降至多少分钟”的生产结论。

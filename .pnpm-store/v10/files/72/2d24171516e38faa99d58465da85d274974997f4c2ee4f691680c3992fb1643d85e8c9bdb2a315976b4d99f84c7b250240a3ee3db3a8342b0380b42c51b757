@@ -1,0 +1,834 @@
+//#region src/internal.ts
+var TextAccumulator = class {
+	chunks = [];
+	cached = "";
+	dirty = false;
+	length = 0;
+	append(chunk) {
+		if (!chunk) return;
+		this.chunks.push(chunk);
+		this.length += chunk.length;
+		this.dirty = true;
+		if (this.chunks.length > 256) this.compact();
+	}
+	clear(initial = "") {
+		this.chunks = initial ? [initial] : [];
+		this.cached = initial;
+		this.dirty = false;
+		this.length = initial.length;
+	}
+	toString() {
+		if (this.dirty) {
+			this.cached = this.chunks.join("");
+			this.dirty = false;
+		}
+		return this.cached;
+	}
+	compact() {
+		this.chunks = [this.chunks.join("")];
+	}
+};
+function createShell(container, maxHeight) {
+	container.replaceChildren();
+	const shell = document.createElement("div");
+	shell.className = "stream-diffs-shell";
+	shell.style.overflow = "auto";
+	shell.style.maxHeight = typeof maxHeight === "number" ? `${maxHeight}px` : maxHeight ?? "none";
+	const surface = document.createElement("div");
+	surface.className = "stream-diffs-surface";
+	shell.appendChild(surface);
+	container.appendChild(shell);
+	return {
+		shell,
+		surface
+	};
+}
+function fileContents(name, contents, language) {
+	return {
+		name,
+		contents,
+		lang: language
+	};
+}
+//#endregion
+//#region src/DiffSurfaceController.ts
+var DiffSurfaceController = class {
+	input;
+	container;
+	surface;
+	instance;
+	diff;
+	selectedLines = null;
+	disposed = false;
+	renderListeners = /* @__PURE__ */ new Set();
+	visualRevision = 0;
+	visualReadyPromise = Promise.resolve(false);
+	resolveVisualReady;
+	constructor(input) {
+		this.input = input;
+	}
+	async mount(container) {
+		this.disposed = false;
+		this.container = container;
+		this.surface = createShell(container).surface;
+		await this.render();
+	}
+	async update(input) {
+		this.input = input;
+		if (this.surface) await this.render(true);
+	}
+	updateFile(file, annotations) {
+		return this.update({
+			kind: "file",
+			file,
+			annotations,
+			options: this.input.kind === "file" ? this.input.options : void 0,
+			workerManager: this.input.kind === "file" ? this.input.workerManager : void 0
+		});
+	}
+	updateDiff(oldFile, newFile, annotations) {
+		return this.update({
+			kind: "diff",
+			oldFile,
+			newFile,
+			annotations,
+			options: isDiffInput(this.input) ? this.input.options : void 0,
+			workerManager: isDiffInput(this.input) ? this.input.workerManager : void 0
+		});
+	}
+	updateParsedDiff(fileDiff, annotations) {
+		return this.update({
+			kind: "diff",
+			fileDiff,
+			annotations,
+			options: isDiffInput(this.input) ? this.input.options : void 0,
+			workerManager: isDiffInput(this.input) ? this.input.workerManager : void 0
+		});
+	}
+	updatePatch(patch, fileIndex = 0, annotations, patchIndex = 0) {
+		return this.update({
+			kind: "patch",
+			patch,
+			patchIndex,
+			fileIndex,
+			annotations,
+			options: this.input.kind === "patch" ? this.input.options : void 0,
+			workerManager: this.input.kind === "patch" ? this.input.workerManager : void 0
+		});
+	}
+	updateMergeConflict(file, annotations) {
+		return this.update({
+			kind: "merge-conflict",
+			file,
+			annotations,
+			options: this.input.kind === "merge-conflict" ? this.input.options : void 0,
+			workerManager: this.input.kind === "merge-conflict" ? this.input.workerManager : void 0
+		});
+	}
+	setSelectedLines(range) {
+		this.selectedLines = range;
+		this.instance?.setSelectedLines(range);
+	}
+	setAnnotations(annotations) {
+		if (!this.instance) return;
+		if (this.input.kind === "file") {
+			this.input.annotations = annotations;
+			this.instance.setLineAnnotations(this.input.annotations);
+		} else {
+			this.input.annotations = annotations;
+			this.instance.setLineAnnotations(this.input.annotations);
+		}
+		this.emitRender();
+	}
+	setThemeType(themeType) {
+		if (this.input.options) this.input.options = {
+			...this.input.options,
+			themeType
+		};
+		else this.input.options = { themeType };
+		this.instance?.setThemeType(themeType);
+	}
+	async setTheme(theme) {
+		if (this.input.options) this.input.options = {
+			...this.input.options,
+			theme
+		};
+		else this.input.options = { theme };
+		if (this.surface) await this.render(false);
+	}
+	async setOptions(options) {
+		this.input.options = options;
+		if (this.surface) await this.render(false);
+	}
+	acceptReject(hunkIndex, action) {
+		if (!isDiffInput(this.input) || !this.diff) throw new Error("acceptReject() requires a diff view");
+		const { diffAcceptRejectHunk } = this.module;
+		this.diff = diffAcceptRejectHunk(this.diff, hunkIndex, action);
+		this.instance.render({
+			fileDiff: this.diff,
+			containerWrapper: this.surface,
+			lineAnnotations: this.input.annotations
+		});
+		return this.diff;
+	}
+	resolveConflict(conflictIndex, resolution) {
+		if (this.input.kind !== "merge-conflict") throw new Error("resolveConflict() requires a merge-conflict view");
+		const result = this.instance.resolveConflict(conflictIndex, resolution);
+		if (result) {
+			this.input.file = result.file;
+			this.diff = result.fileDiff;
+		}
+		return result?.file;
+	}
+	getResolvedFile() {
+		if (!isDiffInput(this.input) || !this.diff || this.diff.isPartial) return void 0;
+		const source = "newFile" in this.input ? this.input.newFile : void 0;
+		return {
+			name: source?.name ?? this.diff.name,
+			contents: this.diff.additionLines.join(""),
+			lang: source?.lang ?? this.diff.lang
+		};
+	}
+	getDiff() {
+		return this.diff;
+	}
+	getInput() {
+		return this.input;
+	}
+	getNativeInstance() {
+		return this.instance;
+	}
+	onDidRender(listener) {
+		this.renderListeners.add(listener);
+		return { dispose: () => this.renderListeners.delete(listener) };
+	}
+	async whenVisualReady() {
+		let pending = this.visualReadyPromise;
+		for (;;) {
+			const ready = await pending;
+			if (pending === this.visualReadyPromise) return ready;
+			pending = this.visualReadyPromise;
+		}
+	}
+	dispose() {
+		this.disposed = true;
+		this.invalidateVisualReady();
+		this.instance?.cleanUp();
+		this.instance = void 0;
+		this.surface = void 0;
+		this.container?.replaceChildren();
+		this.container = void 0;
+		this.renderListeners.clear();
+	}
+	module;
+	async render(resetDiff = true) {
+		const surface = this.surface;
+		if (!surface || this.disposed) return;
+		const visualRevision = this.beginVisualRender();
+		const mod = this.module ??= await import("@pierre/diffs");
+		if (this.disposed || surface !== this.surface) return;
+		this.instance?.cleanUp();
+		surface.replaceChildren();
+		if (this.input.kind === "file") {
+			const instance = new mod.File(withInternalPostRender(this.input.options, () => this.markVisualReady(visualRevision)), this.input.workerManager);
+			instance.render({
+				file: this.input.file,
+				containerWrapper: surface,
+				lineAnnotations: this.input.annotations
+			});
+			this.instance = instance;
+			instance.setSelectedLines(this.selectedLines);
+			this.diff = void 0;
+			return;
+		}
+		if (isDiffInput(this.input)) {
+			if (resetDiff || !this.diff) if (this.input.kind === "patch") {
+				const patch = mod.parsePatchFiles(this.input.patch)[this.input.patchIndex ?? 0];
+				if (!patch) throw new Error(`Patch does not contain patch index ${this.input.patchIndex ?? 0}`);
+				const fileDiff = patch.files[this.input.fileIndex ?? 0];
+				if (!fileDiff) throw new Error(`Patch does not contain file index ${this.input.fileIndex ?? 0}`);
+				this.diff = fileDiff;
+			} else if ("fileDiff" in this.input) this.diff = this.input.fileDiff;
+			else this.diff = mod.parseDiffFromFile(this.input.oldFile, this.input.newFile, this.input.options?.parseDiffOptions);
+			const instance = new mod.FileDiff(withInternalPostRender(this.input.options, () => this.markVisualReady(visualRevision)), this.input.workerManager);
+			instance.render({
+				fileDiff: this.diff,
+				containerWrapper: surface,
+				lineAnnotations: this.input.annotations
+			});
+			this.instance = instance;
+			instance.setSelectedLines(this.selectedLines);
+			return;
+		}
+		const instance = new mod.UnresolvedFile(withInternalPostRender(this.input.options, () => this.markVisualReady(visualRevision)), this.input.workerManager);
+		instance.render({
+			file: this.input.file,
+			containerWrapper: surface,
+			lineAnnotations: this.input.annotations
+		});
+		this.instance = instance;
+		instance.setSelectedLines(this.selectedLines);
+		this.diff = instance.fileDiff;
+	}
+	emitRender() {
+		for (const listener of this.renderListeners) listener();
+	}
+	beginVisualRender() {
+		this.resolveVisualReady?.(false);
+		const revision = ++this.visualRevision;
+		this.visualReadyPromise = new Promise((resolve) => {
+			this.resolveVisualReady = resolve;
+		});
+		return revision;
+	}
+	markVisualReady(revision) {
+		if (this.disposed || revision !== this.visualRevision) return;
+		this.resolveVisualReady?.(true);
+		this.resolveVisualReady = void 0;
+		this.emitRender();
+	}
+	invalidateVisualReady() {
+		this.visualRevision++;
+		this.resolveVisualReady?.(false);
+		this.resolveVisualReady = void 0;
+	}
+};
+function createDiffSurface(input) {
+	return new DiffSurfaceController(input);
+}
+function withTokenTransformer(options) {
+	if (!options || options.useTokenTransformer === true) return options;
+	if (!options.onTokenClick && !options.onTokenEnter && !options.onTokenLeave) return options;
+	return {
+		...options,
+		useTokenTransformer: true
+	};
+}
+function withInternalPostRender(options, onRender) {
+	const transformed = withTokenTransformer(options);
+	const userPostRender = transformed?.onPostRender;
+	return {
+		...transformed,
+		onPostRender(...args) {
+			userPostRender?.(...args);
+			onRender();
+		}
+	};
+}
+function isDiffInput(input) {
+	return input.kind === "diff" || input.kind === "patch";
+}
+//#endregion
+//#region src/CodeStreamController.ts
+/**
+* Keeps streaming updates in one plain `<pre>`. Syntax highlighting is only
+* created by finalize(), after the caller decides the block is complete.
+*/
+var CodeStreamController = class {
+	options;
+	state = "idle";
+	stats = {
+		characters: 0,
+		lines: 0,
+		writes: 0,
+		resets: 0,
+		renderMode: "plain-text",
+		overflowed: false
+	};
+	text = new TextAccumulator();
+	pending = [];
+	scheduled;
+	generation = 0;
+	container;
+	shell;
+	surface;
+	finalizedSurface;
+	plainText;
+	finalizePromise;
+	renderListeners = /* @__PURE__ */ new Set();
+	finalizedRenderSubscription;
+	constructor(options = {}) {
+		this.options = options;
+	}
+	async mount(container) {
+		if (this.state === "disposed") throw new Error("Cannot mount a disposed code stream. Create a new controller instead.");
+		++this.generation;
+		this.cancelScheduledFlush();
+		this.finalizedSurface?.dispose();
+		this.finalizedRenderSubscription?.dispose();
+		this.container?.replaceChildren();
+		this.finalizedSurface = void 0;
+		this.finalizedRenderSubscription = void 0;
+		this.plainText = void 0;
+		this.pending = [];
+		this.setState("mounting");
+		this.container = container;
+		const { shell, surface } = createShell(container, this.options.maxHeight);
+		this.shell = shell;
+		this.surface = surface;
+		this.mountPlainText(surface);
+		this.stats.startedAt ??= performance.now();
+		this.setState("streaming");
+	}
+	append(chunk) {
+		if (!chunk) return;
+		if (this.state === "finalized" || this.state === "finalizing" || this.state === "disposed") throw new Error(`Cannot append while stream is ${this.state}`);
+		this.text.append(chunk);
+		this.stats.characters = this.text.length;
+		this.stats.lines += countNewlines(chunk) + (this.stats.lines === 0 ? 1 : 0);
+		this.pending.push(chunk);
+		this.scheduleFlush();
+	}
+	updateSnapshot(content) {
+		const previous = this.text.toString();
+		if (content.startsWith(previous)) {
+			this.append(content.slice(previous.length));
+			return;
+		}
+		const behavior = this.options.nonAppendBehavior ?? "reset";
+		if (behavior === "ignore") return;
+		if (behavior === "throw") throw new Error("Snapshot violates the append-only stream contract");
+		return this.reset(content);
+	}
+	async consume(source) {
+		try {
+			if (Symbol.asyncIterator in source) for await (const chunk of source) this.append(chunk);
+			else {
+				const reader = source.getReader();
+				try {
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						this.append(value);
+					}
+				} finally {
+					reader.releaseLock();
+				}
+			}
+		} catch (error) {
+			this.fail(error);
+			throw error;
+		}
+	}
+	async flush() {
+		this.cancelScheduledFlush();
+		if (!this.pending.length) return;
+		const shouldFollow = this.shouldFollowViewport();
+		const batch = this.pending.join("");
+		this.pending.length = 0;
+		this.plainText?.append(batch);
+		this.stats.writes++;
+		this.followViewport(shouldFollow);
+		this.emitRender();
+	}
+	finalize(options = { view: "stream" }) {
+		if (this.state === "finalized") return Promise.resolve();
+		if (this.finalizePromise) return this.finalizePromise;
+		const promise = this.performFinalize(options).finally(() => {
+			if (this.finalizePromise === promise) this.finalizePromise = void 0;
+		});
+		this.finalizePromise = promise;
+		return promise;
+	}
+	async performFinalize(options) {
+		if (this.state === "disposed") throw new Error("Cannot finalize a disposed code stream");
+		const generation = this.generation;
+		this.setState("finalizing");
+		await this.flush();
+		if (generation !== this.generation) return;
+		this.stats.finalizedAt = performance.now();
+		if (!options.view || options.view === "stream") {
+			this.setState("finalized");
+			return;
+		}
+		const surface = this.surface;
+		if (!surface) throw new Error("Mount the stream before finalizing to a file or diff view");
+		const name = this.options.fileName ?? `code.${this.options.language ?? "txt"}`;
+		const current = fileContents(name, this.getText(), this.options.language);
+		let finalizedSurface;
+		if (options.view === "file") {
+			const { annotations, workerManager, view: _, ...fileOptions } = options;
+			finalizedSurface = createDiffSurface({
+				kind: "file",
+				file: current,
+				annotations,
+				options: {
+					theme: this.options.theme,
+					themeType: this.options.themeType,
+					...fileOptions
+				},
+				workerManager: workerManager ?? this.options.workerManager
+			});
+		} else {
+			const { annotations, original, workerManager, view: _, ...diffOptions } = options;
+			finalizedSurface = createDiffSurface({
+				kind: "diff",
+				oldFile: fileContents(name, original, this.options.language),
+				newFile: current,
+				annotations,
+				options: {
+					theme: this.options.theme,
+					themeType: this.options.themeType,
+					...diffOptions
+				},
+				workerManager: workerManager ?? this.options.workerManager
+			});
+		}
+		const staging = document.createElement("div");
+		staging.className = "stream-diffs-finalized";
+		await finalizedSurface.mount(staging);
+		if (generation !== this.generation) {
+			finalizedSurface.dispose();
+			return;
+		}
+		const shell = this.shell;
+		const scrollTop = shell?.scrollTop ?? 0;
+		const distanceToBottom = shell ? shell.scrollHeight - shell.scrollTop - shell.clientHeight : 0;
+		surface.replaceWith(staging);
+		this.surface = staging;
+		this.plainText = void 0;
+		this.finalizedSurface = finalizedSurface;
+		this.finalizedRenderSubscription = finalizedSurface.onDidRender(() => this.emitRender());
+		if (shell) if (this.options.autoScroll === "always" || this.options.autoScroll !== "never" && distanceToBottom <= (this.options.autoScrollThresholdPx ?? 32)) shell.scrollTop = shell.scrollHeight;
+		else shell.scrollTop = scrollTop;
+		this.setState("finalized");
+		this.emitRender();
+	}
+	async reset(initialContent = "") {
+		const container = this.container;
+		++this.generation;
+		this.cancelScheduledFlush();
+		this.finalizedSurface?.dispose();
+		this.finalizedRenderSubscription?.dispose();
+		this.finalizedSurface = void 0;
+		this.finalizedRenderSubscription = void 0;
+		this.plainText = void 0;
+		this.pending = [];
+		this.finalizePromise = void 0;
+		this.text.clear();
+		this.stats.resets++;
+		this.stats.characters = 0;
+		this.stats.lines = 0;
+		this.stats.renderMode = "plain-text";
+		this.stats.overflowed = false;
+		this.setState("idle");
+		if (initialContent) this.append(initialContent);
+		if (container) await this.mount(container);
+	}
+	setThemeType(type) {
+		this.options.themeType = type;
+		this.finalizedSurface?.setThemeType(type);
+	}
+	async setTheme(theme) {
+		this.options.theme = theme;
+		if (this.finalizedSurface) await this.finalizedSurface.setTheme(theme);
+	}
+	async setLanguage(language) {
+		if (language === this.options.language) return;
+		this.options.language = language;
+		if (!this.finalizedSurface) return;
+		const input = this.finalizedSurface.getInput();
+		if (input.kind === "file") await this.finalizedSurface.updateFile({
+			...input.file,
+			lang: language
+		}, input.annotations);
+		else if (input.kind === "diff" && "oldFile" in input) await this.finalizedSurface.updateDiff({
+			...input.oldFile,
+			lang: language
+		}, {
+			...input.newFile,
+			lang: language
+		}, input.annotations);
+	}
+	getText() {
+		return this.text.toString();
+	}
+	getState() {
+		return this.state;
+	}
+	getStats() {
+		return { ...this.stats };
+	}
+	getElement() {
+		return this.shell;
+	}
+	getFinalizedSurface() {
+		return this.finalizedSurface;
+	}
+	onDidRender(listener) {
+		this.renderListeners.add(listener);
+		return { dispose: () => this.renderListeners.delete(listener) };
+	}
+	dispose() {
+		++this.generation;
+		this.cancelScheduledFlush();
+		this.finalizedSurface?.dispose();
+		this.finalizedRenderSubscription?.dispose();
+		this.container?.replaceChildren();
+		this.plainText = void 0;
+		this.container = void 0;
+		this.surface = void 0;
+		this.shell = void 0;
+		this.finalizedSurface = void 0;
+		this.finalizedRenderSubscription = void 0;
+		this.finalizePromise = void 0;
+		this.renderListeners.clear();
+		this.setState("disposed");
+	}
+	scheduleFlush() {
+		if (this.scheduled != null || !this.plainText) return;
+		const strategy = this.options.flushStrategy ?? "raf";
+		if (strategy === "raf" && typeof requestAnimationFrame === "function") this.scheduled = requestAnimationFrame(() => void this.flush());
+		else this.scheduled = globalThis.setTimeout(() => void this.flush(), strategy === "raf" ? 0 : strategy.intervalMs);
+	}
+	cancelScheduledFlush() {
+		if (this.scheduled == null) return;
+		if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.scheduled);
+		clearTimeout(this.scheduled);
+		this.scheduled = void 0;
+	}
+	shouldFollowViewport() {
+		const shell = this.shell;
+		if (!shell || this.options.autoScroll === "never") return false;
+		if (this.options.autoScroll === "always") return true;
+		return shell.scrollHeight - shell.scrollTop - shell.clientHeight <= (this.options.autoScrollThresholdPx ?? 32);
+	}
+	followViewport(shouldFollow = this.shouldFollowViewport()) {
+		if (this.shell && shouldFollow) this.shell.scrollTop = this.shell.scrollHeight;
+	}
+	mountPlainText(surface) {
+		const pre = document.createElement("pre");
+		pre.className = "stream-diffs-plain-text";
+		pre.dataset.streamDiffsState = "streaming";
+		pre.style.margin = "0";
+		pre.style.whiteSpace = this.options.wrap ? "pre-wrap" : "pre";
+		pre.style.overflowWrap = this.options.wrap ? "anywhere" : "normal";
+		pre.textContent = this.getText();
+		surface.replaceChildren(pre);
+		this.plainText = pre;
+	}
+	setState(state) {
+		this.state = state;
+		this.options.onStateChange?.(state);
+	}
+	emitRender() {
+		for (const listener of this.renderListeners) listener();
+	}
+	fail(error) {
+		if (this.state === "disposed") return;
+		this.setState("error");
+		this.options.onError?.(error);
+	}
+};
+function countNewlines(value) {
+	let count = 0;
+	for (let index = 0; index < value.length; index++) if (value.charCodeAt(index) === 10) count++;
+	return count;
+}
+function createCodeStream(options) {
+	return new CodeStreamController(options);
+}
+//#endregion
+//#region src/DiffStreamController.ts
+/**
+* A low-cost diff placeholder. It never tokenizes while either side changes;
+* finalize() swaps the same shell to a single @pierre/diffs render.
+*/
+var DiffStreamController = class {
+	options;
+	state = "idle";
+	generation = 0;
+	original = "";
+	modified = "";
+	container;
+	shell;
+	surface;
+	finalizedSurface;
+	finalizePromise;
+	renderListeners = /* @__PURE__ */ new Set();
+	finalizedRenderSubscription;
+	constructor(options = {}) {
+		this.options = options;
+	}
+	async mount(container, original = this.original, modified = this.modified) {
+		if (this.state === "disposed") throw new Error("Cannot mount a disposed diff stream. Create a new controller instead.");
+		++this.generation;
+		this.original = original;
+		this.modified = modified;
+		this.finalizedSurface?.dispose();
+		this.finalizedRenderSubscription?.dispose();
+		this.container?.replaceChildren();
+		this.finalizedSurface = void 0;
+		this.finalizedRenderSubscription = void 0;
+		this.setState("mounting");
+		this.container = container;
+		const { shell, surface } = createShell(container, this.options.maxHeight);
+		this.shell = shell;
+		this.surface = surface;
+		this.renderPre();
+		this.setState("streaming");
+	}
+	update(original, modified) {
+		if (this.state === "disposed") throw new Error("Cannot update a disposed diff stream");
+		this.original = original;
+		this.modified = modified;
+		if (this.finalizedSurface) return this.finalizedSurface.updateDiff(this.asFile(original), this.asFile(modified));
+		this.renderPre();
+		this.emitRender();
+		return Promise.resolve();
+	}
+	finalize(annotations) {
+		if (this.state === "finalized") return Promise.resolve(this.finalizedSurface);
+		if (this.finalizePromise) return this.finalizePromise;
+		const promise = this.performFinalize(annotations).finally(() => {
+			if (this.finalizePromise === promise) this.finalizePromise = void 0;
+		});
+		this.finalizePromise = promise;
+		return promise;
+	}
+	async performFinalize(annotations) {
+		if (this.state === "disposed") throw new Error("Cannot finalize a disposed diff stream");
+		const surface = this.surface;
+		if (!surface) throw new Error("Mount the diff stream before finalizing it");
+		const generation = this.generation;
+		this.setState("finalizing");
+		const finalized = createDiffSurface({
+			kind: "diff",
+			oldFile: this.asFile(this.original),
+			newFile: this.asFile(this.modified),
+			annotations,
+			options: {
+				...this.options,
+				diffStyle: this.options.diffStyle ?? "unified"
+			},
+			workerManager: this.options.workerManager
+		});
+		const staging = document.createElement("div");
+		staging.className = "stream-diffs-finalized";
+		await finalized.mount(staging);
+		if (generation !== this.generation) {
+			finalized.dispose();
+			return;
+		}
+		const shell = this.shell;
+		const scrollTop = shell?.scrollTop ?? 0;
+		surface.replaceWith(staging);
+		this.surface = staging;
+		this.finalizedSurface = finalized;
+		this.finalizedRenderSubscription = finalized.onDidRender(() => this.emitRender());
+		if (shell) shell.scrollTop = scrollTop;
+		this.setState("finalized");
+		this.emitRender();
+		return finalized;
+	}
+	setThemeType(type) {
+		this.options.themeType = type;
+		this.finalizedSurface?.setThemeType(type);
+	}
+	async setTheme(theme) {
+		this.options.theme = theme;
+		if (this.finalizedSurface) await this.finalizedSurface.setTheme(theme);
+	}
+	async setLanguage(language) {
+		if (language === this.options.language) return;
+		this.options.language = language;
+		if (this.finalizedSurface) {
+			const input = this.finalizedSurface.getInput();
+			if (input.kind === "diff" && "oldFile" in input) await this.finalizedSurface.updateDiff({
+				...input.oldFile,
+				lang: language
+			}, {
+				...input.newFile,
+				lang: language
+			}, input.annotations);
+			return;
+		}
+		this.renderPre();
+	}
+	getOriginal() {
+		return this.original;
+	}
+	getModified() {
+		return this.modified;
+	}
+	getState() {
+		return this.state;
+	}
+	getElement() {
+		return this.shell;
+	}
+	getFinalizedSurface() {
+		return this.finalizedSurface;
+	}
+	onDidRender(listener) {
+		this.renderListeners.add(listener);
+		return { dispose: () => this.renderListeners.delete(listener) };
+	}
+	dispose() {
+		++this.generation;
+		this.finalizedSurface?.dispose();
+		this.finalizedRenderSubscription?.dispose();
+		this.container?.replaceChildren();
+		this.container = void 0;
+		this.shell = void 0;
+		this.surface = void 0;
+		this.finalizedSurface = void 0;
+		this.finalizedRenderSubscription = void 0;
+		this.finalizePromise = void 0;
+		this.renderListeners.clear();
+		this.setState("disposed");
+	}
+	renderPre() {
+		const surface = this.surface;
+		if (!surface || this.finalizedSurface) return;
+		const root = document.createElement("div");
+		root.className = `stream-diffs-diff-pre stream-diffs-diff-pre--${this.options.diffStyle ?? "unified"}`;
+		root.dataset.streamDiffsState = "streaming";
+		root.style.minWidth = "max-content";
+		if ((this.options.diffStyle ?? "unified") === "split") {
+			root.style.display = "grid";
+			root.style.gridTemplateColumns = "minmax(0, 1fr) minmax(0, 1fr)";
+			root.append(this.createPre(this.original, "deletions"), this.createPre(this.modified, "additions"));
+		} else root.append(this.createPre(createUnifiedPreview(this.original, this.modified), "unified"));
+		surface.replaceChildren(root);
+	}
+	createPre(text, side) {
+		const pre = document.createElement("pre");
+		pre.className = `stream-diffs-diff-pre__pane stream-diffs-diff-pre__pane--${side}`;
+		pre.dataset.side = side;
+		pre.style.margin = "0";
+		pre.style.whiteSpace = this.options.wrap ? "pre-wrap" : "pre";
+		pre.style.overflowWrap = this.options.wrap ? "anywhere" : "normal";
+		pre.textContent = text;
+		return pre;
+	}
+	asFile(contents) {
+		return fileContents(this.options.fileName ?? `code.${this.options.language ?? "txt"}`, contents, this.options.language);
+	}
+	setState(state) {
+		this.state = state;
+		this.options.onStateChange?.(state);
+	}
+	emitRender() {
+		for (const listener of this.renderListeners) listener();
+	}
+};
+function createUnifiedPreview(original, modified) {
+	const before = original.split("\n");
+	const after = modified.split("\n");
+	let prefix = 0;
+	while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+	let suffix = 0;
+	while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - suffix - 1] === after[after.length - suffix - 1]) suffix++;
+	return [
+		...before.slice(0, prefix).map((line) => `  ${line}`),
+		...before.slice(prefix, before.length - suffix).map((line) => `- ${line}`),
+		...after.slice(prefix, after.length - suffix).map((line) => `+ ${line}`),
+		...before.slice(before.length - suffix).map((line) => `  ${line}`)
+	].join("\n");
+}
+function createDiffStream(options) {
+	return new DiffStreamController(options);
+}
+//#endregion
+export { DiffSurfaceController as a, createCodeStream as i, createDiffStream as n, createDiffSurface as o, CodeStreamController as r, fileContents as s, DiffStreamController as t };

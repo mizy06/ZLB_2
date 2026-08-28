@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  canAdoptRestoredJob,
   canReplaceActiveJob,
+  canStartJobSubmission,
   nextPollDelay,
   qualityPresentation,
   shouldContinuePolling,
@@ -29,6 +31,21 @@ test("an active job cannot be silently replaced by a file selection", () => {
   assert.equal(canReplaceActiveJob("cancelled"), true);
   assert.equal(canReplaceActiveJob("queued"), false);
   assert.equal(canReplaceActiveJob("running"), false);
+});
+
+test("submission waits for workspace readiness and active work to finish", () => {
+  assert.equal(canStartJobSubmission(true, true, false, false), true);
+  assert.equal(canStartJobSubmission(false, true, false, false), false);
+  assert.equal(canStartJobSubmission(true, false, false, false), false);
+  assert.equal(canStartJobSubmission(true, true, true, false), false);
+  assert.equal(canStartJobSubmission(true, true, false, true), false);
+});
+
+test("restored local storage state cannot replace another current job", () => {
+  assert.equal(canAdoptRestoredJob(null, null), false);
+  assert.equal(canAdoptRestoredJob("job-a", null), true);
+  assert.equal(canAdoptRestoredJob("job-a", "job-a"), true);
+  assert.equal(canAdoptRestoredJob("job-a", "job-b"), false);
 });
 
 test("quality presentation separates structural and publish gates", () => {

@@ -8,12 +8,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.app.config import (
+    DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
     DEFAULT_QWEN_MODEL,
     DEFAULT_QWEN_VISION_MODEL,
+    QWEN38_MAX_CONTEXT_WINDOW_TOKENS,
+    QWEN38_MAX_INPUT_TOKENS,
+    QWEN38_MAX_INPUT_TOKENS_WITH_THINKING,
     Settings,
     _load_qwen_secret,
     _parse_env_text,
     load_settings,
+    model_context_window_tokens,
+    model_max_input_tokens,
     qwen_model_supports_vision,
 )
 from backend.app.cplus_pipeline import build_role_runtimes
@@ -42,6 +48,33 @@ def settings(api_key: str = "qwen-test-key") -> Settings:
 
 
 class QwenConfigTests(unittest.IsolatedAsyncioTestCase):
+    def test_qwen38_max_capacity_matches_published_contract(self):
+        for model in ("qwen3.8-max", "qwen3.8-max-preview"):
+            with self.subTest(model=model):
+                self.assertEqual(
+                    model_context_window_tokens(model),
+                    QWEN38_MAX_CONTEXT_WINDOW_TOKENS,
+                )
+                self.assertEqual(
+                    model_max_input_tokens(
+                        model,
+                        thinking_enabled=False,
+                    ),
+                    QWEN38_MAX_INPUT_TOKENS,
+                )
+                self.assertEqual(
+                    model_max_input_tokens(
+                        model,
+                        thinking_enabled=True,
+                    ),
+                    QWEN38_MAX_INPUT_TOKENS_WITH_THINKING,
+                )
+
+        self.assertEqual(
+            model_context_window_tokens("qwen3.7-max"),
+            DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+        )
+
     def test_parse_env_text_accepts_export_and_quotes(self):
         values = _parse_env_text(
             "# encrypted payload\nexport QWEN_API_KEY='secret-value'\n"
@@ -94,6 +127,16 @@ class QwenConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["max_tokens"], 512)
         self.assertEqual(payload["reasoning_effort"], "low")
         self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertNotIn("enable_search", payload)
+
+        search_payload = client._chat_payload(
+            model="qwen3.7-max",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=512,
+            json_mode=True,
+            enable_search=True,
+        )
+        self.assertTrue(search_payload["enable_search"])
 
     def test_vision_model_uses_multimodal_default_when_not_explicit(self):
         with patch.dict(
@@ -117,7 +160,7 @@ class QwenConfigTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             configured.pdf_page_extraction_mode,
-            "direct_layout_fallback",
+            "direct",
         )
         self.assertEqual(configured.pdf_transcription_concurrency, 8)
         self.assertEqual(configured.pdf_transcription_max_attempts, 3)
@@ -141,7 +184,7 @@ class QwenConfigTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(model=model):
                 self.assertFalse(qwen_model_supports_vision(model))
 
-    def test_layout_nodes_profile_is_loaded_from_environment(self):
+    def test_layout_nodes_profile_is_coerced_to_direct(self):
         with patch.dict(
             os.environ,
             {
@@ -154,10 +197,26 @@ class QwenConfigTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             configured.pdf_page_extraction_mode,
-            "layout_nodes",
+            "direct",
         )
 
-    def test_direct_layout_fallback_profile_is_loaded_from_environment(self):
+    def test_text_transcription_mode_is_coerced_to_visual_nodes(self):
+        with patch.dict(
+            os.environ,
+            {
+                "QWEN_API_KEY": "test-key",
+                "MINDMAP_PDF_TRANSCRIPTION_MODE": "vision_strict",
+            },
+            clear=True,
+        ):
+            configured = load_settings()
+
+        self.assertEqual(
+            configured.pdf_transcription_mode,
+            "vision_nodes_strict",
+        )
+
+    def test_direct_layout_fallback_profile_is_coerced_to_direct(self):
         with patch.dict(
             os.environ,
             {
@@ -172,7 +231,7 @@ class QwenConfigTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             configured.pdf_page_extraction_mode,
-            "direct_layout_fallback",
+            "direct",
         )
 
     async def test_all_role_runtimes_use_qwen(self):

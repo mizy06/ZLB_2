@@ -5,9 +5,13 @@ import unittest
 from pathlib import Path
 
 from pptx import Presentation
+from pypdf import PdfWriter
 
 from backend.app.chunking import chunk_document
-from backend.app.document_parser import parse_document
+from backend.app.document_parser import (
+    parse_document,
+    parse_visual_document,
+)
 from backend.app.graph_builder import build_graph
 from backend.app.heuristics import heuristic_extract
 
@@ -67,6 +71,27 @@ class CorePipelineTests(unittest.TestCase):
         self.assertEqual(document.title, "线性回归")
         self.assertEqual(chunks[0].slide_start, 1)
         self.assertIn("预测连续数值", chunks[0].text)
+
+    def test_visual_pdf_shell_does_not_extract_text_blocks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "视觉课程.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=320, height=240)
+            with path.open("wb") as handle:
+                writer.write(handle)
+
+            document = parse_visual_document(path)
+
+        self.assertEqual(document.title, "视觉课程")
+        self.assertEqual(document.blocks, [])
+        self.assertEqual(document.parse_metadata["pdf_page_count"], 1)
+        self.assertEqual(
+            document.parse_metadata["pdf_input_mode"],
+            "direct_visual_only",
+        )
+        self.assertFalse(
+            document.parse_metadata["pdf_text_extraction_performed"]
+        )
 
 
 if __name__ == "__main__":

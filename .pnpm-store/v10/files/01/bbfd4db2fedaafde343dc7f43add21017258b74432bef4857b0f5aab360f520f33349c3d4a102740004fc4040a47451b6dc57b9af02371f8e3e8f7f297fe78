@@ -1,0 +1,9 @@
+import { DiffAppearance, DiffCodeValue, DiffHideUnchangedRegions, DiffHunkActionContext, DiffHunkActionKind, DiffHunkSide, DiffLineStyle, DiffModelPair, DiffModelTransitionOptions, DiffModels, DiffUnchangedRegionStyle, MonacoCodeValue, MonacoDiffEditorInstance, MonacoEditorInstance, MonacoLanguage, MonacoOptions, MonacoTheme, RevealStrategy, ShikiHighlighter, UseMonacoReturn, clearHighlighterCache, defaultRevealDebounceMs, detectLanguage, getOrCreateHighlighter, registerMonacoThemes, useMonaco } from "./index.base-DlNdNzer.cjs";
+
+//#region src/ensureMonacoWorkers.d.ts
+declare function ensureMonacoWorkers(): void;
+//#endregion
+//#region src/preloadMonacoWorkers.d.ts
+declare function preloadMonacoWorkers(): Promise<void>;
+//#endregion
+export { DiffAppearance, DiffCodeValue, DiffHideUnchangedRegions, DiffHunkActionContext, DiffHunkActionKind, DiffHunkSide, DiffLineStyle, DiffModelPair, DiffModelTransitionOptions, DiffModels, DiffUnchangedRegionStyle, MonacoCodeValue, MonacoDiffEditorInstance, MonacoEditorInstance, MonacoLanguage, MonacoOptions, MonacoTheme, RevealStrategy, ShikiHighlighter, UseMonacoReturn, clearHighlighterCache, defaultRevealDebounceMs, detectLanguage, ensureMonacoWorkers, getOrCreateHighlighter, preloadMonacoWorkers, registerMonacoThemes, useMonaco };

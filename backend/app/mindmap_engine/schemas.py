@@ -243,15 +243,15 @@ class RenderedPage(BaseModel):
     filename: str
     url: str
     page: int
-    width: int
-    height: int
+    width: int = 0
+    height: int = 0
 
 
 class RenderResponse(BaseModel):
-    render_id: str
-    filename: str
-    pages: list[RenderedPage]
-    native_visuals: list[VisualAsset]
+    render_id: str = ""
+    filename: str = ""
+    pages: list[RenderedPage] = Field(default_factory=list)
+    native_visuals: list[VisualAsset] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

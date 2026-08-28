@@ -2,8 +2,8 @@
 
 - 日期：2026-07-29
 - 最近决策更新：2026-07-30
-- 状态：`MIXED`；ADR-01、ADR-02 已批准，ADR-03 至 ADR-12 已完成产品审批，
-  但实施和启用范围分别受限
+- 当前 profile：`STUDENT COMPETITION`
+- 状态：核心 Workflow 已实现并通过自动验证；生产扩展门归档为未来参考
 - 文档性质：已批准决策记录与后续提案；不是上线批准或生产质量声明
 - 已批准架构决策：ADR-01“结构只向下生长，证据从下向上验收”；
   ADR-02“合同基础与受限 no-egress shadow”
@@ -17,6 +17,24 @@
 ---
 
 ## 0. 文档权威与授权边界
+
+### 0.0 竞赛 Profile
+
+当前学生竞赛 Profile 保留下列软件不变量：
+
+- top-down 结构写入、bottom-up 只提交 replan；
+- Source Inventory 独立分母和 omission fail-closed；
+- proposal、assessment、canonical assembly 分阶段；
+- owner、quality、release 事实不能由调用方伪造；
+- blocked/review/draft 与 published 状态分离；
+- no-secret、no-unauthorized-egress 和可回退。
+
+本 Profile 不要求独立人类团队、60 份 Gold、sealed blind、20 人研究、生产灾备、
+internal allowlist、canary 或多方签名。文中“独立 verifier”继续表示软件中的独立
+stage/producer identity，不要求学生团队必须由多个自然人组成。
+
+竞赛演示可以运行现有本地或隔离应用和导出流程；`publication_enabled=false`
+仅表示 vNext 不是生产发布权威，不阻止在受控环境展示结果。
 
 ### 0.1 规范词
 
@@ -59,7 +77,7 @@
 5. 让 bottom-up Agent 创建父节点、提升根或直接修改祖先。
 6. 让模型直接写 `accepted`、`published`、稳定 ID、权限或预算字段。
 7. 在质量失败时输出“思维导图已生成”。
-8. 把现有 168 个 vNext 测试通过解释为真实模型质量已过门。
+8. 把自动测试通过解释为生产级真实模型质量已过门。
 9. 未经触发证据直接迁移 Postgres/Temporal、冻结 2-of-3 签名或修改公共 API。
 10. 用调用方构造的 readiness、quality PASS、owner 或 canary observation 推动发布。
 
@@ -81,8 +99,8 @@
 
 ### 0.5 独立评审团队
 
-本规范由以下独立角色审查后收束；各角色均进行了独立 GitHub-first 和原始资料
-检索，而不是共享一个搜索摘要：
+下表是生产 Profile 的职责参考。竞赛 Profile 不要求实际配置这些自然人角色；
+现有自动攻击测试和项目所有者验收即可完成竞赛候选。
 
 | 角色 | 主要审查 | 纳入的关键结论 |
 | --- | --- | --- |

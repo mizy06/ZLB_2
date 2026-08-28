@@ -1,0 +1,265 @@
+import { RevealStrategy, clearHighlighterCache, defaultRevealDebounceMs, detectLanguage, getOrCreateHighlighter, monaco_shim_exports, processedLanguage, registerMonacoThemes, useMonaco, workerPathByLabel } from "./preloadMonacoWorkers.shared-C4yqmuza.js";
+import { conf, language } from "monaco-editor/esm/vs/basic-languages/cpp/cpp";
+import { conf as conf$1, language as language$1 } from "monaco-editor/esm/vs/basic-languages/javascript/javascript";
+import { conf as conf$2, language as language$2 } from "monaco-editor/esm/vs/basic-languages/powershell/powershell";
+import { conf as conf$3, language as language$3 } from "monaco-editor/esm/vs/basic-languages/python/python";
+import { conf as conf$4, language as language$4 } from "monaco-editor/esm/vs/basic-languages/shell/shell";
+import { conf as conf$5, language as language$5 } from "monaco-editor/esm/vs/basic-languages/typescript/typescript";
+import "monaco-editor/esm/vs/editor/contrib/documentSymbols/browser/outlineModel";
+import "monaco-editor/esm/vs/editor/contrib/suggest/browser/suggestMemory";
+import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution";
+import "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution";
+import "monaco-editor/esm/vs/basic-languages/css/css.contribution";
+import "monaco-editor/esm/vs/basic-languages/html/html.contribution";
+import "monaco-editor/esm/vs/basic-languages/python/python.contribution";
+import "monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution";
+import "monaco-editor/esm/vs/basic-languages/shell/shell.contribution";
+import "monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution";
+import "monaco-editor/esm/vs/language/json/monaco.contribution";
+import "monaco-editor/esm/vs/language/typescript/monaco.contribution";
+import "monaco-editor/esm/vs/language/html/monaco.contribution";
+import "monaco-editor/esm/vs/language/css/monaco.contribution";
+
+//#region src/ensureMonacoWorkers.legacy.ts
+function normalizeBaseUrl(baseUrl) {
+	return baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+}
+function tryDeriveBaseUrlFromVsPath(vsPath) {
+	if (!vsPath) return void 0;
+	const trimmed = vsPath.endsWith("/") ? vsPath.slice(0, -1) : vsPath;
+	if (trimmed.endsWith("/vs")) return normalizeBaseUrl(trimmed.slice(0, -3));
+	const vsIndex = trimmed.indexOf("/vs/");
+	if (vsIndex > 0) return normalizeBaseUrl(trimmed.slice(0, vsIndex));
+	return void 0;
+}
+function detectMonacoBaseUrlFromScripts() {
+	if (typeof document === "undefined") return void 0;
+	const scripts = Array.from(document.getElementsByTagName("script"));
+	for (const script of scripts) {
+		const src = script.getAttribute("src") || "";
+		if (!src) continue;
+		const loaderMatch = src.match(/^(.*)\/vs\/loader\.js.*$/);
+		if (loaderMatch) return normalizeBaseUrl(loaderMatch[1]);
+		const vsIndex = src.indexOf("/vs/");
+		if (vsIndex > 0) return normalizeBaseUrl(src.slice(0, vsIndex));
+	}
+	return void 0;
+}
+function detectMonacoBaseUrlFromAmdRequire() {
+	var _amdRequire$s;
+	const amdRequire = globalThis.require;
+	const vsPath = amdRequire === null || amdRequire === void 0 || (_amdRequire$s = amdRequire.s) === null || _amdRequire$s === void 0 || (_amdRequire$s = _amdRequire$s.contexts) === null || _amdRequire$s === void 0 || (_amdRequire$s = _amdRequire$s._) === null || _amdRequire$s === void 0 || (_amdRequire$s = _amdRequire$s.config) === null || _amdRequire$s === void 0 || (_amdRequire$s = _amdRequire$s.paths) === null || _amdRequire$s === void 0 ? void 0 : _amdRequire$s.vs;
+	if (typeof vsPath !== "string" || !vsPath) return void 0;
+	try {
+		return tryDeriveBaseUrlFromVsPath(String(new URL(vsPath, location.href)));
+	} catch {
+		return tryDeriveBaseUrlFromVsPath(vsPath);
+	}
+}
+function detectMonacoBaseUrlFromExistingWorkerUrl(getWorkerUrl) {
+	let workerUrl;
+	try {
+		workerUrl = getWorkerUrl("", "editorWorkerService");
+	} catch {}
+	if (!workerUrl) try {
+		workerUrl = getWorkerUrl("", "typescript");
+	} catch {}
+	if (!workerUrl) return void 0;
+	try {
+		const resolved = new URL(workerUrl, location.href);
+		const vsIndex = resolved.pathname.indexOf("/vs/");
+		if (vsIndex <= 0) return void 0;
+		return normalizeBaseUrl(`${resolved.origin}${resolved.pathname.slice(0, vsIndex)}`);
+	} catch {
+		return void 0;
+	}
+}
+function makeWorkerUrl(baseUrl) {
+	if (typeof URL === "undefined" || typeof Blob === "undefined") return void 0;
+	const normalized = normalizeBaseUrl(baseUrl);
+	const workerMainUrl = `${normalized}vs/base/worker/workerMain.js`;
+	const source = `self.MonacoEnvironment={baseUrl:${JSON.stringify(normalized)}};importScripts(${JSON.stringify(workerMainUrl)});`;
+	try {
+		return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+	} catch {
+		return void 0;
+	}
+}
+function ensureMonacoWorkersLegacy(options) {
+	if (typeof window === "undefined" || typeof document === "undefined") return;
+	try {
+		const existing = self.MonacoEnvironment;
+		if (existing === null || existing === void 0 ? void 0 : existing.getWorker) return;
+		const existingGetWorkerUrl = existing === null || existing === void 0 ? void 0 : existing.getWorkerUrl;
+		if (typeof existingGetWorkerUrl === "function") {
+			const existingBaseUrl = detectMonacoBaseUrlFromExistingWorkerUrl(existingGetWorkerUrl);
+			if (existingBaseUrl) {
+				const workerUrl$1 = makeWorkerUrl(existingBaseUrl);
+				if (workerUrl$1) self.MonacoEnvironment = { getWorkerUrl() {
+					return workerUrl$1;
+				} };
+			}
+			return;
+		}
+		const baseUrl = (options === null || options === void 0 ? void 0 : options.baseUrl) ?? detectMonacoBaseUrlFromScripts() ?? detectMonacoBaseUrlFromAmdRequire();
+		if (!baseUrl) return;
+		const workerUrl = makeWorkerUrl(baseUrl);
+		if (!workerUrl) return;
+		globalThis.MonacoEnvironment = { getWorkerUrl() {
+			return workerUrl;
+		} };
+	} catch {}
+}
+
+//#endregion
+//#region src/preloadMonacoWorkers.legacy.ts
+async function preloadMonacoWorkers() {
+	if (typeof window === "undefined" || typeof document === "undefined") return;
+	ensureMonacoWorkersLegacy();
+	const env = self.MonacoEnvironment;
+	const getWorkerUrl = env === null || env === void 0 ? void 0 : env.getWorkerUrl;
+	if (typeof getWorkerUrl !== "function") return;
+	const labelsToWarm = Array.from(new Set([...Object.keys(workerPathByLabel), "editorWorkerService"]));
+	const urls = labelsToWarm.map((label) => {
+		try {
+			return getWorkerUrl("", label);
+		} catch {
+			return void 0;
+		}
+	}).filter(Boolean);
+	const unique = Array.from(new Set(urls.filter(Boolean).map(String)));
+	try {
+		await Promise.all(unique.map((u) => fetch(u, {
+			method: "GET",
+			cache: "force-cache"
+		}).catch(() => void 0)));
+	} catch {}
+}
+
+//#endregion
+//#region src/index.legacy.ts
+const LEGACY_ONIG_INIT_KEY = "__streamMonacoLegacyOnigurumaInit__";
+const LEGACY_ENGINE_KEY = "__streamMonacoLegacyShikiEngine__";
+const LEGACY_ERROR_FILTER_KEY = "__streamMonacoLegacyMonacoErrorFilterInstalled__";
+const LEGACY_FLAG_KEY = "__streamMonacoLegacy__";
+const LEGACY_MONACO_LANGS_INIT_KEY = "__streamMonacoLegacyMonacoLangsInit__";
+const LEGACY_TOKENS_PROVIDER_GUARD_KEY = "__streamMonacoLegacyTokensProviderGuardInstalled__";
+function ensureLegacyOnigurumaInit() {
+	if (typeof globalThis === "undefined") return;
+	const g = globalThis;
+	if (g[LEGACY_ONIG_INIT_KEY]) return;
+	const init = (async () => {
+		try {
+			const shiki = await import("shiki");
+			if (typeof shiki.createJavaScriptRegexEngine === "function") return shiki.createJavaScriptRegexEngine();
+			return null;
+		} catch {
+			return null;
+		}
+	})();
+	g[LEGACY_ONIG_INIT_KEY] = init.then(() => true, () => false);
+	g[LEGACY_ENGINE_KEY] = init;
+}
+function ensureLegacyMonacoLanguageContributions() {
+	if (typeof globalThis === "undefined") return;
+	const g = globalThis;
+	if (g[LEGACY_MONACO_LANGS_INIT_KEY]) return;
+	const init = Promise.resolve().then(() => {
+		try {
+			const langs = monaco_shim_exports.languages;
+			if (typeof (langs === null || langs === void 0 ? void 0 : langs.setMonarchTokensProvider) === "function") {
+				var _langs$setLanguageCon, _langs$setLanguageCon2, _langs$setLanguageCon3, _langs$setLanguageCon4, _langs$setLanguageCon5, _langs$setLanguageCon6;
+				langs.setMonarchTokensProvider("javascript", language$1);
+				(_langs$setLanguageCon = langs.setLanguageConfiguration) === null || _langs$setLanguageCon === void 0 || _langs$setLanguageCon.call(langs, "javascript", conf$1);
+				langs.setMonarchTokensProvider("typescript", language$5);
+				(_langs$setLanguageCon2 = langs.setLanguageConfiguration) === null || _langs$setLanguageCon2 === void 0 || _langs$setLanguageCon2.call(langs, "typescript", conf$5);
+				langs.setMonarchTokensProvider("python", language$3);
+				(_langs$setLanguageCon3 = langs.setLanguageConfiguration) === null || _langs$setLanguageCon3 === void 0 || _langs$setLanguageCon3.call(langs, "python", conf$3);
+				langs.setMonarchTokensProvider("cpp", language);
+				(_langs$setLanguageCon4 = langs.setLanguageConfiguration) === null || _langs$setLanguageCon4 === void 0 || _langs$setLanguageCon4.call(langs, "cpp", conf);
+				langs.setMonarchTokensProvider("shell", language$4);
+				(_langs$setLanguageCon5 = langs.setLanguageConfiguration) === null || _langs$setLanguageCon5 === void 0 || _langs$setLanguageCon5.call(langs, "shell", conf$4);
+				langs.setMonarchTokensProvider("powershell", language$2);
+				(_langs$setLanguageCon6 = langs.setLanguageConfiguration) === null || _langs$setLanguageCon6 === void 0 || _langs$setLanguageCon6.call(langs, "powershell", conf$2);
+			}
+		} catch {}
+		try {
+			for (const model of monaco_shim_exports.editor.getModels()) {
+				const current = model.getLanguageId();
+				const next = processedLanguage(current) || current;
+				if (next !== current) monaco_shim_exports.editor.setModelLanguage(model, next);
+				else monaco_shim_exports.editor.setModelLanguage(model, current);
+			}
+		} catch {}
+	});
+	g[LEGACY_MONACO_LANGS_INIT_KEY] = init;
+}
+function ensureLegacyTokensProviderGuard() {
+	if (typeof globalThis === "undefined") return;
+	const g = globalThis;
+	if (g[LEGACY_TOKENS_PROVIDER_GUARD_KEY]) return;
+	g[LEGACY_TOKENS_PROVIDER_GUARD_KEY] = true;
+	try {
+		const langs = monaco_shim_exports.languages;
+		const setTokensProvider = typeof (langs === null || langs === void 0 ? void 0 : langs.setTokensProvider) === "function" ? langs.setTokensProvider.bind(langs) : null;
+		if (!setTokensProvider) return;
+		langs.setTokensProvider = (lang, provider) => {
+			if (provider && typeof provider.tokenize === "function") {
+				const originalTokenize = provider.tokenize.bind(provider);
+				const getInitialState = typeof provider.getInitialState === "function" ? provider.getInitialState.bind(provider) : null;
+				const wrappedProvider = {
+					...provider,
+					tokenize(line, state) {
+						try {
+							return originalTokenize(line, state);
+						} catch {
+							return {
+								endState: state,
+								tokens: [{
+									startIndex: 0,
+									scopes: ""
+								}]
+							};
+						}
+					}
+				};
+				try {
+					const st = getInitialState ? getInitialState() : null;
+					wrappedProvider.tokenize("const a = 1", st);
+				} catch {
+					return { dispose() {} };
+				}
+				return setTokensProvider(lang, wrappedProvider);
+			}
+			return setTokensProvider(lang, provider);
+		};
+	} catch {}
+}
+function ensureLegacyMonacoErrorFilter() {
+	if (typeof globalThis === "undefined") return;
+	const g = globalThis;
+	if (g[LEGACY_ERROR_FILTER_KEY]) return;
+	g[LEGACY_ERROR_FILTER_KEY] = true;
+	(async () => {
+		try {
+			const mod = await import("monaco-editor/esm/vs/base/common/errors.js");
+			const handler = mod === null || mod === void 0 ? void 0 : mod.errorHandler;
+			if (!handler || typeof handler.unexpectedErrorHandler !== "function") return;
+			const prev = handler.unexpectedErrorHandler.bind(handler);
+			handler.unexpectedErrorHandler = (err) => {
+				const msg = (err === null || err === void 0 ? void 0 : err.message) ? String(err.message) : String(err);
+				if (msg.includes("compileAG") || msg.includes("Cannot read properties of null (reading")) return;
+				return prev(err);
+			};
+		} catch {}
+	})();
+}
+ensureLegacyOnigurumaInit();
+globalThis[LEGACY_FLAG_KEY] = true;
+ensureLegacyMonacoLanguageContributions();
+ensureLegacyTokensProviderGuard();
+ensureLegacyMonacoErrorFilter();
+ensureMonacoWorkersLegacy();
+
+//#endregion
+export { RevealStrategy, clearHighlighterCache, defaultRevealDebounceMs, detectLanguage, ensureMonacoWorkersLegacy, getOrCreateHighlighter, preloadMonacoWorkers, registerMonacoThemes, useMonaco };
