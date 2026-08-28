@@ -873,7 +873,9 @@ export class MindmapAgentApi implements KimiWebApi {
       startedAt: nowIso(),
       capabilities: {},
       openInApps: [],
-      dangerousBypassAuth: true,
+      // The public workbench is protected by the local account cookie. Keep
+      // the legacy metadata honest for callers that still inspect this field.
+      dangerousBypassAuth: false,
       backend: 'v1',
     };
   }

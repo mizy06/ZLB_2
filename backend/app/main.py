@@ -775,7 +775,7 @@ async def register_account(
     response: Response,
 ):
     try:
-        account, token = account_store(settings).register(
+        account, token, first_account = account_store(settings).register(
             credentials.username,
             credentials.password,
         )
@@ -784,11 +784,12 @@ async def register_account(
     except AccountInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Jobs created before account auth used the temporary public owner (or an
-    # empty owner in older local versions). Give those records to the first
-    # account without changing the existing graph/run schema.
-    blackboard.reassign_owner(settings.workbench_owner_id, account.id)
-    blackboard.reassign_owner("", account.id)
+    if first_account:
+        # Jobs created before account auth used the temporary public owner (or
+        # an empty owner in older local versions). Give those records to the
+        # first account without changing the existing graph/run schema.
+        blackboard.reassign_owner(settings.workbench_owner_id, account.id)
+        blackboard.reassign_owner("", account.id)
     set_session_cookie(response, request, token)
     return AccountResponse(**account.as_dict())
 

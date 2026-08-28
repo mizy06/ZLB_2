@@ -502,9 +502,13 @@ Compose 只映射 `127.0.0.1:5173`，容器使用非 root UID、只读根文件�
 因此宿主 `root:10001 0440` 和 preflight 是实际启动前置条件，不能只看
 `docker compose config` 成功。
 
-公开工作台中的所有访问者共享同一个 owner、历史和任务队列，也都可以提交、
-取消或删除任务并消耗模型额度。需要隔离用户或限制公网访问时，应在部署层增加
-反向代理认证、网络 allowlist 或独立租户边界。
+公开工作台使用本地账号和 HttpOnly 会话 Cookie：每位 contributor 注册后
+拥有独立身份，只能看到自己的任务、历史、上传源文件、图版本、导出物和继续
+修改操作。未登录访问受保护 API 会返回 `401`；账号注册、登录、登出和当前
+账号查询分别使用 `/api/auth/register`、`/api/auth/login`、`/api/auth/logout`
+和 `/api/auth/me`。旧版本写入临时 `public-workbench` owner 的任务会在本次
+升级后由首个注册账号接管，后续注册账号不会看到这些历史。部署密钥仍只用于
+服务端模型和内部引擎，不作为 contributor 的用户认证凭据。
 
 端点和两个模型变量必须与实际凭据一起显式配置，并写入新任务的 run
 manifest。`preview` 模型、Token Plan/Coding Plan endpoint 或 key、无效

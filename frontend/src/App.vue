@@ -882,6 +882,7 @@ function openPr(url: string): void {
         :error="previewError"
         :line="previewTarget?.line"
         :download-url="previewDownloadUrl"
+        :media-preview="previewTarget === null"
         closable
         :external-actions="previewExternalActions"
         :open-file="openFilePreview"

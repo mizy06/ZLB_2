@@ -38,11 +38,13 @@ class AccountStoreTDDTests(unittest.TestCase):
     def test_accounts_have_independent_sessions_and_passwords_are_hashed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = auth.AccountStore(Path(temp_dir) / "auth.sqlite3")
-            account_a, token_a = store.register("Alice", "a-secure-password")
-            account_b, token_b = store.register("Bob", "b-secure-password")
+            account_a, token_a, first_a = store.register("Alice", "a-secure-password")
+            account_b, token_b, first_b = store.register("Bob", "b-secure-password")
 
             self.assertNotEqual(account_a.id, account_b.id)
             self.assertNotEqual(token_a, token_b)
+            self.assertTrue(first_a)
+            self.assertFalse(first_b)
             self.assertEqual(store.authenticate(token_a).id, account_a.id)
             self.assertEqual(store.authenticate(token_b).id, account_b.id)
             with store._connect() as connection:
@@ -84,7 +86,8 @@ class AccountStoreTDDTests(unittest.TestCase):
                 owner_id="",
             )
             store = auth.AccountStore(root / "auth.sqlite3")
-            account, _ = store.register("Alice", "a-secure-password")
+            account, _, first_account = store.register("Alice", "a-secure-password")
+            self.assertTrue(first_account)
 
             board.reassign_owner("public-workbench", account.id)
             board.reassign_owner("", account.id)
@@ -128,6 +131,15 @@ class AccountRouteTDDTests(unittest.IsolatedAsyncioTestCase):
                             "username": "Alice",
                             "password": "a-secure-password",
                         },
+                    )
+                    board.upsert_job(
+                        task_id="task-created-after-first-account",
+                        status="completed",
+                        stage="complete",
+                        progress=100,
+                        message="legacy owner created after first account",
+                        mode="standard",
+                        owner_id="public-workbench",
                     )
                     registered_b = await client_b.post(
                         "/api/auth/register",

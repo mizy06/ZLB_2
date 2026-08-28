@@ -197,7 +197,7 @@ class AccountStore:
         )
         return token
 
-    def register(self, username: str, password: str) -> tuple[Account, str]:
+    def register(self, username: str, password: str) -> tuple[Account, str, bool]:
         username_key = normalize_username(username)
         password = validate_password(password)
         display_name = unicodedata.normalize("NFKC", username).strip()
@@ -206,12 +206,19 @@ class AccountStore:
         salt = secrets.token_bytes(16)
         digest = _password_digest(password, salt)
         with self._lock, self._connect() as connection:
+            # Serialize the existence check and insert so only one concurrent
+            # registration can claim the legacy public owner.
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT 1 FROM users WHERE username_key = ?",
                 (username_key,),
             ).fetchone()
             if existing:
                 raise AccountAlreadyExistsError("用户名已存在。")
+            first_account = (
+                connection.execute("SELECT 1 FROM users LIMIT 1").fetchone()
+                is None
+            )
             connection.execute(
                 """
                 INSERT INTO users (
@@ -229,7 +236,7 @@ class AccountStore:
                 ),
             )
             token = self._new_session(connection, user_id)
-        return Account(user_id, display_name, created_at), token
+        return Account(user_id, display_name, created_at), token, first_account
 
     def login(self, username: str, password: str) -> tuple[Account, str]:
         username_key = normalize_username(username)

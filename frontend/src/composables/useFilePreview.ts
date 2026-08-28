@@ -52,6 +52,10 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
   // came from the file store (a bare getFileUrl 401s in <img> under daemon
   // auth). Revoked when the preview is replaced or closed.
   let mediaObjectUrl: string | null = null;
+  // Download target for generated/tool media. It points at the same
+  // authenticated blob used by the preview, or at a directly playable URL
+  // when no file id is available.
+  const previewMediaDownloadUrl = ref<string | null>(null);
   function revokeMediaObjectUrl(): void {
     if (mediaObjectUrl !== null) {
       URL.revokeObjectURL(mediaObjectUrl);
@@ -61,7 +65,8 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
 
   const previewDownloadUrl = computed(() => {
     const path = previewNormalizedPath.value;
-    return path ? client.getFileDownloadUrl(path) : null;
+    if (path) return client.getFileDownloadUrl(path);
+    return previewMediaDownloadUrl.value;
   });
   const previewExternalActions = computed(() => previewTarget.value !== null);
 
@@ -133,6 +138,7 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
     previewLoading.value = true;
     previewTarget.value = target;
     previewNormalizedPath.value = null;
+    previewMediaDownloadUrl.value = null;
 
     const normalized = normalizePreviewPath(target.path);
     if ('error' in normalized) {
@@ -177,6 +183,7 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
     detailTarget.value = 'file';
     previewTarget.value = null;
     previewNormalizedPath.value = null;
+    previewMediaDownloadUrl.value = null;
     previewError.value = null;
     const isVideo = media.kind === 'video';
     const base = {
@@ -201,11 +208,13 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
           return;
         }
         mediaObjectUrl = URL.createObjectURL(blob);
+        previewMediaDownloadUrl.value = mediaObjectUrl;
         previewFile.value = { ...previewFile.value, sourceUrl: mediaObjectUrl };
         previewLoading.value = false;
       }).catch(() => {
         if (seq !== previewRequestSeq) return;
         // Fall back to the raw URL so the user sees an honest broken state.
+        previewMediaDownloadUrl.value = isPlayableMediaUrl(media.url) ? media.url : null;
         if (previewFile.value) previewFile.value = { ...previewFile.value, sourceUrl: media.url };
         previewLoading.value = false;
       });
@@ -214,7 +223,9 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
       // A non-loadable url (e.g. a provider `ms://` reference with no local
       // bytes) can't feed a <video>/<img> src — leave sourceUrl unset so the
       // preview shows the no-preview card instead of a broken player.
-      previewFile.value = isPlayableMediaUrl(media.url) ? { ...base, sourceUrl: media.url } : base;
+      const playableUrl = isPlayableMediaUrl(media.url);
+      previewMediaDownloadUrl.value = playableUrl ? media.url : null;
+      previewFile.value = playableUrl ? { ...base, sourceUrl: media.url } : base;
     }
   }
 
@@ -224,6 +235,7 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
     previewRequestSeq += 1;
     previewTarget.value = null;
     previewNormalizedPath.value = null;
+    previewMediaDownloadUrl.value = null;
     previewFile.value = null;
     previewError.value = null;
     previewLoading.value = false;

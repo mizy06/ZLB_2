@@ -75,6 +75,8 @@ const props = defineProps<{
   error?: string | null;
   line?: number;
   downloadUrl?: string | null;
+  /** Media previews do not have a useful workspace path to copy. */
+  mediaPreview?: boolean;
   closable?: boolean;
   externalActions?: boolean;
   /** Open a linked file from inside a Markdown preview (resolved against the
@@ -282,6 +284,11 @@ function copyPath(): void {
 const htmlMode = ref<'preview' | 'source'>('preview');
 const markdownMode = ref<'preview' | 'source'>('preview');
 const imageFit = ref<'fit' | 'actual'>('fit');
+const imageBodyRef = ref<HTMLElement | null>(null);
+const imageDragging = ref(false);
+let imagePointerId: number | null = null;
+let imageLastX = 0;
+let imageLastY = 0;
 
 function setHtmlMode(v: string): void {
   htmlMode.value = v as 'preview' | 'source';
@@ -290,8 +297,76 @@ function setMarkdownMode(v: string): void {
   markdownMode.value = v as 'preview' | 'source';
 }
 function setImageFit(v: string): void {
-  imageFit.value = v as 'fit' | 'actual';
+  const next = v as 'fit' | 'actual';
+  if (next !== 'actual') endImageDrag();
+  imageFit.value = next;
 }
+
+function onImagePointerDown(event: PointerEvent): void {
+  if (imageFit.value !== 'actual' || event.button !== 0) return;
+  const body = imageBodyRef.value;
+  if (!body) return;
+  imageDragging.value = true;
+  imagePointerId = event.pointerId;
+  imageLastX = event.clientX;
+  imageLastY = event.clientY;
+  event.preventDefault();
+  try {
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture is unavailable in a few embedded browser contexts.
+  }
+}
+
+function onImagePointerMove(event: PointerEvent): void {
+  if (!imageDragging.value || imagePointerId !== event.pointerId) return;
+  const body = imageBodyRef.value;
+  if (!body) return;
+  body.scrollLeft -= event.clientX - imageLastX;
+  body.scrollTop -= event.clientY - imageLastY;
+  imageLastX = event.clientX;
+  imageLastY = event.clientY;
+  event.preventDefault();
+}
+
+function endImageDrag(event?: PointerEvent): void {
+  if (imagePointerId !== null && event && event.pointerId !== imagePointerId) return;
+  const pointerId = imagePointerId;
+  imageDragging.value = false;
+  imagePointerId = null;
+  if (pointerId === null) return;
+  try {
+    imageBodyRef.value?.releasePointerCapture(pointerId);
+  } catch {
+    // The pointer may already have been released by the browser.
+  }
+}
+
+function downloadExtension(mime: string): string {
+  const normalized = mime.toLowerCase().split(';', 1)[0] ?? '';
+  const known: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/svg+xml': 'svg',
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'video/quicktime': 'mov',
+  };
+  return known[normalized] ?? (normalized.split('/')[1] || 'bin').replace('jpeg', 'jpg');
+}
+
+const downloadFilename = computed<string | undefined>(() => {
+  const file = props.file;
+  if (!file) return undefined;
+  const name = file.path.split(/[\\/]/).pop() || '';
+  if (/\.[A-Za-z0-9]{1,8}$/.test(name)) return name;
+  if (props.mediaPreview) {
+    return `generated-image.${downloadExtension(file.mime)}`;
+  }
+  return name || `download.${downloadExtension(file.mime)}`;
+});
 
 watch(contentKind, (kind) => {
   htmlMode.value = kind === 'html' ? 'preview' : 'source';
@@ -500,7 +575,7 @@ function truncatePath(path: string, maxLen = 55): string {
         </div>
         <!-- Icon actions: text labels made the header wrap to two rows at the
              default panel width — icon-only buttons keep it single-line. -->
-        <IconButton size="sm" :class="{ copied: copiedPath }" :label="copiedPath ? t('filePreview.copied') : t('filePreview.copyPath')" @click="copyPath">
+        <IconButton v-if="!mediaPreview" size="sm" :class="{ copied: copiedPath }" :label="copiedPath ? t('filePreview.copied') : t('filePreview.copyPath')" @click="copyPath">
           <Icon v-if="!copiedPath" name="link" size="md" />
           <Icon v-else class="fp-check" name="check" size="md" />
         </IconButton>
@@ -514,9 +589,7 @@ function truncatePath(path: string, maxLen = 55): string {
           v-if="downloadUrl"
           class="fp-download"
           :href="downloadUrl"
-          target="_blank"
-          rel="noreferrer"
-          download
+          :download="downloadFilename"
           :aria-label="t('filePreview.download')"
         >
           <Icon name="download" size="md" />
@@ -618,20 +691,36 @@ function truncatePath(path: string, maxLen = 55): string {
       </div>
 
       <!-- Body: Image (base64) -->
-      <div v-else-if="contentKind === 'image'" class="fp-body fp-image-wrap">
-        <template v-if="imageSrc">
-          <img
-            :src="imageSrc"
-            :alt="file.path"
-            class="fp-image"
-            :class="{ actual: imageFit === 'actual' }"
-          />
-        </template>
-        <div v-else class="fp-binary-card">
-          <span class="fp-binary-icon">
-            <Icon name="image-off" size="lg" />
-          </span>
-          <span class="fp-binary-label">{{ t('filePreview.imageNoPreview', { mime: file.mime, size: formatSize(file.size) }) }}</span>
+      <div
+        v-else-if="contentKind === 'image'"
+        ref="imageBodyRef"
+        class="fp-body fp-image-scroll"
+      >
+        <div
+          class="fp-image-wrap"
+          :class="{ actual: imageFit === 'actual', dragging: imageDragging }"
+          @pointerdown="onImagePointerDown"
+          @pointermove="onImagePointerMove"
+          @pointerup="endImageDrag"
+          @pointercancel="endImageDrag"
+          @lostpointercapture="endImageDrag"
+          @dragstart.prevent
+        >
+          <template v-if="imageSrc">
+            <img
+              :src="imageSrc"
+              :alt="file.path"
+              class="fp-image"
+              :class="{ actual: imageFit === 'actual' }"
+              draggable="false"
+            />
+          </template>
+          <div v-else class="fp-binary-card">
+            <span class="fp-binary-icon">
+              <Icon name="image-off" size="lg" />
+            </span>
+            <span class="fp-binary-label">{{ t('filePreview.imageNoPreview', { mime: file.mime, size: formatSize(file.size) }) }}</span>
+          </div>
         </div>
       </div>
 
@@ -934,11 +1023,35 @@ function truncatePath(path: string, maxLen = 55): string {
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  min-width: 100%;
+  min-height: 100%;
   padding: 24px;
   background: var(--panel2);
 }
 
+.fp-image-scroll {
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.fp-image-wrap.actual {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  height: max-content;
+  min-height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+.fp-image-wrap.actual.dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
 .fp-image {
+  display: block;
+  flex: none;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -947,6 +1060,8 @@ function truncatePath(path: string, maxLen = 55): string {
   background: var(--media-alpha-canvas);
 }
 .fp-image.actual {
+  width: auto;
+  height: auto;
   max-width: none;
   max-height: none;
 }
