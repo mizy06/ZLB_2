@@ -20,13 +20,13 @@ editorial_ppt_vision
 
 ```text
 image:    zlb-mindmap-agent:local-20260831
-image ID:  sha256:af47d23f9ac1b3a40600d5dc1ae4bdebb29d57df27196870d0514f569baf2e74
+image ID:  sha256:6ff27459056bc895048379b5e0ec17e868aa8436ba3d2ff0ecb835ec5da3451b
 user:     10001:10001
 pipeline: editorial_ppt_vision
 ```
 
 镜像标签中的 revision 为
-`e639c5f8c71eeb0f66173c986b067ba6d8ee0a53`。这是该次部署构建的镜像标识，
+`5fc8d6c0f20a26fbe3961b44a4d35b639c8c49a0`。这是该次部署构建的镜像标识，
 对应 `main` 的发布提交。
 
 本次发布从 Composer 的 slash-command 菜单移除了 `/fork`、`/undo`、
@@ -352,7 +352,7 @@ sudo docker build \
 
 ```bash
 export MINDMAP_IMAGE_REF=zlb-mindmap-agent:local-20260831
-export IMAGE_DIGEST=sha256:b4ff4b115e30fa58441016b9d34698a92209cc067e23dbe1c4e01dac872b49d7
+export IMAGE_DIGEST=sha256:6ff27459056bc895048379b5e0ec17e868aa8436ba3d2ff0ecb835ec5da3451b
 export EXTERNAL_ENGINE_TOKEN='替换为部署环境 token'
 export QWEN_BASE_URL='https://dashscope.aliyuncs.com/compatible-mode/v1'
 export QWEN_MODEL='受支持的正式文本模型'
