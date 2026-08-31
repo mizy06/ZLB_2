@@ -19,15 +19,19 @@ editorial_ppt_vision
 已核验的本地运行时基线：
 
 ```text
-image:    zlb-mindmap-agent:local-20260829
-image ID:  sha256:ee39d8e1c4e8689a1cb4895e5e9b0144be77b349a949558a862559e82ac19704
+image:    zlb-mindmap-agent:local-20260831
+image ID:  sha256:b4ff4b115e30fa58441016b9d34698a92209cc067e23dbe1c4e01dac872b49d7
 user:     10001:10001
 pipeline: editorial_ppt_vision
 ```
 
 镜像标签中的 revision 为
-`366bdecb9b1b4797c16b1e0894a79428950cc391-dirty-deploy-20260829`。这是该次
-部署构建的镜像标识，不应当被当作新的 Git 提交或 `main` 的源码 SHA。
+`4c2e205cb7c749f58d9a51e6129ed321114bfc17`。这是该次部署构建的镜像标识，
+对应 `main` 的发布提交。
+
+本次发布从 Composer 的 slash-command 菜单移除了 `/fork`、`/undo`、
+`/thinking`、`/btw`、`/goal` 和 `/clear`；goal、side chat、thinking、fork
+和 undo 能力仍可通过各自的界面入口使用。
 
 ## 能力范围
 
@@ -347,8 +351,8 @@ sudo docker build \
 示例中的 token 只能替换为部署环境自己的值：
 
 ```bash
-export MINDMAP_IMAGE_REF=zlb-mindmap-agent:local-20260829
-export IMAGE_DIGEST=sha256:ee39d8e1c4e8689a1cb4895e5e9b0144be77b349a949558a862559e82ac19704
+export MINDMAP_IMAGE_REF=zlb-mindmap-agent:local-20260831
+export IMAGE_DIGEST=sha256:b4ff4b115e30fa58441016b9d34698a92209cc067e23dbe1c4e01dac872b49d7
 export EXTERNAL_ENGINE_TOKEN='替换为部署环境 token'
 export QWEN_BASE_URL='https://dashscope.aliyuncs.com/compatible-mode/v1'
 export QWEN_MODEL='受支持的正式文本模型'
@@ -427,10 +431,10 @@ pnpm build
 最近一次发布核验（2026-08-31）包括：
 
 - 当前生产运行时后端测试：`638 passed`；
-- 前端：37 个测试文件、667 项测试通过；
+- 前端：37 个测试文件、670 项测试通过；
 - TypeScript typecheck、Vite production build、`compileall` 和
   `git diff --check` 通过；
-- `zlb-mindmap-agent:local-20260829` 的 `/api/health` 探针返回
+- `zlb-mindmap-agent:local-20260831` 的 `/api/health` 探针返回
   `editorial-ppt-vision-loop`。
 
 这些结果证明代码和运行时合同通过了本地/隔离验证，不等于对任意真实课件的
