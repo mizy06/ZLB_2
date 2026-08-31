@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { nextTick, ref, type Ref } from 'vue';
 import type { AppSkill } from '../src/api/types';
 import { useSlashMenu } from '../src/composables/useSlashMenu';
+import { buildSlashItems, isRemovedSlashCommand } from '../src/lib/slashCommands';
 
 // Public slash-menu contract: matching built-ins and dispatching selected
 // commands without coupling tests to component internals.
@@ -59,6 +60,27 @@ describe('useSlashMenu — update', () => {
     expect(slash.items.value.map((i) => i.name)).toContain('/compact');
   });
 
+  it('does not expose removed slash commands', () => {
+    const names = buildSlashItems().map((item) => item.name);
+    expect(names).not.toEqual(expect.arrayContaining(['/fork', '/undo', '/thinking', '/btw', '/goal', '/clear']));
+  });
+
+  it('reserves removed names from session skills too', () => {
+    const names = buildSlashItems([
+      { name: 'goal', description: 'custom goal skill', source: 'project' },
+      { name: 'undo', description: 'custom undo skill', source: 'builtin' },
+      { name: 'deploy', description: 'deploy stuff', source: 'project' },
+    ]).map((item) => item.name);
+    expect(names).not.toContain('/skill:goal');
+    expect(names).not.toContain('/undo');
+    expect(names).toContain('/skill:deploy');
+  });
+
+  it('marks removed commands so hand-typed input cannot activate them', () => {
+    expect(isRemovedSlashCommand('/GOAL')).toBe(true);
+    expect(isRemovedSlashCommand('/swarm')).toBe(false);
+  });
+
   it('offers the session export command for an export prefix', () => {
     const { slash } = setup('/exp');
     slash.update();
@@ -72,7 +94,7 @@ describe('useSlashMenu — update', () => {
   });
 
   it('closes once the token contains a space', () => {
-    const { slash } = setup('/goal some task');
+    const { slash } = setup('/swarm some task');
     slash.update();
     expect(slash.open.value).toBe(false);
   });
@@ -116,9 +138,9 @@ describe('useSlashMenu — select', () => {
   });
 
   it('acceptsInput: keeps the command in the box and does not emit yet', async () => {
-    const { text, emitted, pushed, slash } = setup('/goal');
-    slash.select({ name: '/goal', desc: '', acceptsInput: true });
-    expect(text.value).toBe('/goal ');
+    const { text, emitted, pushed, slash } = setup('/swarm');
+    slash.select({ name: '/swarm', desc: '', acceptsInput: true });
+    expect(text.value).toBe('/swarm ');
     expect(emitted).toEqual([]);
     expect(pushed).toEqual([]);
     expect(slash.open.value).toBe(false);

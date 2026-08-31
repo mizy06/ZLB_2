@@ -39,8 +39,8 @@ import type { SwarmMember } from './composables/swarmGroups';
 import ServerAuthDialog from './components/ServerAuthDialog.vue';
 import { onMindmapAuthRequired } from './api/mindmapAuth';
 import type { AppConfig, ThinkingLevel } from './api/types';
-import { commitLevel, effectiveThinkingLevel, segmentsFor } from './lib/modelThinking';
-import { stripSkillPrefix } from './lib/slashCommands';
+import { effectiveThinkingLevel } from './lib/modelThinking';
+import { isRemovedSlashCommand, stripSkillPrefix } from './lib/slashCommands';
 import Button from './components/ui/Button.vue';
 import IconButton from './components/ui/IconButton.vue';
 import Icon from './components/ui/Icon.vue';
@@ -101,21 +101,6 @@ const { showAuthGate, blinkAuthLogo } = useAuthGate({ client, authLogoRef });
 // Static page title (app name only). The session title, workspace name, and
 // activity indicator are intentionally excluded so browser tabs stay stable.
 usePageTitle({ showAuthGate });
-
-// The /thinking slash command has no popover anchor, so it steps to the next
-// segment for the active model (effort models cycle through their declared
-// levels; boolean models flip on/off; unsupported stays off).
-function nextThinkingLevel(current: ThinkingLevel | undefined): ThinkingLevel {
-  // Identity is the model id — display/model names can collide across providers.
-  const model = client.models.value.find((m) => m.id === client.status.value.modelId);
-  const segs = segmentsFor(model);
-  // No stored preference means the model default is in effect — cycle from
-  // there; a level the model doesn't declare (indexOf → -1) starts the cycle
-  // at the first segment.
-  const idx = segs.indexOf(effectiveThinkingLevel(model, current));
-  const next = segs[(idx + 1) % segs.length] ?? segs[0] ?? 'off';
-  return commitLevel(model, next);
-}
 
 // Status panel (/status) renders current client state only — show the
 // effective thinking level so "no preference" reads as the model default that
@@ -430,6 +415,11 @@ async function handleEditMessage(payload: {
 
 // Handler for slash commands emitted by Composer (via ConversationPane)
 function handleCommand(cmd: string): void {
+  // Removed slash commands must not reach the skill fallback, even if an
+  // internal caller bypasses Composer's normal input guard.
+  const commandName = cmd.split(' ', 1)[0] ?? cmd;
+  if (isRemovedSlashCommand(commandName)) return;
+
   // `/compact <text>` carries an optional free-text instruction steering what
   // the summary should focus on (TUI parity).
   if (cmd === '/compact' || cmd.startsWith('/compact ')) {
@@ -446,50 +436,15 @@ function handleCommand(cmd: string): void {
     else void client.toggleSwarmMode();
     return;
   }
-  // `/goal <objective>` creates a goal (and submits it); `/goal pause|resume|cancel`
-  // controls the active one; bare `/goal` toggles goal mode for the next message.
-  if (cmd === '/goal' || cmd.startsWith('/goal ')) {
-    const arg = cmd.slice('/goal'.length).trim();
-    if (arg === 'pause' || arg === 'resume' || arg === 'cancel') client.controlGoal(arg);
-    else if (arg) void client.createGoal(arg);
-    else client.toggleGoalMode();
-    return;
-  }
-  // `/btw <question>` opens (creating if needed) the side chat and asks it; bare
-  // `/btw` toggles the side-chat tab for the active session.
-  if (cmd === '/btw' || cmd.startsWith('/btw ')) {
-    const arg = cmd.slice('/btw'.length).trim();
-    if (!arg && client.sideChatVisible.value) {
-      // Use the detail-layer close so detailTarget is cleared too; the bare
-      // client.closeSideChat() only hides the panel and leaves detailTarget set.
-      closeSideChat();
-    } else {
-      void openSideChatTab(arg || undefined);
-    }
-    return;
-  }
   switch (cmd) {
-    // `/new` and `/clear` are aliases: both open the onboarding composer. The
-    // session is only created when the user sends the first message.
     case '/new':
-    case '/clear':
       handleCreateSession();
-      break;
-    case '/fork':
-      void client.forkSession();
       break;
     case '/export':
       void client.exportSession();
       break;
-    case '/undo':
-      void client.undo();
-      break;
     case '/plan':
       client.togglePlanMode();
-      break;
-    case '/thinking':
-      // No popover anchor from a slash command — step to the next level.
-      client.setThinking(nextThinkingLevel(client.thinking.value));
       break;
     case '/status':
       showStatusPanel.value = true;
@@ -518,6 +473,10 @@ function handleCommand(cmd: string): void {
       break;
     }
   }
+}
+
+function handleOpenBtw(): void {
+  void openSideChatTab();
 }
 
 function handleUnqueue(index: number): void {
@@ -740,6 +699,7 @@ function openPr(url: string): void {
       @answer="(questionId, response) => client.respondQuestion(questionId, response)"
       @dismiss="(questionId) => client.dismissQuestion(questionId)"
       @command="handleCommand"
+      @open-btw="handleOpenBtw"
       @interrupt="client.abortCurrentPrompt()"
       @unqueue="handleUnqueue"
       @edit-queued="handleEditQueued"

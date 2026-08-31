@@ -125,6 +125,8 @@ const emit = defineEmits<{
   selectWorkspace: [workspaceId: string];
   /** Empty-composer workspace picker: create a new workspace. */
   addWorkspace: [];
+  /** Open the side chat from its dedicated composer action. */
+  openBtw: [];
   /** Chat header: open the GitHub PR in a new tab. */
   openPr: [url: string];
   /** Chat header / session row: rename current session. */
@@ -1279,7 +1281,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
               @toggle-plan="emit('togglePlan')"
               @toggle-swarm="emit('toggleSwarm')"
               @toggle-goal="emit('toggleGoal')"
-              @open-btw="emit('command', '/btw')"
+              @open-btw="emit('openBtw')"
               @create-goal="emit('createGoal', $event)"
               @control-goal="emit('controlGoal', $event)"
               @focus-goal="focusGoal"
@@ -1364,7 +1366,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @toggle-plan="emit('togglePlan')"
         @toggle-swarm="emit('toggleSwarm')"
         @toggle-goal="emit('toggleGoal')"
-          @open-btw="emit('command', '/btw')"
+          @open-btw="emit('openBtw')"
           @create-goal="emit('createGoal', $event)"
           @focus-goal="focusGoal"
           @compact="emit('compact')"

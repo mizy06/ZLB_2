@@ -5,7 +5,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import SlashMenu from './SlashMenu.vue';
 import MentionMenu from './MentionMenu.vue';
-import { buildSlashItems, parseSlash, SKILL_COMMAND_PREFIX } from '../../lib/slashCommands';
+import { buildSlashItems, isRemovedSlashCommand, parseSlash, SKILL_COMMAND_PREFIX } from '../../lib/slashCommands';
 import { formatTokens } from '../../lib/formatTokens';
 import type { FileItem } from './MentionMenu.vue';
 import type { ActivationBadges, ConversationStatus, QueuedPromptView } from '../../types';
@@ -319,14 +319,13 @@ function handleSubmit(): void {
   history.push(trimmed);
 
   // If it's a known slash command, keep the optional tail as command input
-  // instead of submitting it as normal chat text. This covers `/goal <task>`,
-  // `/swarm <task>`, `/btw <question>`, slash skills with args, and bare
-  // commands such as `/model`. A hand-typed bare skill name (`/deploy`) also
-  // resolves to its prefixed menu entry (`/skill:deploy`), mirroring the TUI.
+  // instead of submitting it as normal chat text. Removed commands are
+  // intentionally excluded so hand-typed `/goal`-style input stays ordinary
+  // user text and cannot reach the skill activation fallback.
   if (trimmed) {
     const parsed = parseSlash(trimmed);
     const known = parsed
-      ? buildSlashItems(props.skills).some(
+      ? !isRemovedSlashCommand(parsed.cmd) && buildSlashItems(props.skills).some(
           (item) => item.name === parsed.cmd || item.name === `/${SKILL_COMMAND_PREFIX}${parsed.cmd.slice(1)}`,
         )
       : false;

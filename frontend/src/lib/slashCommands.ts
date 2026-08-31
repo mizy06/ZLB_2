@@ -21,18 +21,26 @@ export interface SlashCommand {
   acceptsInput?: boolean;
 }
 
+/** Commands intentionally unavailable through the slash-command interface. */
+export const REMOVED_SLASH_COMMANDS = new Set([
+  '/fork',
+  '/undo',
+  '/thinking',
+  '/btw',
+  '/goal',
+  '/clear',
+]);
+
+export function isRemovedSlashCommand(name: string): boolean {
+  return REMOVED_SLASH_COMMANDS.has(name.toLowerCase());
+}
+
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/new',        desc: 'commands.new.desc' },
-  { name: '/clear',      desc: 'commands.clear.desc' },
   { name: '/login',      desc: 'commands.login.desc' },
   { name: '/plan',       desc: 'commands.plan.desc' },
   { name: '/swarm',      desc: 'commands.swarm.desc', acceptsInput: true },
-  { name: '/goal',       desc: 'commands.goal.desc', acceptsInput: true },
-  { name: '/btw',        desc: 'commands.btw.desc', acceptsInput: true },
-  { name: '/thinking',   desc: 'commands.thinking.desc' },
   { name: '/compact',    desc: 'commands.compact.desc', acceptsInput: true },
-  { name: '/undo',       desc: 'commands.undo.desc' },
-  { name: '/fork',       desc: 'commands.fork.desc' },
   { name: '/export',     desc: 'commands.export.desc' },
   { name: '/status',     desc: 'commands.status.desc' },
 ];
@@ -83,13 +91,15 @@ export function stripSkillPrefix(name: string): string {
 export function buildSlashItems(
   skills: ReadonlyArray<{ name: string; description: string; source?: string }> = [],
 ): SlashCommand[] {
-  const skillItems: SlashCommand[] = skills.map((s) => ({
-    name: s.source === 'builtin' ? `/${s.name}` : `/${SKILL_COMMAND_PREFIX}${s.name}`,
-    desc: s.description,
-    isSkill: true,
-    // Keep the selected skill in the composer so arguments can be appended.
-    acceptsInput: true,
-  }));
+  const skillItems: SlashCommand[] = skills
+    .filter((s) => !isRemovedSlashCommand(`/${s.name}`))
+    .map((s) => ({
+      name: s.source === 'builtin' ? `/${s.name}` : `/${SKILL_COMMAND_PREFIX}${s.name}`,
+      desc: s.description,
+      isSkill: true,
+      // Keep the selected skill in the composer so arguments can be appended.
+      acceptsInput: true,
+    }));
   return [...SLASH_COMMANDS, ...skillItems];
 }
 
