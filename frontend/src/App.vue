@@ -362,10 +362,10 @@ async function handleRefreshProvider(id: string): Promise<void> {
   await client.refreshProvider(id);
 }
 
-// Destructive session/workspace/provider actions confirm through the shared
+// Destructive session/provider actions confirm through the shared
 // modal here (the menu components only emit the intent). Each passes its work
 // as the dialog `action`, so the dialog stays open with a loading state until
-// the operation settles. All three client calls toast their own errors and
+// the operation settles. Both client calls toast their own errors and
 // never reject.
 async function confirmArchiveSession(id: string): Promise<void> {
   await confirm({
@@ -373,16 +373,6 @@ async function confirmArchiveSession(id: string): Promise<void> {
     message: t('sidebar.archiveConfirm'),
     variant: 'danger',
     action: () => client.archiveSession(id),
-  });
-}
-
-async function confirmDeleteWorkspace(id: string): Promise<void> {
-  const name = client.workspacesView.value.find((w) => w.id === id)?.name ?? id;
-  await confirm({
-    title: t('sidebar.removeWorkspace'),
-    message: t('workspace.removeWorkspaceConfirm', { name }),
-    variant: 'danger',
-    action: () => client.deleteWorkspace(id),
   });
 }
 
@@ -658,29 +648,18 @@ function openPr(url: string): void {
         :collapsed="sidebarCollapsed"
         :dragging="sidebarDragging"
         :col-width="sideWidth"
-        :active-workspace="client.visibleWorkspace.value"
-        :active-workspace-id="client.activeWorkspaceId.value"
         :sessions="client.sessionsForView.value"
         :groups="client.workspaceGroups.value"
         :active-id="client.activeSessionId.value"
-        :attention-by-session="client.attentionBySession.value"
         :pending-by-session="client.pendingBySession.value"
         :unread-by-session="client.unreadBySession.value"
-        :workspace-sort-mode="client.workspaceSortMode.value"
         :backend="client.backend.value"
         @select="client.selectSession($event)"
         @create="handleCreateSession"
-        @create-in-workspace="handleCreateSessionInWorkspace($event)"
-        @select-workspace="client.openWorkspace($event)"
-        @add-workspace="showAddWorkspace = true"
         @rename="(id, title) => client.renameSession(id, title)"
         @archive="confirmArchiveSession($event)"
         @fork="(id) => client.forkSession(id)"
         @export="(id) => client.exportSession(id)"
-        @rename-workspace="(id, name) => client.renameWorkspace(id, name)"
-        @delete-workspace="confirmDeleteWorkspace($event)"
-        @reorder-workspaces="client.reorderWorkspaces($event)"
-        @set-workspace-sort-mode="client.setWorkspaceSortMode($event)"
         @load-more-sessions="(id) => void client.loadMoreSessions(id)"
         @load-all-sessions="void client.loadAllSessions()"
         @open-settings="showSettings = true"
@@ -757,7 +736,6 @@ function openPr(url: string): void {
       @add-workspace="showAddWorkspace = true"
       @open-pr="openPr"
       @submit="handleSubmit($event)"
-      @steer="client.steerPrompt($event.text, $event.attachments)"
       @cancel-task="client.cancelTask($event)"
       @answer="(questionId, response) => client.respondQuestion(questionId, response)"
       @dismiss="(questionId) => client.dismissQuestion(questionId)"

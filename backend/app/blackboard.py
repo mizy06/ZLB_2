@@ -37,6 +37,49 @@ def _json_value(value: Any) -> str:
     )
 
 
+# These fields describe the current task input and interaction state. They are
+# written by the HTTP/job layer before a pipeline starts, so an older pipeline
+# manifest must not replace them during a later revision.
+_DURABLE_TASK_MANIFEST_KEYS = frozenset(
+    {
+        "human_interactions",
+        "active_instruction",
+        "base_graph_version",
+        "source_paths",
+        "filenames",
+        "multi_document",
+        "source_sha256",
+        "source_size_bytes",
+        "source_filename",
+        "source_page_count",
+        "refinement_route",
+        "refinement_rationale",
+        "guidance_image_paths",
+        "completed_graph_asset",
+    }
+)
+
+
+def _merge_manifest(
+    base: dict[str, Any],
+    overlay: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge pipeline metadata without losing the current task state."""
+
+    merged = {
+        **base,
+        **(overlay or {}),
+    }
+    if "refinement_route" in base:
+        for key in _DURABLE_TASK_MANIFEST_KEYS:
+            if key not in base:
+                merged.pop(key, None)
+    for key in _DURABLE_TASK_MANIFEST_KEYS:
+        if key in base:
+            merged[key] = base[key]
+    return merged
+
+
 class SQLiteBlackboard:
     def __init__(self, path: Path):
         self.path = path
@@ -436,9 +479,15 @@ class SQLiteBlackboard:
             resolved_owner = owner_id or (
                 str(job["owner_id"]) if job else ""
             )
-            resolved_manifest = dict(manifest or {})
-            if job and not resolved_manifest:
-                resolved_manifest = json.loads(job["manifest_json"] or "{}")
+            job_manifest = (
+                json.loads(job["manifest_json"] or "{}")
+                if job
+                else {}
+            )
+            # Job metadata contains the durable interaction history and
+            # uploaded-source provenance. Pipeline metadata is additive and
+            # may override stale values, but must not erase those fields.
+            resolved_manifest = _merge_manifest(job_manifest, manifest)
             existing = connection.execute(
                 "SELECT run_id FROM runs WHERE task_id = ?",
                 (task_id,),
@@ -921,10 +970,11 @@ class SQLiteBlackboard:
                 if manifest_row
                 else {}
             )
+            run_manifest = _merge_manifest(manifest, result.run_manifest)
             payload = result.model_copy(
                 update={
                     "graph_version": version,
-                    "run_manifest": result.run_manifest or manifest,
+                    "run_manifest": run_manifest,
                 }
             )
             connection.execute(
@@ -985,10 +1035,11 @@ class SQLiteBlackboard:
                 if manifest_row
                 else {}
             )
+            run_manifest = _merge_manifest(manifest, result.run_manifest)
             versioned = result.model_copy(
                 update={
                     "graph_version": version,
-                    "run_manifest": result.run_manifest or manifest,
+                    "run_manifest": run_manifest,
                 }
             )
             connection.execute(

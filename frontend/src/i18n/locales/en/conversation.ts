@@ -4,6 +4,7 @@ export default {
   newMessages: 'Latest messages',
   loading: 'Loading…',
   starting: 'Starting conversation…',
+  agentIntro: 'Hello, I am TopoMind, your mind-map assistant. Upload files in multiple formats, then suggest changes, add supporting files, or start a new generation task after the mind map is ready.',
   emptyWorkspaceHint: 'Send in {name}',
   switchWorkspace: 'Switch workspace',
   addWorkspace: 'New workspace',

@@ -1609,6 +1609,7 @@ describe('useWorkspaceState — snapshot prompt recovery', () => {
     });
     await ws.sendPrompt('next');
 
+    expect('steerPrompt' in ws).toBe(false);
     expect(state.inFlightBySession.sess_1).toBe(true);
     expect(apiMock.submitPrompt).not.toHaveBeenCalled();
     expect(state.queuedBySession.sess_1).toEqual([
@@ -1713,53 +1714,6 @@ describe('useWorkspaceState — snapshot prompt recovery', () => {
     await settle();
     expect(state.queuedBySession.sess_1).toEqual([]);
     expect(apiMock.submitPrompt).toHaveBeenCalledTimes(3);
-  });
-
-  it('restores the merged queue entries when a steer submit is definitively rejected', async () => {
-    const state = createState();
-    state.inFlightBySession = { sess_1: true };
-    state.queuedBySession = {
-      sess_1: [{ text: 'queued', attachments: [{ fileId: 'f_q', kind: 'image' }] }],
-    };
-    apiMock.submitPrompt.mockRejectedValue(
-      new DaemonApiError({ code: 50000, msg: 'boom', requestId: 'r' }),
-    );
-    const ws = useWorkspaceState(state, promptDeps());
-
-    await ws.steerPrompt('live text', [{ fileId: 'f_live', kind: 'image' }]);
-
-    expect(state.queuedBySession.sess_1).toEqual([
-      { text: 'queued', attachments: [{ fileId: 'f_q', kind: 'image' }] }],
-    );
-  });
-
-  it('does NOT restore merged queue entries when a steer failure is network-ambiguous', async () => {
-    const state = createState();
-    state.inFlightBySession = { sess_1: true };
-    state.queuedBySession = {
-      sess_1: [{ text: 'queued', attachments: [{ fileId: 'f_q', kind: 'image' }] }],
-    };
-    // Response lost mid-flight: the merged prompt may already be queued
-    // server-side, so restoring would duplicate it on a later drain.
-    apiMock.submitPrompt.mockRejectedValue(new TypeError('fetch failed'));
-    const ws = useWorkspaceState(state, promptDeps());
-
-    await ws.steerPrompt('live text', [{ fileId: 'f_live', kind: 'image' }]);
-
-    expect(state.queuedBySession.sess_1 ?? []).toEqual([]);
-  });
-
-  it('restores the queue when an idle steer falls back to a normal send that fails', async () => {
-    const state = createState();
-    state.queuedBySession = { sess_1: [{ text: 'queued', attachments: undefined }] };
-    apiMock.submitPrompt.mockRejectedValue(
-      new DaemonApiError({ code: 50000, msg: 'boom', requestId: 'r' }),
-    );
-    const ws = useWorkspaceState(state, promptDeps({ activity: computed(() => 'idle') }));
-
-    await ws.steerPrompt('live text');
-
-    expect(state.queuedBySession.sess_1).toEqual([{ text: 'queued', attachments: undefined }]);
   });
 
   // A background session's drained prompt must not inherit the thinking level

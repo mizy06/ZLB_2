@@ -255,6 +255,26 @@ async def _save_job_uploads(
     )
 
 
+def _same_upload_submission(
+    first: UploadFile,
+    second: UploadFile,
+) -> bool:
+    if first is second:
+        return True
+    first_name = str(first.filename or "").strip()
+    second_name = str(second.filename or "").strip()
+    if not first_name or first_name != second_name:
+        return False
+    first_size = getattr(first, "size", None)
+    second_size = getattr(second, "size", None)
+    if first_size is None or second_size is None:
+        return False
+    return (
+        int(first_size) == int(second_size)
+        and str(first.content_type or "") == str(second.content_type or "")
+    )
+
+
 def _run_manifest(
     *,
     source_sha256: str,
@@ -942,7 +962,14 @@ async def create_job(
     mode: RunMode = "standard"
 
     raw_uploads = [f for f in (files or []) if f and getattr(f, "filename", None)]
-    if file is not None and getattr(file, "filename", None) and file not in raw_uploads:
+    if (
+        file is not None
+        and getattr(file, "filename", None)
+        and not any(
+            _same_upload_submission(file, selected)
+            for selected in raw_uploads
+        )
+    ):
         raw_uploads.insert(0, file)
 
     if not raw_uploads:
@@ -1504,11 +1531,14 @@ async def export_json(
 @app.get("/api/jobs/{task_id}/export.png")
 async def export_png(
     task_id: str,
+    v: int | None = None,
     principal: Principal = Depends(require_api_principal),
 ):
-    result = blackboard.load_latest_result(
-        task_id,
-        owner_id=_owner_scope(principal),
+    owner_id = _owner_scope(principal)
+    result = (
+        blackboard.load_graph_version(task_id, v, owner_id=owner_id)
+        if v is not None
+        else blackboard.load_latest_result(task_id, owner_id=owner_id)
     )
     if not result:
         raise HTTPException(status_code=404, detail="任务不存在或尚无图版本。")

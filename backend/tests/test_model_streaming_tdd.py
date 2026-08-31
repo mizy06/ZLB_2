@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from types import SimpleNamespace
 
 import httpx
 
-from backend.app.model_provider import OpenAICompatibleClient
+from backend.app.model_provider import (
+    ModelProviderError,
+    OpenAICompatibleClient,
+)
 
 
 class _StreamContext:
@@ -39,6 +43,40 @@ class _StreamingHTTPClient:
                 request=request,
                 headers={"Content-Type": "text/event-stream"},
                 content=self.body.encode("utf-8"),
+            )
+        )
+
+
+class _DelayedStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[tuple[float, str]]):
+        self.chunks = chunks
+
+    async def __aiter__(self):
+        for delay, chunk in self.chunks:
+            await asyncio.sleep(delay)
+            yield chunk.encode("utf-8")
+
+
+class _DelayedStreamingHTTPClient:
+    def __init__(self, chunks: list[tuple[float, str]]):
+        self.chunks = chunks
+        self.requests: list[dict] = []
+
+    def stream(self, method: str, url: str, **kwargs) -> _StreamContext:
+        self.requests.append(
+            {
+                "method": method,
+                "url": url,
+                **kwargs,
+            }
+        )
+        request = httpx.Request(method, url)
+        return _StreamContext(
+            httpx.Response(
+                200,
+                request=request,
+                headers={"Content-Type": "text/event-stream"},
+                stream=_DelayedStream(self.chunks),
             )
         )
 
@@ -86,6 +124,100 @@ class ModelStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"value": 1})
         self.assertEqual(deltas, ['{"value":', "1}"])
         self.assertTrue(http_client.requests[0]["json"]["stream"])
+
+    async def test_chat_stream_adds_oss_resolution_header(self):
+        client, http_client = _client(
+            'data: {"choices":[{"delta":{"content":"{\\\"value\\\":1}"},'
+            '"finish_reason":"stop"}]}\n\n'
+        )
+
+        result = await client.complete_multi_image_json(
+            model="qwen3.8-flash",
+            system_prompt="system",
+            user_prompt="user",
+            images=[
+                (
+                    "slide_0001",
+                    "oss://dashscope-instant/session/slide_0001.jpg",
+                )
+            ],
+            stream_callback=lambda _delta: None,
+        )
+
+        self.assertEqual(result, {"value": 1})
+        self.assertEqual(
+            http_client.requests[0]["headers"][
+                "X-DashScope-OssResourceResolve"
+            ],
+            "enable",
+        )
+
+    async def test_stream_timeout_resets_after_each_json_event(self):
+        http_client = _DelayedStreamingHTTPClient(
+            [
+                (
+                    0.06,
+                    'data: {"choices":[{"delta":{"content":"{\\\"value\\\":"},'
+                    '"finish_reason":null}]}\n\n',
+                ),
+                (
+                    0.06,
+                    'data: {"choices":[{"delta":{"content":"1}"},'
+                    '"finish_reason":"stop"}]}\n\n',
+                ),
+            ]
+        )
+        client, _ = _client("")
+        client._injected_http_client = http_client
+
+        result = await client.complete_json(
+            model="qwen3.8-flash",
+            system_prompt="system",
+            user_prompt="user",
+            timeout_seconds=0.1,
+            stream_callback=lambda _delta: None,
+        )
+
+        self.assertEqual(result, {"value": 1})
+
+    async def test_stream_fails_after_event_idle_timeout(self):
+        records: list[dict] = []
+        http_client = _DelayedStreamingHTTPClient(
+            [
+                (
+                    0,
+                    'data: {"choices":[{"delta":{"content":"{\\\"value\\\":"},'
+                    '"finish_reason":null}]}\n\n',
+                ),
+                (
+                    0.12,
+                    'data: {"choices":[{"delta":{"content":"1}"},'
+                    '"finish_reason":"stop"}]}\n\n',
+                ),
+            ]
+        )
+        client, _ = _client("")
+        client._injected_http_client = http_client
+        client.attempt_recorder = records.append
+
+        with self.assertRaisesRegex(
+            ModelProviderError,
+            "连续 0.03 秒未收到流式事件",
+        ):
+            await client.complete_json(
+                model="qwen3.8-flash",
+                system_prompt="system",
+                user_prompt="user",
+                timeout_seconds=0.03,
+                stream_callback=lambda _delta: None,
+            )
+
+        self.assertEqual(records[0]["status"], "retryable_error")
+        self.assertEqual(
+            records[0]["details"]["error_type"],
+            "stream_idle_timeout",
+        )
+        self.assertEqual(records[0]["details"]["stream_event_count"], 1)
 
     async def test_responses_api_streams_output_text_and_keeps_response_id(self):
         final_output = (

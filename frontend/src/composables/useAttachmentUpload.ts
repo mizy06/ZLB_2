@@ -268,7 +268,7 @@ export function useAttachmentUpload(deps: AttachmentUploadDeps) {
   }
 
   /** Revoke every object URL and drop all attachments for the current session
-      (called after submit/steer). */
+      after submit. */
   function clearAfterSubmit(): void {
     const sid = sessionId() ?? '';
     for (const att of attachmentsBySession.value[sid] ?? []) {

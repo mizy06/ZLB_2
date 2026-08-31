@@ -232,11 +232,6 @@ export interface WirePromptSubmitResult {
   status?: 'running' | 'queued';
 }
 
-export interface WirePromptSteerResult {
-  steered: boolean;
-  prompt_ids: string[];
-}
-
 // ---------------------------------------------------------------------------
 // Approval
 // ---------------------------------------------------------------------------

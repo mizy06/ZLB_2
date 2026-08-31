@@ -7,6 +7,7 @@ import type { DiffViewLine } from '../../types';
 
 defineProps<{
   lines: DiffViewLine[];
+  compact?: boolean;
 }>();
 
 function oldGutter(line: DiffViewLine): string {
@@ -21,7 +22,7 @@ function rowClass(line: DiffViewLine): string {
 </script>
 
 <template>
-  <div class="diff-lines">
+  <div class="diff-lines" :class="{ compact }">
     <div v-for="(line, i) in lines" :key="i" class="dl" :class="rowClass(line)">
       <template v-if="line.type === 'hunk'">
         <span class="hunk-text">{{ line.text }}</span>
@@ -71,6 +72,10 @@ function rowClass(line: DiffViewLine): string {
 }
 
 .dl-gutter.new { border-right: 1px solid var(--line, #e7eaee); }
+
+.diff-lines.compact .dl-gutter {
+  display: none;
+}
 
 .dl-sign {
   flex: none;

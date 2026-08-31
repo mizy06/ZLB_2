@@ -1,13 +1,10 @@
 <!-- apps/kimi-web/src/components/mobile/MobileTopBar.vue -->
-<!-- Mobile title bar (50px): brand, read-only workspace/session status, and -->
-<!-- a trailing settings button. -->
+<!-- Mobile title bar (50px): brand and read-only workspace/session status. -->
 <!-- Terminal Pro styling, no emoji. -->
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { WorkspaceView } from '../../types';
-import IconButton from '../ui/IconButton.vue';
-import Icon from '../ui/Icon.vue';
 import BrandMark from '../BrandMark.vue';
 
 const { t } = useI18n();
@@ -27,10 +24,6 @@ const props = withDefaults(
   }>(),
   { workspace: null, sessionTitle: '', running: false, branch: '', sessionCount: 0 },
 );
-
-const emit = defineEmits<{
-  openSettings: [];
-}>();
 
 const wsName = computed<string>(() => props.workspace?.name ?? t('workspace.noWorkspace'));
 
@@ -59,13 +52,6 @@ const statusText = computed<string>(() =>
       </span>
     </div>
 
-    <IconButton
-      size="lg"
-      :label="t('mobile.openSettings')"
-      @click="emit('openSettings')"
-    >
-      <Icon name="sliders" size="lg" />
-    </IconButton>
   </div>
 </template>
 

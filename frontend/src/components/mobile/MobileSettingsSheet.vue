@@ -221,7 +221,7 @@ watch(
     <div class="srow read-only">
       <span class="srow-main">
         <span class="srow-label">{{ t('status.statusModel') }}</span>
-        <span class="srow-sub">qwen3.8-max</span>
+        <span class="srow-sub">qwen3.8-flash</span>
       </span>
     </div>
 

@@ -339,6 +339,189 @@ class HumanLoopRouteTests(unittest.IsolatedAsyncioTestCase):
         schedule.assert_called_once()
         classify.assert_awaited_once()
 
+    async def test_multiple_refinements_preserve_history_and_graph_versions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "course.md"
+            source.write_text(
+                "# 光学\n\n反射遵循反射定律。\n\n折射会改变传播方向。",
+                encoding="utf-8",
+            )
+            board = SQLiteBlackboard(root / "blackboard.sqlite3")
+            task_id = "task-multiple-refinements"
+            initial_manifest = initialize_interaction_manifest(
+                {
+                    "loop_config": default_mindmap_loop(
+                        "qwen3.8-max-preview"
+                    ).model_dump(mode="json"),
+                },
+                "生成初稿",
+            )
+            job_fields = {
+                "task_id": task_id,
+                "mode": "standard",
+                "source_path": str(source),
+                "filename": source.name,
+                "model": "qwen3.8-max-preview",
+                "provider": "qwen",
+                "use_ai": False,
+                "owner_id": "owner-a",
+            }
+            board.upsert_job(
+                **job_fields,
+                status="queued",
+                stage="queued",
+                progress=0,
+                message="等待处理",
+                manifest=initial_manifest,
+            )
+            initial_result = await run_cplus_pipeline(
+                task_id=task_id,
+                file_path=source,
+                filename=source.name,
+                model="qwen3.8-max-preview",
+                provider="qwen",
+                mode="standard",
+                use_ai=False,
+                progress=noop_progress,
+                blackboard=board,
+                user_instruction="生成初稿",
+            )
+            board.update_job_manifest(
+                task_id,
+                finish_active_interaction(
+                    initial_manifest,
+                    status="completed",
+                    graph_version=initial_result.graph_version,
+                ),
+            )
+
+            for revision in (1, 2):
+                current = board.load_latest_result(task_id)
+                self.assertIsNotNone(current)
+                queued_manifest = queue_refinement_manifest(
+                    board.load_job(task_id)["manifest"],
+                    instruction=f"第 {revision} 轮调整",
+                    current_graph_version=current.graph_version,
+                )
+                board.upsert_job(
+                    **job_fields,
+                    status="queued",
+                    stage="queued",
+                    progress=0,
+                    message="二次输入已分类，等待处理",
+                    manifest=queued_manifest,
+                )
+                stale_pipeline_manifest = {
+                    **(board.load_run_manifest(task_id) or {}),
+                    "pipeline_mode": "editorial_ppt",
+                    "revision_marker": revision,
+                }
+                board.start_run(
+                    run_id=f"run-revision-{revision}",
+                    task_id=task_id,
+                    mode="standard",
+                    manifest=stale_pipeline_manifest,
+                )
+                revision_result = current.model_copy(
+                    update={
+                        "graph_version": 0,
+                        "run_manifest": {
+                            "pipeline_mode": "editorial_ppt",
+                            "revision_marker": revision,
+                        },
+                    }
+                )
+                version = board.save_graph_version(
+                    revision_result.run_id,
+                    revision_result,
+                )
+                board.update_job_manifest(
+                    task_id,
+                    finish_active_interaction(
+                        queued_manifest,
+                        status="completed",
+                        graph_version=version,
+                    ),
+                )
+
+            persisted = board.load_job(task_id)
+            self.assertIsNotNone(persisted)
+            interactions = interaction_views(
+                persisted["manifest"],
+                job_status="completed",
+                result=board.load_latest_result(task_id),
+            )
+            self.assertEqual(
+                board.list_graph_versions(task_id),
+                [1, 2, 3],
+            )
+            self.assertEqual(
+                [(item.kind, item.status, item.result_graph_version) for item in interactions],
+                [
+                    ("initial", "completed", 1),
+                    ("revision", "completed", 2),
+                    ("revision", "completed", 3),
+                ],
+            )
+            for version in (1, 2, 3):
+                stored = board.load_graph_version(task_id, version)
+                self.assertIsNotNone(stored)
+                self.assertEqual(
+                    len(stored.run_manifest["human_interactions"]),
+                    version,
+                )
+
+    def test_refinement_run_drops_assets_from_a_previous_route(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            board = SQLiteBlackboard(
+                Path(temp_dir) / "blackboard.sqlite3"
+            )
+            task_id = "task-route-switch"
+            board.upsert_job(
+                task_id=task_id,
+                status="completed",
+                stage="complete",
+                progress=100,
+                message="上一轮完成",
+                mode="standard",
+                owner_id="owner-a",
+                manifest={
+                    "refinement_route": "merge_graph",
+                    "completed_graph_asset": {"graph_version": 1},
+                },
+            )
+            board.start_run(
+                run_id="run-route-switch",
+                task_id=task_id,
+                mode="standard",
+                manifest={
+                    "refinement_route": "merge_graph",
+                    "completed_graph_asset": {"graph_version": 1},
+                },
+            )
+            board.update_job_manifest(
+                task_id,
+                {
+                    "refinement_route": "guidance_only",
+                    "guidance_image_paths": [],
+                },
+            )
+
+            board.start_run(
+                run_id="ignored-new-run-id",
+                task_id=task_id,
+                mode="standard",
+                manifest=board.load_run_manifest(task_id),
+            )
+
+            manifest = board.load_run_manifest(task_id)
+            self.assertEqual(
+                manifest["refinement_route"],
+                "guidance_only",
+            )
+            self.assertNotIn("completed_graph_asset", manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ export default {
   // Secondary confirmation (modal)
   removeWorkspaceConfirm: 'Remove workspace "{name}"?',
   swarmEnableConfirm: 'Enable swarm mode? The agent will run multiple sub-agents in parallel.',
+  swarmModeSessionLocked: 'Please start a new chat to switch modes',
   goalStartConfirm: 'Start goal: "{objective}"? The agent will run autonomously toward it.',
   // Column-header scope toggle
   scopeCurrent: 'this workspace',

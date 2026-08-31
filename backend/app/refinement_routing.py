@@ -187,19 +187,19 @@ async def classify_refinement(
         "output_schema": RefinementRoutingDecision.model_json_schema(),
     }
     runtime_client = client or QwenClient(settings)
+    user_prompt = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     response = await runtime_client.complete_multi_image_json(
         model=model,
         system_prompt=REFINEMENT_ROUTER_PROMPT,
-        user_prompt=json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
+        user_prompt=user_prompt,
         images=images,
-        max_tokens=900,
-        max_completion_tokens=1500,
+        use_response_format=False,
+        max_tokens=1500,
         max_attempts=1,
-        thinking_budget=512,
         timeout_seconds=120,
     )
     return RefinementRoutingDecision.model_validate(response)

@@ -522,50 +522,88 @@ def _draft_user_prompt(
     document_manifest: list[dict[str, Any]] | None = None,
     input_mode: str = "visual",
     text_context: str = "",
+    visual_page_count: int | None = None,
+    text_unit_count: int | None = None,
 ) -> str:
+    visual_count = (
+        slide_count
+        if visual_page_count is None and input_mode == "visual"
+        else max(int(visual_page_count or 0), 0)
+    )
+    text_count = (
+        slide_count
+        if text_unit_count is None and input_mode == "text"
+        else max(int(text_unit_count or 0), 0)
+    )
     doc_header = f"文件名：{filename}\n"
     if document_manifest and len(document_manifest) > 1:
-        doc_lines = [
-            (
-                f"  - 文档 {i+1}：《{doc['filename']}》，"
-                f"{doc.get('file_type', 'document')}，"
-                + (
-                    f"包含第 {doc['start_slide']} 到第 {doc['end_slide']} "
-                    f"页（vision_id: slide_{doc['start_slide']:04d} ~ "
+        doc_lines: list[str] = []
+        for index, doc in enumerate(document_manifest, start=1):
+            ranges: list[str] = []
+            if doc.get("start_slide") and doc.get("end_slide"):
+                ranges.append(
+                    f"视觉页 {doc['start_slide']} 到 {doc['end_slide']} "
+                    f"（vision_id: slide_{doc['start_slide']:04d} ~ "
                     f"slide_{doc['end_slide']:04d}）"
-                    if doc.get("start_slide") and doc.get("end_slide")
-                    else (
-                        f"包含 {doc.get('block_count', 0)} 个文本单元"
-                        if doc.get("input_kind") == "text"
-                        else "没有可用的视觉页码范围"
-                    )
                 )
+            if doc.get("source_ref_start") and doc.get("source_ref_end"):
+                ranges.append(
+                    f"文本来源编号 {doc['source_ref_start']} 到 "
+                    f"{doc['source_ref_end']}"
+                )
+            if not ranges:
+                ranges.append("没有可用的视觉页或文本来源编号")
+            doc_lines.append(
+                f"  - 文档 {index}：《{doc['filename']}》，"
+                f"{doc.get('file_type', 'document')}，"
+                + "；".join(ranges)
             )
-            for i, doc in enumerate(document_manifest)
-        ]
         doc_header = (
             f"输入多文档总数：{len(document_manifest)} 份\n"
             f"各文档输入范围：\n" + "\n".join(doc_lines) + "\n"
         )
-    source_header = (
-        f"输入模式：{input_mode}。"
-        "有视觉页时，source_slides 使用全局视觉页码；"
-        "纯文本输入时，source_slides 使用文本单元序号。\n"
-    )
+    if input_mode == "mixed":
+        text_start = visual_count + 1
+        text_end = visual_count + text_count
+        source_header = (
+            "输入模式：mixed。source_slides 是统一来源编号，不是文档序号。"
+            f"视觉页使用 1 到 {visual_count}，与 vision_id 一一对应；"
+            f"文本单元使用 {text_start} 到 {text_end}，与下方 "
+            "[source_ref: N] 一一对应。两段编号绝不能混用。\n"
+        )
+    elif input_mode == "text":
+        source_header = (
+            "输入模式：text。source_slides 使用下方 [source_ref: N] "
+            f"对应的文本单元编号 1 到 {text_count}。\n"
+        )
+    else:
+        source_header = (
+            "输入模式：visual。source_slides 使用全局视觉页码 "
+            f"1 到 {visual_count}，与 vision_id 一一对应。\n"
+        )
     source_context = (
         "\n输入源文本（按文档边界提供，只能作为事实依据）：\n"
         + text_context[:120_000]
         if text_context.strip()
         else ""
     )
+    count_label = (
+        "幻灯片总数"
+        if input_mode == "visual"
+        else "可用来源编号总数"
+    )
     return (
         f"{doc_header}"
         + source_header
-        + f"幻灯片总数：{slide_count}\n"
+        + f"{count_label}：{slide_count}\n"
         f"允许的最大树深度：{max_depth}\n"
-        "后续图片按 vision_id=slide_0001 到最后一页排列，包含了所有可用视觉文档的内容。"
-        "source_slides 必须使用 vision_id 对应的数字页码。\n"
-        "请综合所有文档的内容脉络与交叉知识点，建立 editorial_brief，再生成统一完整的全局初稿。"
+        + (
+            f"后续图片按 vision_id=slide_0001 到 "
+            f"slide_{visual_count:04d} 排列，包含全部可用视觉页。\n"
+            if visual_count
+            else "本轮没有可用视觉页，只能引用文本来源编号。\n"
+        )
+        + "请综合所有文档的内容脉络与交叉知识点，建立 editorial_brief，再生成统一完整的全局初稿。"
         "不要计算覆盖率，不要为了引用每一页而制造节点。\n"
         f"JSON Schema：{_schema_json(EditorialMindMap)}"
         + source_context
@@ -577,17 +615,103 @@ def _source_context_suffix(
     *,
     input_mode: str,
     text_context: str,
+    visual_page_count: int = 0,
+    text_unit_count: int = 0,
 ) -> str:
     if not text_context.strip():
         return (
             f"\n输入模式：{input_mode}。"
             "当前任务没有可提取的文本上下文，视觉页是唯一事实依据。\n"
         )
+    if input_mode == "mixed":
+        reference_rule = (
+            f"source_slides 中 1 到 {visual_page_count} 是视觉页；"
+            f"{visual_page_count + 1} 到 "
+            f"{visual_page_count + text_unit_count} 是下方标注的文本来源编号。"
+            "文档序号不是来源编号。"
+        )
+    elif input_mode == "text":
+        reference_rule = (
+            f"source_slides 使用下方 [source_ref: N] 标注的 1 到 "
+            f"{text_unit_count} 文本来源编号。"
+        )
+    else:
+        reference_rule = "source_slides 只使用视觉页 vision_id 对应的数字页码。"
     return (
         f"\n输入模式：{input_mode}。"
-        "以下是按原始文件隔离的文本事实；不要跨边界改写或覆盖来源：\n"
+        + reference_rule
+        + "\n以下是按原始文件隔离的文本事实；不要跨边界改写或覆盖来源：\n"
         f"{text_context[:120_000]}\n"
     )
+
+
+def _source_reference_count(
+    *,
+    input_mode: str,
+    visual_page_count: int,
+    text_unit_count: int,
+) -> int:
+    if input_mode == "mixed":
+        return max(visual_page_count + text_unit_count, 1)
+    if input_mode == "text":
+        return max(text_unit_count, 1)
+    return max(visual_page_count, 1)
+
+
+def _text_context_with_source_refs(
+    *,
+    document: ParsedDocument,
+    input_mode: str,
+    visual_page_count: int,
+    fallback: str,
+) -> str:
+    if input_mode == "visual":
+        return fallback
+    offset = visual_page_count if input_mode == "mixed" else 0
+    sections: list[str] = []
+    for index, block in enumerate(document.blocks, start=1):
+        if not block.text.strip():
+            continue
+        source_ref = offset + index
+        heading = f"\nsource: {block.heading}" if block.heading else ""
+        sections.append(
+            f"[source_ref: {source_ref}]{heading}\n"
+            f"{block.text.strip()}\n"
+            f"[/source_ref: {source_ref}]"
+        )
+    return "\n\n".join(sections) or fallback
+
+
+def _manifest_with_source_refs(
+    document_manifest: Sequence[dict[str, Any]],
+    *,
+    input_mode: str,
+    visual_page_count: int,
+) -> list[dict[str, Any]]:
+    updated = [dict(item) for item in document_manifest]
+    if input_mode == "visual":
+        return updated
+    offset = visual_page_count if input_mode == "mixed" else 0
+    for item in updated:
+        block_start = item.get("block_start")
+        block_end = item.get("block_end")
+        if block_start and block_end:
+            item["source_ref_start"] = offset + int(block_start)
+            item["source_ref_end"] = offset + int(block_end)
+    return updated
+
+
+def _source_unit_reference(
+    source_ref: int,
+    *,
+    input_mode: str,
+    visual_page_count: int,
+) -> tuple[str, int]:
+    if input_mode == "mixed" and source_ref > visual_page_count:
+        return "text", source_ref - visual_page_count
+    if input_mode == "text" or visual_page_count == 0:
+        return "text", source_ref
+    return "slide", source_ref
 
 
 CONTEXT_COMPACTOR_SYSTEM_PROMPT = """你是课程思维导图构建流水线的上下文压缩器（Context Compactor）。
@@ -1548,7 +1672,8 @@ def _decision_records(
     decisions: Sequence[EditorialIssueDecision],
     issue_by_id: dict[str, EditorialReviewIssue],
     canonical_id: dict[str, str],
-    evidence_prefix: str = "slide",
+    input_mode: str,
+    visual_page_count: int,
 ) -> list[DecisionRecord]:
     now = datetime.now(UTC).isoformat()
     records: list[DecisionRecord] = []
@@ -1565,8 +1690,17 @@ def _decision_records(
         subject_type = "node" if subject_id != run_id else "run"
         evidence_ids = (
             [
-                f"{evidence_prefix}_{slide:04d}"
-                for slide in issue.source_slides
+                (
+                    f"{kind}_{number:04d}"
+                )
+                for kind, number in (
+                    _source_unit_reference(
+                        source_ref,
+                        input_mode=input_mode,
+                        visual_page_count=visual_page_count,
+                    )
+                    for source_ref in issue.source_slides
+                )
             ]
             if issue
             else []
@@ -1618,11 +1752,16 @@ def _result_from_output(
 ) -> MindMapResult:
     root = next(node for node in output.nodes if node.parent_id is None)
     page_by_number = {page.page: page for page in rendered.pages}
+    input_mode = str(
+        run_manifest.get("input_mode")
+        or document.parse_metadata.get("input_mode")
+        or ("visual" if page_by_number else "text")
+    )
+    visual_page_count = len(page_by_number)
     text_by_number = {
         index: block
         for index, block in enumerate(document.blocks, start=1)
     }
-    evidence_prefix = "slide" if page_by_number else "text"
     canonical_id = {
         node.id: (
             f"node_{index:04d}_"
@@ -1639,31 +1778,39 @@ def _result_from_output(
         resolved_role = (
             "branch_topic" if depths[node.id] == 1 else node.role
         )
+        resolved_sources = [
+            _source_unit_reference(
+                source_ref,
+                input_mode=input_mode,
+                visual_page_count=visual_page_count,
+            )
+            for source_ref in node.source_slides
+        ]
         support_unit_ids = [
-            f"{evidence_prefix}_{slide:04d}"
-            for slide in node.source_slides
+            f"{kind}_{number:04d}"
+            for kind, number in resolved_sources
         ]
         evidence: list[EvidenceRef] = []
-        for slide in node.source_slides:
-            page = page_by_number.get(slide)
-            if page is not None:
+        for kind, number in resolved_sources:
+            if kind == "slide":
+                page = page_by_number.get(number)
                 evidence.append(
                     EvidenceRef(
-                        unit_id=f"slide_{slide:04d}",
-                        excerpt=f"整页视觉依据：页面 {slide}",
-                        slide=slide,
-                        asset_id=page.asset_id,
+                        unit_id=f"slide_{number:04d}",
+                        excerpt=f"整页视觉依据：页面 {number}",
+                        slide=number,
+                        asset_id=page.asset_id if page is not None else None,
                     )
                 )
                 continue
-            block = text_by_number.get(slide)
+            block = text_by_number.get(number)
             evidence.append(
                 EvidenceRef(
-                    unit_id=f"text_{slide:04d}",
+                    unit_id=f"text_{number:04d}",
                     excerpt=(
                         block.text[:240]
                         if block is not None
-                        else f"文本单元 {slide}"
+                        else f"文本单元 {number}"
                     ),
                 )
             )
@@ -1815,7 +1962,8 @@ def _result_from_output(
             decisions=decisions,
             issue_by_id=issue_by_id,
             canonical_id=canonical_id,
-            evidence_prefix="slide" if rendered.pages else "text",
+            input_mode=input_mode,
+            visual_page_count=visual_page_count,
         ),
         mode=mode,
         extraction_mode="qwen",
@@ -2083,6 +2231,10 @@ async def run_editorial_ppt_pipeline(
         mode=mode,
         manifest=run_manifest,
     )
+    # start_run reconciles the pipeline snapshot with the task's newest
+    # refinement manifest. Continue with that durable snapshot so progress
+    # checkpoints cannot write an older interaction list back to the job.
+    run_manifest = blackboard.load_run_manifest(task_id) or run_manifest
 
     await progress(
         (
@@ -2272,6 +2424,11 @@ async def run_editorial_ppt_pipeline(
         document = input_bundle.document.model_copy(
             update={"filename": primary_filename}
         )
+    document_manifest = _manifest_with_source_refs(
+        document_manifest,
+        input_mode=input_mode,
+        visual_page_count=len(rendered.pages),
+    )
     run_manifest.update(
         {
             "render_cache_hit": render_cache_hit,
@@ -2341,9 +2498,12 @@ async def run_editorial_ppt_pipeline(
         if human_direct_refinement
         else []
     )
-    slide_count = len(rendered.pages) or len(prepared_image_files) or max(
-        len(document.blocks),
-        1,
+    visual_page_count = len(rendered.pages) or len(prepared_image_files)
+    text_unit_count = len(document.blocks)
+    slide_count = _source_reference_count(
+        input_mode=input_mode,
+        visual_page_count=visual_page_count,
+        text_unit_count=text_unit_count,
     )
     run_manifest.update(
         {
@@ -2609,7 +2769,12 @@ async def run_editorial_ppt_pipeline(
     model_text_context = (
         ""
         if human_direct_refinement
-        else input_bundle.text_context
+        else _text_context_with_source_refs(
+            document=input_bundle.document,
+            input_mode=input_mode,
+            visual_page_count=visual_page_count,
+            fallback=input_bundle.text_context,
+        )
     )
     source_context_suffix = (
         ""
@@ -2617,6 +2782,8 @@ async def run_editorial_ppt_pipeline(
         else _source_context_suffix(
             input_mode=input_mode,
             text_context=model_text_context,
+            visual_page_count=visual_page_count,
+            text_unit_count=text_unit_count,
         )
         + (
             "\n稳定文档清单："
@@ -3366,6 +3533,8 @@ async def run_editorial_ppt_pipeline(
         source_context_suffix = _source_context_suffix(
             input_mode=input_bundle.input_mode,
             text_context=model_text_context,
+            visual_page_count=visual_page_count,
+            text_unit_count=text_unit_count,
         ) + (
             "\n稳定文档清单："
             + json.dumps(
@@ -3681,6 +3850,8 @@ async def run_editorial_ppt_pipeline(
             document_manifest=document_manifest,
             input_mode=input_bundle.input_mode,
             text_context=model_text_context,
+            visual_page_count=visual_page_count,
+            text_unit_count=text_unit_count,
         ),
         has_visuals=bool(images),
     )

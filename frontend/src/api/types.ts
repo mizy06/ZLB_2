@@ -153,7 +153,14 @@ export type AppMessageRole = 'user' | 'assistant' | 'tool' | 'system';
 
 export type AppMessageContent =
   | { type: 'text'; text: string }
-  | { type: 'toolUse'; toolCallId: string; toolName: string; input: unknown; outputLines?: string[] }
+  | {
+      type: 'toolUse';
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      outputLines?: string[];
+      defaultExpanded?: boolean;
+    }
   | { type: 'toolResult'; toolCallId: string; output: unknown; isError?: boolean }
   | { type: 'image'; source: ImageSource }
   | { type: 'video'; source: ImageSource }
@@ -723,8 +730,6 @@ export interface KimiWebApi {
   /** Export the session archive, optionally including the bounded Web JSONL log. */
   exportSession(sessionId: string, webLog?: string): Promise<{ blob: Blob; fileName: string }>;
   submitPrompt(sessionId: string, input: PromptSubmission): Promise<PromptSubmitResult>;
-  /** Steer daemon-queued prompts into the active turn (TUI ctrl+s). */
-  steerPrompts(sessionId: string, promptIds: string[]): Promise<{ steered: boolean; promptIds: string[] }>;
   abortPrompt(sessionId: string, promptId: string): Promise<{ aborted: boolean; atSeq?: number }>;
   /** Cancel whatever is running in the session, including skill activations. */
   abortSession(sessionId: string): Promise<{ aborted: boolean }>;

@@ -140,7 +140,6 @@ def render_mindmap_png(result: MindMapResult) -> bytes:
     scale = raster.scale
     title_font = _font(max(1, round(28 * scale)))
     label_font = _font(max(1, round(16 * scale)))
-    meta_font = _font(max(1, round(11 * scale)))
     node_by_id = {node.id: node for node in result.nodes}
 
     def scaled_point(node_id: str) -> tuple[float, float]:
@@ -215,14 +214,6 @@ def render_mindmap_png(result: MindMapResult) -> bytes:
             align="center",
             spacing=max(1, round(3 * scale)),
         )
-        if not is_root:
-            draw.text(
-                (center_x, bottom - 6 * scale),
-                f"{node.confidence:.0%}",
-                fill="#64748b",
-                font=meta_font,
-                anchor="ms",
-            )
 
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)

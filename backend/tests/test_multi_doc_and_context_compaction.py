@@ -14,6 +14,10 @@ from backend.app.editorial_input import (
 from backend.app.editorial_ppt_pipeline import (
     _draft_user_prompt,
     _compact_editorial_context,
+    _manifest_with_source_refs,
+    _source_reference_count,
+    _source_unit_reference,
+    _text_context_with_source_refs,
     EditorialMindMap,
     EditorialBrief,
 )
@@ -24,6 +28,41 @@ from backend.app.config import (
     QWEN38_MAX_INPUT_TOKENS_WITH_THINKING,
 )
 from backend.app.mindmap_engine.visuals import render_documents, resolve_asset_path
+
+
+def _write_text_pdf(path: Path, text: str) -> None:
+    stream = f"BT /F1 18 Tf 20 150 Td ({text}) Tj ET".encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] "
+            b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+        ),
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n"
+        + stream
+        + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode("ascii"))
+        output.extend(obj)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    path.write_bytes(output)
 
 
 class TestMultiDocAndContextCompaction(unittest.IsolatedAsyncioTestCase):
@@ -68,6 +107,125 @@ class TestMultiDocAndContextCompaction(unittest.IsolatedAsyncioTestCase):
                 ["first.md", "second.txt"],
             )
             self.assertEqual(len(bundle.document.blocks), 3)
+
+    def test_markdown_pdf_and_mixed_bundle_are_parseable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            markdown = root / "notes.md"
+            markdown.write_text(
+                "# Markdown notes\n\n反射与折射属于光的传播现象。",
+                encoding="utf-8",
+            )
+            pdf = root / "lesson.pdf"
+            _write_text_pdf(pdf, "PDF optics fact")
+
+            markdown_bundle = build_editorial_input_bundle(
+                [markdown],
+                ["notes.md"],
+            )
+            pdf_bundle = build_editorial_input_bundle(
+                [pdf],
+                ["lesson.pdf"],
+            )
+            mixed_bundle = build_editorial_input_bundle(
+                [markdown, pdf],
+                ["notes.md", "lesson.pdf"],
+            )
+
+            self.assertEqual(markdown_bundle.input_mode, "text")
+            self.assertIn("反射与折射", markdown_bundle.text_context)
+            self.assertEqual(pdf_bundle.input_mode, "visual")
+            self.assertIn("PDF optics fact", pdf_bundle.text_context)
+            self.assertEqual(mixed_bundle.input_mode, "mixed")
+            self.assertEqual(
+                [item["filename"] for item in mixed_bundle.document_manifest],
+                ["notes.md", "lesson.pdf"],
+            )
+            self.assertIn("[document: notes.md]", mixed_bundle.text_context)
+            self.assertIn("[document: lesson.pdf]", mixed_bundle.text_context)
+
+    def test_pdf_render_produces_preview_for_refinement_attachment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pdf = root / "lesson.pdf"
+            _write_text_pdf(pdf, "PDF preview")
+            rendered = render_documents(
+                [pdf],
+                ["lesson.pdf"],
+                root / "data",
+            )
+            self.assertEqual(len(rendered.pages), 1)
+            page_path = resolve_asset_path(
+                root / "data",
+                rendered.render_id,
+                rendered.pages[0].filename,
+            )
+            self.assertTrue(page_path.is_file())
+
+    def test_mixed_input_uses_distinct_visual_and_text_source_refs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            markdown = root / "notes.md"
+            markdown.write_text(
+                "# 透镜\n\n凸透镜会聚平行光。",
+                encoding="utf-8",
+            )
+            pdf = root / "lesson.pdf"
+            _write_text_pdf(pdf, "Lens focal length")
+            bundle = build_editorial_input_bundle(
+                [markdown, pdf],
+                ["notes.md", "lesson.pdf"],
+            )
+            visual_page_count = 1
+            text_unit_count = len(bundle.document.blocks)
+            manifest = _manifest_with_source_refs(
+                bundle.document_manifest,
+                input_mode="mixed",
+                visual_page_count=visual_page_count,
+            )
+            text_context = _text_context_with_source_refs(
+                document=bundle.document,
+                input_mode="mixed",
+                visual_page_count=visual_page_count,
+                fallback=bundle.text_context,
+            )
+            source_count = _source_reference_count(
+                input_mode="mixed",
+                visual_page_count=visual_page_count,
+                text_unit_count=text_unit_count,
+            )
+            prompt = _draft_user_prompt(
+                filename="notes.md & lesson.pdf",
+                slide_count=source_count,
+                max_depth=4,
+                document_manifest=manifest,
+                input_mode="mixed",
+                text_context=text_context,
+                visual_page_count=visual_page_count,
+                text_unit_count=text_unit_count,
+            )
+
+            self.assertEqual(source_count, 1 + text_unit_count)
+            self.assertEqual(manifest[0]["source_ref_start"], 2)
+            self.assertIn("[source_ref: 2]", text_context)
+            self.assertIn("不是文档序号", prompt)
+            self.assertIn("视觉页使用 1 到 1", prompt)
+            self.assertEqual(
+                _source_unit_reference(
+                    1,
+                    input_mode="mixed",
+                    visual_page_count=1,
+                ),
+                ("slide", 1),
+            )
+            self.assertEqual(
+                _source_unit_reference(
+                    3,
+                    input_mode="mixed",
+                    visual_page_count=1,
+                ),
+                ("text", 2),
+            )
 
     def test_render_documents_uses_one_collection_directory(self):
         with tempfile.TemporaryDirectory() as tmpdir:

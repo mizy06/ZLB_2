@@ -100,7 +100,7 @@ export function LoopBuilder({
   onChange,
 }: LoopBuilderProps) {
   const fallbackModel =
-    models[0] || config.rounds[0]?.editor_model || "qwen3.8-max-preview";
+    models[0] || config.rounds[0]?.editor_model || "qwen3.8-flash";
   return (
     <section className="loop-builder" aria-label="Mindmap loop">
       <header className="loop-builder-header">

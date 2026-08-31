@@ -104,7 +104,7 @@ const startingFirstPromptWorkspaces = reactive(new Set<string>());
 
 /**
  * Per-session local-turn-start lifecycle, shared by EVERY entry point that
- * starts a turn locally (prompt submit/steer in this module, skill activation
+ * starts a turn locally (prompt submit in this module, skill activation
  * in useModelProviderState). Two pieces of state:
  *  - generation: bumped synchronously at every local turn start, so a
  *    snapshot requested BEFORE the start can tell it predates the turn;
@@ -1628,141 +1628,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   }
 
   /**
-   * steerPrompt() — TUI ctrl+s parity: merge any locally queued prompts with the
-   * live composer text and inject the result into the RUNNING turn instead of
-   * waiting for it to finish. Two-step against the daemon: submit (parks the
-   * prompt behind the active one) then POST /prompts:steer. Falls back to a
-   * normal send when the session is idle.
-   */
-  async function steerPrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
-    const sid = rawState.activeSessionId;
-    if (!sid) return;
-
-    // Merge queued texts (oldest first) + the live text, like the TUI does.
-    const queue = rawState.queuedBySession[sid] ?? [];
-    const parts: string[] = [];
-    const mergedAttachments: PromptAttachment[] = [];
-    for (const q of queue) {
-      const trimmed = q.text.trim();
-      if (trimmed) parts.push(trimmed);
-      if (q.attachments?.length) mergedAttachments.push(...q.attachments);
-    }
-    const live = text.trim();
-    if (live) parts.push(live);
-    if (attachments?.length) mergedAttachments.push(...attachments);
-    if (parts.length === 0 && mergedAttachments.length === 0) return;
-    if (queue.length > 0) {
-      rawState.queuedBySession = { ...rawState.queuedBySession, [sid]: [] };
-    }
-    const merged = parts.join('\n\n');
-
-    // Put back every entry that was merged into this steer when its submit
-    // fails, so the queued prompts aren't silently lost. Entries enqueued
-    // while the submit was in flight stay behind them.
-    const restoreQueue = (): void => {
-      if (queue.length === 0) return;
-      const current = rawState.queuedBySession[sid] ?? [];
-      rawState.queuedBySession = { ...rawState.queuedBySession, [sid]: [...queue, ...current] };
-    };
-
-    // Idle and nothing in flight — there is no turn to steer into; normal send.
-    if (activity.value === 'idle' && !rawState.inFlightBySession[sid]) {
-      const outcome = await submitPromptInternal(sid, merged, mergedAttachments);
-      // Same never-duplicate rule as the running-path catch below: restore
-      // the merged entries only on a definitive rejection.
-      if (outcome === 'rejected') restoreQueue();
-      return;
-    }
-
-    // Optimistic transcript echo (the daemon emits no user-message WS event).
-    const content: import('../../api/types').AppMessageContent[] = [];
-    if (merged) content.push({ type: 'text', text: merged });
-    for (const att of mergedAttachments) {
-      if (att.kind === 'video') content.push({ type: 'video', source: { kind: 'file', fileId: att.fileId } });
-      else if (att.kind === 'file') {
-        content.push({
-          type: 'file',
-          fileId: att.fileId,
-          name: att.name ?? '',
-          mediaType: att.mediaType || 'application/octet-stream',
-          size: att.size ?? 0,
-        });
-      } else content.push({ type: 'image', source: { kind: 'file', fileId: att.fileId } });
-    }
-    const tempId = nextOptimisticMsgId();
-    const optimisticMsg: AppMessage = {
-      id: tempId,
-      sessionId: sid,
-      role: 'user',
-      content,
-      createdAt: new Date().toISOString(),
-      metadata: { 'kimiWeb.optimisticUserMessage': true },
-    };
-    updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
-
-    const localTurnToken = beginLocalTurn(sid);
-    try {
-      const api = getKimiWebApi();
-      const promptSession = rawState.sessions.find((s) => s.id === sid);
-      const model =
-        (promptSession?.model && promptSession.model.length > 0
-          ? promptSession.model
-          : rawState.defaultModel) ?? undefined;
-      const result = await api.submitPrompt(sid, {
-        content,
-        model,
-        // Resolved against this prompt's own session + model, same as a normal
-        // send (see submitPromptInternal).
-        thinking: (await modelProvider.resolveThinkingForPrompt(sid, model)) ?? rawState.thinking,
-        permissionMode: rawState.permission,
-        planMode: rawState.planModeBySession[sid] ?? false,
-        swarmMode: rawState.swarmModeBySession[sid] ?? false,
-      });
-
-      // Stamp the real prompt_id onto the optimistic echo. Unlike a normal send,
-      // a steered prompt IS echoed back by the daemon as a messageCreated user
-      // event; matching that echo by prompt_id (instead of content) is what keeps
-      // an image steer from rendering two user bubbles.
-      updateSessionMessages(sid, (msgs) => {
-        const idx = msgs.findIndex((m) => m.id === tempId);
-        if (idx === -1) return msgs;
-        const updated = [...msgs];
-        updated[idx] = { ...updated[idx]!, promptId: updated[idx]!.promptId ?? result.promptId };
-        return updated;
-      });
-
-      if (result.status !== 'queued') {
-        // The turn ended while the user was typing — the prompt started a turn
-        // of its own. Wire it up like a regular send so :abort keeps working.
-        rawState.promptIdBySession = { ...rawState.promptIdBySession, [sid]: result.promptId };
-        getEventConn()?.bindNextPromptId(sid, result.promptId);
-        return;
-      }
-
-      try {
-        await api.steerPrompts(sid, [result.promptId]);
-      } catch {
-        // The active turn finished between submit and steer — the daemon starts
-        // the parked prompt as its own turn. Nothing to roll back.
-      }
-    } catch (err) {
-      // Submit failed: drop the optimistic echo so the transcript doesn't show
-      // a delivered-looking message the daemon never received.
-      updateSessionMessages(sid, (msgs) => msgs.filter((m) => m.id !== tempId));
-      // Restore the merged queue entries ONLY on a definitive daemon rejection
-      // (a structured API error means nothing was accepted). On an ambiguous
-      // failure — dropped response, network error — the merged prompt may
-      // already be queued server-side; re-queueing the originals would
-      // duplicate it (the exact ghost-send behavior this change exists to
-      // prevent). The failure toast below tells the user what happened.
-      if (isDaemonApiError(err)) restoreQueue();
-      pushOperationFailure('steer', err, { sessionId: sid });
-    } finally {
-      settleLocalTurn(sid, localTurnToken);
-    }
-  }
-
-  /**
    * Upload an image file to the daemon's /api/v1/files endpoint.
    * Returns { fileId, name, mediaType } on success, or null on error (warning added to state).
    */
@@ -2124,13 +1989,19 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   }
 
   /** Persist and apply swarm mode for the active session (pushed to its profile
-   *  + sent per-prompt). With no active session the toggle is staged on the draft. */
-  function setSwarmMode(on: boolean): void {
+   *  + sent per-prompt). Once a session has started, its drawing mode is fixed;
+   *  switching requires starting a new chat. */
+  async function setSwarmMode(on: boolean): Promise<void> {
     const sid = rawState.activeSessionId;
     if (sid) {
-      rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sid]: on };
-      saveSwarmModeToStorage();
-      void persistSessionProfile({ swarmMode: on });
+      const current = rawState.swarmModeBySession[sid] ?? false;
+      if (current !== on) {
+        await confirm({
+          title: t('workspace.swarmModeSessionLocked'),
+          variant: 'primary',
+        });
+      }
+      return;
     } else {
       draftModes.swarmMode = on;
     }
@@ -2141,14 +2012,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const sid = rawState.activeSessionId;
     const current = sid ? (rawState.swarmModeBySession[sid] ?? false) : draftModes.swarmMode;
     const on = !current;
-    if (on && rawState.permission === 'manual') {
+    if (!sid && on && rawState.permission === 'manual') {
       const ok = await confirm({
         title: t('workspace.swarmEnableConfirm'),
         variant: 'primary',
       });
       if (!ok) return;
     }
-    setSwarmMode(on);
+    await setSwarmMode(on);
   }
 
   /** Persist goal mode for the active session. Unlike plan/swarm, this is a
@@ -2790,7 +2661,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     afterLocalTurnStartsSettle,
     handleSessionSnapshot,
     sendPrompt,
-    steerPrompt,
     uploadImage,
     enqueue,
     unqueue,

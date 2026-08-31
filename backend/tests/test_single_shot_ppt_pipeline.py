@@ -139,6 +139,29 @@ class MultiImageClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cache_control", content[4])
         self.assertEqual(messages[2]["content"], "review current graph")
 
+    async def test_multi_image_completion_can_omit_response_format(self):
+        client = OpenAICompatibleClient(
+            settings=settings,
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            provider_name="Qwen",
+            api_key_env_name="QWEN_API_KEY",
+            temperature=0,
+        )
+        client._chat = AsyncMock(return_value='{"ok":true}')
+
+        result = await client.complete_multi_image_json(
+            model="qwen-vl-test",
+            system_prompt="Return one JSON object.",
+            user_prompt="classify",
+            images=[("current_map", "data:image/png;base64,AAA")],
+            use_response_format=False,
+            max_attempts=1,
+        )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertFalse(client._chat.await_args.kwargs["json_mode"])
+
     async def test_cached_image_prefix_is_stable_across_dynamic_tasks(self):
         client = OpenAICompatibleClient(
             settings=settings,

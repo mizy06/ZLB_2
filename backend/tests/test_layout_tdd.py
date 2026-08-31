@@ -260,6 +260,19 @@ class MindMapLayoutTDDTests(unittest.TestCase):
             self.assertLessEqual(image.width * image.height, 750_000)
             self.assertLessEqual(max(image.size), 1_200)
 
+    def test_png_does_not_render_node_confidence(self):
+        low_confidence = make_export_result(10)
+        high_confidence = make_export_result(10)
+        for node in low_confidence.nodes[1:]:
+            node.confidence = 0.01
+        for node in high_confidence.nodes[1:]:
+            node.confidence = 0.99
+
+        self.assertEqual(
+            render_mindmap_png(low_confidence),
+            render_mindmap_png(high_confidence),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

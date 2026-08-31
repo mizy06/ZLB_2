@@ -68,11 +68,14 @@ QWEN_VISION_MODEL_PATTERNS = (
     re.compile(r"^qwen3\.6-plus(?:-|$)"),
     re.compile(r"^qwen3\.7-plus(?:-|$)"),
     re.compile(r"^qwen3\.8-max(?:-|$)"),
+    re.compile(r"^qwen3\.8-flash(?:-|$)"),
     re.compile(r"^qwen-vl-"),
     re.compile(r"^qwen3-vl-"),
     re.compile(r"^qwen3\.6-35b(?:-|$)"),
 )
-QWEN38_MAX_MODEL_PATTERN = re.compile(r"^qwen3\.8-max(?:-|$)")
+QWEN38_LONG_CONTEXT_MODEL_PATTERN = re.compile(
+    r"^qwen3\.8-(?:max|flash)(?:-|$)"
+)
 ENV_LINE = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$"
 )
@@ -80,7 +83,7 @@ ENV_LINE = re.compile(
 
 def model_context_window_tokens(model: str) -> int:
     """Return the published context window for models used by this app."""
-    if QWEN38_MAX_MODEL_PATTERN.match(model.strip().casefold()):
+    if QWEN38_LONG_CONTEXT_MODEL_PATTERN.match(model.strip().casefold()):
         return QWEN38_MAX_CONTEXT_WINDOW_TOKENS
     return DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
 
@@ -91,7 +94,7 @@ def model_max_input_tokens(
     thinking_enabled: bool,
 ) -> int:
     """Return the safe request-input limit for the selected model mode."""
-    if QWEN38_MAX_MODEL_PATTERN.match(model.strip().casefold()):
+    if QWEN38_LONG_CONTEXT_MODEL_PATTERN.match(model.strip().casefold()):
         return (
             QWEN38_MAX_INPUT_TOKENS_WITH_THINKING
             if thinking_enabled

@@ -93,7 +93,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   submit: [payload: { text: string; attachments: PromptAttachment[] }];
-  steer: [payload: { text: string; attachments: PromptAttachment[] }];
   cancelTask: [taskId: string];
   answer: [questionId: string, response: QuestionResponse];
   dismiss: [questionId: string];
@@ -1241,6 +1240,9 @@ defineExpose({ loadComposerForEdit, focusComposer });
         <div class="content-wrap" :class="[mobile ? 'align-mobile' : 'align-center']">
           <template v-if="turns.length === 0 && !sessionLoading">
             <!-- Empty session: Composer rendered in the centre of the pane -->
+            <div v-if="!starting" class="agent-intro">
+              <p>{{ t('conversation.agentIntro') }}</p>
+            </div>
             <div class="empty-spacer" />
             <div class="empty-hint">
               <span class="empty-hint-title" :class="{ 'is-starting': starting }">
@@ -1269,7 +1271,6 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :starting="starting"
               hide-context
               @submit="handleComposerSubmit"
-              @steer="emit('steer', $event)"
               @command="emit('command', $event)"
               @interrupt="handleInterrupt"
               @unqueue="emit('unqueue', $event)"
@@ -1357,7 +1358,6 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @cancel-task="emit('cancelTask', $event)"
         @control-goal="emit('controlGoal', $event)"
         @submit="handleComposerSubmit"
-        @steer="emit('steer', $event)"
         @command="emit('command', $event)"
         @interrupt="handleInterrupt"
         @set-thinking="emit('setThinking', $event)"
@@ -1470,6 +1470,48 @@ defineExpose({ loadComposerForEdit, focusComposer });
 
 /* Empty-workspace spacers: push the centred Composer to the vertical middle. */
 .empty-spacer { flex: 1; }
+
+/* Fixed-size introduction for a fresh conversation. It sits directly on the
+   canvas rather than in a card and does not participate in composer layout. */
+.agent-intro {
+  position: absolute;
+  top: 25%;
+  left: 50%;
+  z-index: var(--z-base);
+  width: min(calc(var(--read-max) - 32px), calc(100% - 32px));
+  color: #000;
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", "HarmonyOS Sans SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-size: 17px;
+  font-weight: var(--weight-semibold);
+  line-height: 1.8;
+  letter-spacing: 0;
+  text-align: left;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: agent-intro-fade-in 1.5s ease-out both;
+}
+html[data-color-scheme="dark"] .agent-intro {
+  color: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  html[data-color-scheme="system"] .agent-intro {
+    color: #fff;
+  }
+}
+.agent-intro p {
+  margin: 0;
+  white-space: normal;
+}
+@keyframes agent-intro-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-intro {
+    animation: none;
+  }
+}
 
 /* Empty-session hint above the centred composer */
 .empty-hint {

@@ -78,9 +78,6 @@ const placeholder = computed(() =>
 
 const emit = defineEmits<{
   submit: [payload: { text: string; attachments: PromptAttachment[] }];
-  /** Steer the composer text (+ any queued prompts, merged by the parent)
-      into the RUNNING turn — TUI ctrl+s. */
-  steer: [payload: { text: string; attachments: PromptAttachment[] }];
   command: [cmd: string];
   interrupt: [];
   setThinking: [level: ThinkingLevel];
@@ -130,7 +127,7 @@ function toggleExpand(): void {
   });
 }
 
-// Collapse the expanded editor after a successful send/steer and re-fit the
+// Collapse the expanded editor after a successful send and re-fit the
 // textarea once the 70vh min-height is gone. On image-only sends the text is
 // already empty, so the draft watcher never re-runs autosize — without this,
 // the textarea keeps the inline height measured at 70vh and the collapsed cap
@@ -232,7 +229,7 @@ function handleInput(): void {
 
 // ---------------------------------------------------------------------------
 // Attachments — see useAttachmentUpload. The composer keeps handleSubmit /
-// handleSteer (which read the attachments to build the payload) and the
+// handleSubmit (which reads the attachments to build the payload) and the
 // `hasUpload` toolbar flag.
 // ---------------------------------------------------------------------------
 const {
@@ -360,33 +357,6 @@ function handleSubmit(): void {
   emit('submit', payload);
 }
 
-/**
- * Steer (TUI ctrl+s): push the current text — and the parent merges any queued
- * prompts — straight into the running turn. With an empty composer it still
- * fires when something is queued, so "queue a few thoughts, then ctrl+s" works.
- */
-function handleSteer(): void {
-  if (!props.running) return;
-  if (attachments.value.some((a) => a.uploading)) return;
-
-  const trimmed = text.value.trim();
-  const readyAttachments = attachments.value.filter((a) => !a.uploading && !a.error && a.fileId);
-  if (!trimmed && readyAttachments.length === 0 && props.queued.length === 0) return;
-
-  const payload = {
-    text: trimmed,
-    attachments: readyAttachments.map((a) => toPromptAttachment(a)),
-  };
-  clearAfterSubmit();
-  history.push(trimmed);
-  text.value = '';
-  clearDraft();
-  slashOpen.value = false;
-  mentionOpen.value = false;
-  collapseAndRefit();
-  emit('steer', payload);
-}
-
 let isComposingText = false;
 let compositionEndTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -467,15 +437,6 @@ function handleKeydown(e: KeyboardEvent): void {
     }
   }
 
-  // Ctrl+S / Cmd+S — steer into the running turn (TUI parity)
-  if (e.key === 's' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
-    if (props.running) {
-      e.preventDefault();
-      handleSteer();
-    }
-    return;
-  }
-
   // History recall (shell-style ↑/↓) — see useInputHistory for the machinery.
   //
   // Disabled entirely in the expanded editor: that mode is for composing long
@@ -551,7 +512,7 @@ const ctxTooltip = computed(() => {
 
 const showCompact = computed(() => pct.value >= 80);
 
-const FIXED_MODEL_LABEL = 'qwen3.8-max';
+const FIXED_MODEL_LABEL = 'qwen3.8-flash';
 const multiAgentOn = computed(() => props.swarmMode === true);
 const selectedDrawingModeLabel = computed(() =>
   t(multiAgentOn.value ? 'status.multiAgentDrawingLabel' : 'status.singleAgentDrawingLabel'),

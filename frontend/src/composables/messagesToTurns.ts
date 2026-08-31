@@ -668,6 +668,7 @@ export function messagesToTurns(
           // flushGroup settles dangling tools of finished turns back to 'ok'.
           status: 'running',
           output: c.outputLines,
+          defaultExpanded: c.defaultExpanded,
           planPath: c.toolName === 'ExitPlanMode' ? planReviewByToolCallId[c.toolCallId]?.path : undefined,
         };
         g.tools.push(toolCall);

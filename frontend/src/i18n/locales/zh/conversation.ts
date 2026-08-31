@@ -4,6 +4,7 @@ export default {
   newMessages: '最新消息',
   loading: '加载中…',
   starting: '正在创建对话…',
+  agentIntro: '您好，我是拓知，一个能帮您总结思维导图的小助手，您可以上传多种格式的文件，也可以在生成mindmap后向我提出建议、提交补充文件或者是进行新的生成任务',
   emptyWorkspaceHint: '在 {name} 中发送',
   switchWorkspace: '切换工作区',
   addWorkspace: '添加工作区',

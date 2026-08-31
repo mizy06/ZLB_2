@@ -384,7 +384,7 @@ function archiveTime(iso: string): string {
                   {{ t('settings.defaultModel') }}
                   <span class="hint">{{ t('settings.defaultModelHint') }}</span>
                 </span>
-                <span class="rvalue mono">qwen3.8-max</span>
+                <span class="rvalue mono">qwen3.8-flash</span>
               </div>
 
               <div class="row">

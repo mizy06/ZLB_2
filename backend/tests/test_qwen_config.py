@@ -170,6 +170,7 @@ class QwenConfigTests(unittest.IsolatedAsyncioTestCase):
         for model in (
             "qwen3.7-plus",
             "qwen3.7-plus-2026-05-26",
+            "qwen3.8-flash",
             "qwen3-vl-plus",
             "qwen-vl-max",
         ):

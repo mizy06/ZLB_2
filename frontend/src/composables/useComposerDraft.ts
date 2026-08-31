@@ -12,7 +12,7 @@ export interface ComposerDraftDeps {
  *
  * The draft is kept in localStorage keyed by session, so switching away and back
  * (or a page refresh) restores whatever the user was typing for that session; it
- * is cleared when the draft is sent/steered. This composable owns the `text`
+ * is cleared when the draft is sent. This composable owns the `text`
  * and `textarea` refs, the `autosize` helper, the draft load/save watchers, and
  * the imperative `loadForEdit` handle exposed to the parent.
  */
@@ -74,7 +74,7 @@ export function useComposerDraft(deps: ComposerDraftDeps) {
 
   /**
    * Synchronously clear the persisted draft for the current session.
-   * Call this right after clearing `text.value` on send/steer; relying on the
+   * Call this right after clearing `text.value` on send; relying on the
    * text watcher is unsafe because the Composer may unmount before the watcher
    * flushes (e.g. when the optimistic user message replaces the empty-session
    * composer), causing the next mount to reload the stale draft.

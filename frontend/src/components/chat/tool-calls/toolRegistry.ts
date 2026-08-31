@@ -7,6 +7,7 @@ import AskUserTool from './AskUserTool.vue';
 import EditTool from './EditTool.vue';
 import GenericTool from './GenericTool.vue';
 import MediaTool from './MediaTool.vue';
+import NodeChangesTool from './NodeChangesTool.vue';
 import SwarmTool from './SwarmTool.vue';
 
 type ToolRenderer = Component;
@@ -14,6 +15,7 @@ type ToolRenderer = Component;
 /** Pick the renderer for a tool call. */
 export function resolveToolRenderer(tool: ToolCall): ToolRenderer {
   if (tool.media && tool.status === 'ok') return MediaTool;
+  if (tool.name === 'MindmapNodeDiff') return NodeChangesTool;
   const name = normalizeToolName(tool.name);
   if (name === 'edit' || name === 'write' || name === 'multi_edit') return EditTool;
   // NOTE: normalizeToolName() folds `agent`/`subagent` into the canonical

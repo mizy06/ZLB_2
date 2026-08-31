@@ -18,7 +18,7 @@ export interface SlashMenuDeps {
   historyPush: (entry: string) => void;
   /**
    * Synchronously clear the persisted draft when a bare command is chosen.
-   * Mirrors the explicit clear in Composer's submit/steer paths so a draft
+   * Mirrors the explicit clear in Composer's submit path so a draft
    * is not left behind if the Composer unmounts before the text watcher flushes.
    */
   clearDraft?: () => void;

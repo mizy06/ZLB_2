@@ -14,6 +14,7 @@ export default {
   // 二次确认（弹窗）
   removeWorkspaceConfirm: '移除工作区「{name}」？',
   swarmEnableConfirm: '启用 swarm 模式？智能体将并行运行多个子智能体。',
+  swarmModeSessionLocked: '请新建对话以切换模式',
   goalStartConfirm: '启动 goal：「{objective}」？智能体将自主执行。',
   // Column-header scope toggle
   scopeCurrent: '当前工作区',

@@ -27,9 +27,13 @@ import type {
   QuestionResponse,
 } from './types';
 import { markMindmapAuthRequired } from './mindmapAuth';
+import {
+  MindmapNodeStreamTracker,
+  mindmapNodeMap,
+} from './mindmapNodeDiff';
 const WORKSPACE_ID = 'mindmap-agent';
 const WORKSPACE_ROOT = '/workspace';
-const FIXED_MODEL = 'qwen3.8-max';
+const FIXED_MODEL = 'qwen3.8-flash';
 const QWEN38_MAX_CONTEXT_LIMIT = 1_000_000;
 const LEGACY_QWEN38_OUTPUT_LIMIT = 131_072;
 const EMPTY_USAGE = {
@@ -265,6 +269,18 @@ interface SessionDraft {
   uploadId?: string;
 }
 
+interface NodeChangeState {
+  toolCallId: string;
+  tracker: MindmapNodeStreamTracker;
+  baseline: Map<string, string>;
+  seen: Set<string>;
+  lines: string[];
+}
+
+function tracksMindmapNodes(role: string): boolean {
+  return role === 'global_editor_draft' || role === 'global_editor_revision';
+}
+
 async function parseResponse<T>(
   response: Response,
   options: { notifyAuth?: boolean } = {},
@@ -353,6 +369,9 @@ function stageLabel(stage: string): string {
     validate: '校验图谱',
     render: '渲染思维导图',
     review: '检查结果',
+    editorial_draft: '草稿撰写',
+    editorial_review: '草稿审阅',
+    editorial_patch: '草稿修订',
     complete: '完成任务',
     failed: '任务失败',
     cancelled: '任务取消',
@@ -363,6 +382,10 @@ function stageLabel(stage: string): string {
 function roleLabel(role: string): string {
   const labels: Record<string, string> = {
     global_editor: '全局编辑',
+    global_editor_draft: '草稿撰写',
+    global_editor_patch: '草稿修订',
+    global_editor_patch_repair: '修订校正',
+    global_editor_revision: '全图重写',
     content_omission: '内容查漏',
     pruning: '结构精简',
     multilevel_structure: '层级校正',
@@ -425,6 +448,10 @@ class MindmapEventConnection implements KimiEventConnection {
   private readonly promptBySession = new Map<string, string>();
   private readonly openStageBySession = new Map<string, string>();
   private readonly openCallsBySession = new Map<string, Map<string, string>>();
+  private readonly nodeChangesBySession = new Map<
+    string,
+    Map<string, NodeChangeState>
+  >();
   private closed = false;
 
   constructor(
@@ -443,6 +470,7 @@ class MindmapEventConnection implements KimiEventConnection {
     this.subscribed.delete(sessionId);
     this.sources.get(sessionId)?.close();
     this.sources.delete(sessionId);
+    this.nodeChangesBySession.delete(sessionId);
   }
 
   bindNextPromptId(sessionId: string, promptId: string): void {
@@ -485,6 +513,7 @@ class MindmapEventConnection implements KimiEventConnection {
     this.closed = true;
     for (const source of this.sources.values()) source.close();
     this.sources.clear();
+    this.nodeChangesBySession.clear();
     this.handlers.onConnectionChange(false);
     this.api.dropConnection(this);
   }
@@ -494,6 +523,7 @@ class MindmapEventConnection implements KimiEventConnection {
     this.sources.delete(sessionId);
     this.openStageBySession.delete(sessionId);
     this.openCallsBySession.delete(sessionId);
+    this.nodeChangesBySession.delete(sessionId);
     if (this.subscribed.has(sessionId)) this.attach(sessionId);
   }
 
@@ -584,6 +614,127 @@ class MindmapEventConnection implements KimiEventConnection {
       ),
     });
     calls?.delete(callId);
+  }
+
+  private startNodeChanges(
+    sessionId: string,
+    callId: string,
+    createdAt: string,
+  ): void {
+    const toolCallId = `node_diff_${sessionId}_${this.promptId(sessionId)}_${callId}`;
+    const states = this.nodeChangesBySession.get(sessionId)
+      ?? new Map<string, NodeChangeState>();
+    states.set(callId, {
+      toolCallId,
+      tracker: new MindmapNodeStreamTracker(),
+      baseline: this.api.nodeBaselineForSession(sessionId),
+      seen: new Set<string>(),
+      lines: [],
+    });
+    this.nodeChangesBySession.set(sessionId, states);
+    this.emit(sessionId, {
+      type: 'messageCreated',
+      message: this.message(
+        sessionId,
+        `message_${toolCallId}`,
+        'assistant',
+        [{
+          type: 'toolUse',
+          toolCallId,
+          toolName: 'MindmapNodeDiff',
+          input: '',
+          defaultExpanded: true,
+        }],
+        createdAt,
+      ),
+    });
+  }
+
+  private emitNodeChange(
+    sessionId: string,
+    state: NodeChangeState,
+    line: string,
+  ): void {
+    state.lines.push(line);
+    this.emit(sessionId, {
+      type: 'toolOutput',
+      sessionId,
+      toolCallId: state.toolCallId,
+      outputChunk: line,
+      stream: 'stdout',
+    });
+  }
+
+  private consumeNodeDelta(
+    sessionId: string,
+    callId: string,
+    delta: string,
+  ): void {
+    const state = this.nodeChangesBySession.get(sessionId)?.get(callId);
+    if (!state) return;
+    for (const node of state.tracker.push(delta)) {
+      if (state.seen.has(node.id)) continue;
+      state.seen.add(node.id);
+      const previousName = state.baseline.get(node.id);
+      if (previousName === undefined) {
+        this.emitNodeChange(sessionId, state, `+ ${node.name}`);
+      } else if (previousName !== node.name) {
+        this.emitNodeChange(sessionId, state, `- ${previousName}`);
+        this.emitNodeChange(sessionId, state, `+ ${node.name}`);
+      }
+    }
+  }
+
+  private finishNodeChanges(
+    sessionId: string,
+    callId: string,
+    createdAt: string,
+    isError = false,
+  ): void {
+    const states = this.nodeChangesBySession.get(sessionId);
+    const state = states?.get(callId);
+    if (!state) return;
+    if (!isError) {
+      for (const [nodeId, nodeName] of state.baseline) {
+        if (!state.seen.has(nodeId)) {
+          this.emitNodeChange(sessionId, state, `- ${nodeName}`);
+        }
+      }
+    }
+    const output = state.lines.length > 0
+      ? state.lines.join('\n')
+      : isError
+        ? '节点变更检测中断'
+        : '本轮没有节点增减';
+    this.emit(sessionId, {
+      type: 'messageCreated',
+      message: this.message(
+        sessionId,
+        `result_${state.toolCallId}`,
+        'tool',
+        [{
+          type: 'toolResult',
+          toolCallId: state.toolCallId,
+          output,
+          isError,
+        }],
+        createdAt,
+      ),
+    });
+    states?.delete(callId);
+    if (states?.size === 0) this.nodeChangesBySession.delete(sessionId);
+  }
+
+  private finishOpenNodeChanges(
+    sessionId: string,
+    createdAt: string,
+    isError = false,
+  ): void {
+    const states = this.nodeChangesBySession.get(sessionId);
+    if (!states) return;
+    for (const callId of [...states.keys()]) {
+      this.finishNodeChanges(sessionId, callId, createdAt, isError);
+    }
   }
 
   private finishOpenCalls(sessionId: string, createdAt: string, isError = false): void {
@@ -718,9 +869,10 @@ class MindmapEventConnection implements KimiEventConnection {
 
     if (event.kind === 'model_start') {
       if (event.role.startsWith('source_context_compactor')) return;
-      const toolCallId = `model_${sessionId}_${this.promptId(sessionId)}_${event.call_id || event.id}`;
+      const callId = event.call_id || String(event.id);
+      const toolCallId = `model_${sessionId}_${this.promptId(sessionId)}_${callId}`;
       const calls = this.openCallsBySession.get(sessionId) ?? new Map<string, string>();
-      calls.set(event.call_id || String(event.id), toolCallId);
+      calls.set(callId, toolCallId);
       this.openCallsBySession.set(sessionId, calls);
       this.emit(sessionId, {
         type: 'messageCreated',
@@ -739,14 +891,18 @@ class MindmapEventConnection implements KimiEventConnection {
           event.created_at,
         ),
       });
+      if (tracksMindmapNodes(event.role)) {
+        this.startNodeChanges(sessionId, callId, event.created_at);
+      }
       return;
     }
 
     if (event.kind === 'model_delta') {
       if (event.role.startsWith('source_context_compactor')) return;
+      const callId = event.call_id || String(event.id);
       const toolCallId = this.openCallsBySession
         .get(sessionId)
-        ?.get(event.call_id || String(event.id));
+        ?.get(callId);
       if (!toolCallId || !event.delta) return;
       this.emit(sessionId, {
         type: 'toolOutput',
@@ -755,14 +911,22 @@ class MindmapEventConnection implements KimiEventConnection {
         outputChunk: event.delta,
         stream: 'stdout',
       });
+      this.consumeNodeDelta(sessionId, callId, event.delta);
       return;
     }
 
     if (event.kind === 'model_complete' || event.kind === 'model_error') {
       if (event.role.startsWith('source_context_compactor')) return;
+      const callId = event.call_id || String(event.id);
+      this.finishNodeChanges(
+        sessionId,
+        callId,
+        event.created_at,
+        event.kind === 'model_error',
+      );
       this.finishCall(
         sessionId,
-        event.call_id || String(event.id),
+        callId,
         event.created_at,
         event.message,
         event.kind === 'model_error',
@@ -777,6 +941,11 @@ class MindmapEventConnection implements KimiEventConnection {
     ) {
       this.finishStage(sessionId, event.created_at);
       this.finishOpenCalls(sessionId, event.created_at, event.kind === 'job_failed');
+      this.finishOpenNodeChanges(
+        sessionId,
+        event.created_at,
+        event.kind !== 'job_complete',
+      );
       this.emit(sessionId, {
         type: 'compactionCancelled',
         sessionId,
@@ -850,6 +1019,7 @@ export class MindmapAgentApi implements KimiWebApi {
   private readonly terminalSessions = new Set<string>();
   private readonly connections = new Set<MindmapEventConnection>();
   private readonly titleOverrides = new Map<string, string>();
+  private readonly nodeBaselineBySession = new Map<string, Map<string, string>>();
   readonly sessionCache = new Map<string, AppSession>();
   private healthCache: BackendHealth | null = null;
 
@@ -1091,8 +1261,7 @@ export class MindmapAgentApi implements KimiWebApi {
         });
       } else if (interaction.status === 'completed') {
         const version = interaction.result_graph_version;
-        const isLatest = Boolean(version && version === job.result?.graph_version);
-        if (isLatest) {
+        if (version) {
           const toolCallId = `snapshot_complete_${sessionId}_${interaction.id}`;
           assistantContent.push(
             {
@@ -1109,8 +1278,6 @@ export class MindmapAgentApi implements KimiWebApi {
               version,
             ),
           );
-        } else {
-          assistantContent.push({ type: 'text', text: interactionSummary(job, interaction) });
         }
       } else {
         assistantContent.push({
@@ -1339,10 +1506,6 @@ export class MindmapAgentApi implements KimiWebApi {
       userMessageId: uid('user'),
       status: 'running',
     };
-  }
-
-  async steerPrompts(_sessionId: string, promptIds: string[]): Promise<{ steered: boolean; promptIds: string[] }> {
-    return { steered: false, promptIds };
   }
 
   async abortPrompt(sessionId: string): Promise<{ aborted: boolean }> {
@@ -1790,12 +1953,24 @@ export class MindmapAgentApi implements KimiWebApi {
     this.terminalSessions.delete(sessionId);
   }
 
+  nodeBaselineForSession(sessionId: string): Map<string, string> {
+    return new Map(this.nodeBaselineBySession.get(sessionId) ?? []);
+  }
+
   dropConnection(connection: MindmapEventConnection): void {
     this.connections.delete(connection);
   }
 
   async fetchJob(taskId: string): Promise<BackendJob> {
-    return parseResponse(await request(`/api/jobs/${encodeURIComponent(taskId)}`));
+    const job = await parseResponse<BackendJob>(
+      await request(`/api/jobs/${encodeURIComponent(taskId)}`),
+    );
+    const nodes = mindmapNodeMap(job.result?.nodes);
+    if (nodes.size > 0) {
+      const sessionId = this.sessionByTask.get(taskId) || taskId;
+      this.nodeBaselineBySession.set(sessionId, nodes);
+    }
+    return job;
   }
 
   async fetchInteractions(taskId: string): Promise<BackendInteraction[]> {
@@ -1807,6 +1982,10 @@ export class MindmapAgentApi implements KimiWebApi {
   private registerTask(sessionId: string, taskId: string): void {
     this.taskBySession.set(sessionId, taskId);
     this.sessionByTask.set(taskId, sessionId);
+    const taskBaseline = this.nodeBaselineBySession.get(taskId);
+    if (taskBaseline && sessionId !== taskId) {
+      this.nodeBaselineBySession.set(sessionId, new Map(taskBaseline));
+    }
   }
 
   private async health(): Promise<BackendHealth> {

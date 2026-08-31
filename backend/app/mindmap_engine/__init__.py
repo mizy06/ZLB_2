@@ -1,5 +1,3 @@
-"""Deterministic services used by the Bailian low-code workflow."""
+"""Shared schemas and visual helpers for the editorial pipeline."""
 
-from .service import assemble_mindmap
-
-__all__ = ["assemble_mindmap"]
+__all__: list[str] = []

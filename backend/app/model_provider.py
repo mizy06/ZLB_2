@@ -459,6 +459,7 @@ class OpenAICompatibleClient:
         user_prompt: str,
         images: Sequence[tuple[str, str]],
         cache_static_images: bool = False,
+        use_response_format: bool = True,
         max_tokens: int = 5000,
         max_completion_tokens: int | None = None,
         max_attempts: int | None = None,
@@ -515,7 +516,7 @@ class OpenAICompatibleClient:
             messages=messages,
             max_tokens=max_tokens,
             max_completion_tokens=max_completion_tokens,
-            json_mode=True,
+            json_mode=use_response_format,
             max_attempts=max_attempts,
             reasoning_effort=reasoning_effort,
             thinking_budget=thinking_budget,
@@ -802,11 +803,13 @@ class OpenAICompatibleClient:
             max_completion_tokens=max_completion_tokens,
             enable_search=enable_search,
         )
+        headers = self._chat_headers(messages)
         if stream_callback is not None:
             return await self._chat_stream(
                 model=model,
                 payload=payload,
                 messages=messages,
+                headers=headers,
                 max_attempts=max_attempts,
                 request_timeout=request_timeout,
                 json_mode=json_mode,
@@ -823,10 +826,7 @@ class OpenAICompatibleClient:
             f"{self.base_url}/chat/completions",
             model=model,
             operation="chat_completion",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             json=payload,
             max_attempts=max_attempts,
             telemetry=self._chat_request_telemetry(
@@ -881,6 +881,7 @@ class OpenAICompatibleClient:
         model: str,
         payload: dict[str, Any],
         messages: list[dict[str, Any]],
+        headers: dict[str, str],
         max_attempts: int | None,
         request_timeout: float | None,
         json_mode: bool,
@@ -919,10 +920,7 @@ class OpenAICompatibleClient:
             f"{self.base_url}/chat/completions",
             model=model,
             operation="chat_completion_stream",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             json=stream_payload,
             max_attempts=max_attempts,
             telemetry=self._chat_request_telemetry(
@@ -930,7 +928,7 @@ class OpenAICompatibleClient:
                 messages=messages,
                 timeout_seconds=request_timeout,
             ),
-            total_timeout_seconds=request_timeout,
+            event_idle_timeout_seconds=request_timeout,
             event_handler=handle_event,
             timeout=request_timeout,
         )
@@ -1017,7 +1015,7 @@ class OpenAICompatibleClient:
                 session_cache=session_cache,
                 timeout_seconds=request_timeout,
             ),
-            total_timeout_seconds=request_timeout,
+            event_idle_timeout_seconds=request_timeout,
             event_handler=handle_event,
             timeout=request_timeout,
         )
@@ -1070,15 +1068,19 @@ class OpenAICompatibleClient:
         event_handler: StreamEventHandler,
         max_attempts: int | None = None,
         telemetry: dict[str, Any] | None = None,
-        total_timeout_seconds: float | None = None,
+        event_idle_timeout_seconds: float | None = None,
         **kwargs: Any,
     ) -> None:
         self._ensure_circuit_closed()
         safe_telemetry = dict(telemetry or {})
-        absolute_timeout = self._normalize_timeout(
-            total_timeout_seconds
-            if total_timeout_seconds is not None
+        event_idle_timeout = self._normalize_timeout(
+            event_idle_timeout_seconds
+            if event_idle_timeout_seconds is not None
             else self.settings.provider_timeout_seconds
+        )
+        safe_telemetry["timeout_mode"] = "stream_event_idle"
+        safe_telemetry["stream_event_idle_timeout_seconds"] = (
+            event_idle_timeout
         )
         attempt_limit = (
             self.max_attempts
@@ -1092,24 +1094,27 @@ class OpenAICompatibleClient:
             response: httpx.Response | None = None
             event_count = 0
             try:
-                async with asyncio.timeout(absolute_timeout):
-                    async with self._limiter():
-                        async with self._http_client().stream(
-                            method,
-                            url,
-                            **kwargs,
-                        ) as response:
-                            if not response.is_error:
+                async with self._limiter():
+                    async with self._http_client().stream(
+                        method,
+                        url,
+                        **kwargs,
+                    ) as response:
+                        if not response.is_error:
+                            stream_done = object()
+
+                            async def parsed_events():
                                 data_lines: list[str] = []
 
-                                async def dispatch() -> None:
-                                    nonlocal event_count
+                                def parse_event() -> (
+                                    dict[str, Any] | object | None
+                                ):
                                     if not data_lines:
-                                        return
+                                        return None
                                     raw = "\n".join(data_lines)
                                     data_lines.clear()
                                     if raw.strip() == "[DONE]":
-                                        return
+                                        return stream_done
                                     try:
                                         payload = json.loads(raw)
                                     except ValueError as exc:
@@ -1122,20 +1127,65 @@ class OpenAICompatibleClient:
                                             f"{self.provider_name} 流式响应"
                                             "事件格式无效"
                                         )
-                                    event_count += 1
-                                    await event_handler(payload)
+                                    return payload
 
                                 async for line in response.aiter_lines():
                                     if line == "":
-                                        await dispatch()
+                                        payload = parse_event()
+                                        if payload is stream_done:
+                                            yield stream_done
+                                            return
+                                        if payload is not None:
+                                            yield payload
                                     elif line.startswith("data:"):
                                         data_lines.append(
                                             line[5:].lstrip(" ")
                                         )
-                                await dispatch()
-                            else:
-                                await response.aread()
-            except (httpx.TimeoutException, TimeoutError) as exc:
+                                payload = parse_event()
+                                if payload is not None:
+                                    yield payload
+
+                            events = parsed_events().__aiter__()
+                            while True:
+                                try:
+                                    async with asyncio.timeout(
+                                        event_idle_timeout
+                                    ):
+                                        payload = await anext(events)
+                                except StopAsyncIteration:
+                                    break
+                                if payload is stream_done:
+                                    break
+                                if not isinstance(payload, dict):
+                                    raise ModelProviderError(
+                                        f"{self.provider_name} 流式响应"
+                                        "事件格式无效"
+                                    )
+                                event_count += 1
+                                await event_handler(payload)
+                        else:
+                            await response.aread()
+            except TimeoutError as exc:
+                last_error = (
+                    f"{self.provider_name} 连续 "
+                    f"{event_idle_timeout:g} 秒未收到流式事件"
+                )
+                await self._record_attempt(
+                    logical_call_id=logical_call_id,
+                    attempt=attempt,
+                    model=model,
+                    operation=operation,
+                    status="retryable_error",
+                    latency_ms=self._latency_ms(started),
+                    max_attempts=attempt_limit,
+                    details={
+                        **safe_telemetry,
+                        "error_type": "stream_idle_timeout",
+                        "stream_event_count": event_count,
+                    },
+                )
+                raise ModelProviderError(last_error) from exc
+            except httpx.TimeoutException as exc:
                 last_error = f"{self.provider_name} 请求超时"
                 await self._record_attempt(
                     logical_call_id=logical_call_id,
@@ -1260,6 +1310,34 @@ class OpenAICompatibleClient:
             f"{self.provider_name} 请求失败（已尝试 "
             f"{attempt_limit} 次）：{last_error or '未知错误'}"
         )
+
+    def _chat_headers(
+        self,
+        messages: Sequence[dict[str, Any]],
+    ) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.provider_name.casefold() != "qwen":
+            return headers
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                image = item.get("image_url")
+                if not isinstance(image, dict):
+                    continue
+                url = image.get("url")
+                if isinstance(url, str) and url.casefold().startswith(
+                    "oss://"
+                ):
+                    headers["X-DashScope-OssResourceResolve"] = "enable"
+                    return headers
+        return headers
 
     def _stream_error_message(self, payload: dict[str, Any]) -> str:
         error = payload.get("error")

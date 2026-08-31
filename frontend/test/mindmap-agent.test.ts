@@ -21,7 +21,10 @@ const completedJob = {
     task_id: 'task_1',
     graph_version: 1,
     root_id: 'root',
-    nodes: [{ id: 'root' }, { id: 'child' }],
+    nodes: [
+      { id: 'root', name: '课程' },
+      { id: 'child', name: '旧节点' },
+    ],
     tree_edges: [{ source: 'root', target: 'child' }],
     cross_links: [],
     document: { filename: 'course.md', title: '课程' },
@@ -107,8 +110,8 @@ describe('MindmapAgentApi human loop', () => {
     const loopConfig = JSON.parse(String(form.get('loop_config')));
     const refineRequest = requests.find((item) => item.url.endsWith('/refine'));
 
-    expect(form.get('model')).toBe('qwen3.8-max');
-    expect(loopConfig.rounds).toEqual([{ editor_model: 'qwen3.8-max' }]);
+    expect(form.get('model')).toBe('qwen3.8-flash');
+    expect(loopConfig.rounds).toEqual([{ editor_model: 'qwen3.8-flash' }]);
     expect(loopConfig.human_instruction).toBe('面向初学者，突出概念之间的关系');
     expect(JSON.parse(String(refineRequest?.init?.body))).toEqual({
       instruction: '把重复的两个分支合并',
@@ -118,10 +121,10 @@ describe('MindmapAgentApi human loop', () => {
 
   it('uses a fixed two-round four-role loop for multi-agent drawing', async () => {
     const multiAgentRounds = Array.from({ length: 2 }, () => ({
-      editor_model: 'qwen3.8-max',
-      content_omission_model: 'qwen3.8-max',
-      pruning_model: 'qwen3.8-max',
-      multilevel_structure_model: 'qwen3.8-max',
+      editor_model: 'qwen3.8-flash',
+      content_omission_model: 'qwen3.8-flash',
+      pruning_model: 'qwen3.8-flash',
+      multilevel_structure_model: 'qwen3.8-flash',
     }));
     const multiAgentJob = {
       ...completedJob,
@@ -167,15 +170,15 @@ describe('MindmapAgentApi human loop', () => {
       ],
     });
 
-    expect(createForm?.get('model')).toBe('qwen3.8-max');
+    expect(createForm?.get('model')).toBe('qwen3.8-flash');
     expect(JSON.parse(String(createForm?.get('loop_config'))).rounds).toEqual(multiAgentRounds);
     await expect(api.getSessionStatus(session.id)).resolves.toMatchObject({
-      model: 'qwen3.8-max',
+      model: 'qwen3.8-flash',
       swarmMode: true,
     });
   });
 
-  it('exposes only qwen3.8-max and ignores stored preview model names', async () => {
+  it('exposes only qwen3.8-flash and ignores stored preview model names', async () => {
     vi.mocked(fetch).mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/api/jobs/task_1') return json(completedJob);
@@ -185,13 +188,13 @@ describe('MindmapAgentApi human loop', () => {
     const api = new MindmapAgentApi();
     await expect(api.listModels()).resolves.toEqual([
       expect.objectContaining({
-        id: 'qwen3.8-max',
-        model: 'qwen3.8-max',
-        displayName: 'qwen3.8-max',
+        id: 'qwen3.8-flash',
+        model: 'qwen3.8-flash',
+        displayName: 'qwen3.8-flash',
       }),
     ]);
     await expect(api.getSessionStatus('task_1')).resolves.toMatchObject({
-      model: 'qwen3.8-max',
+      model: 'qwen3.8-flash',
       swarmMode: false,
     });
   });
@@ -280,6 +283,111 @@ describe('MindmapAgentApi human loop', () => {
       kind: 'editorial_draft',
       text: '主编正在生成初稿',
     });
+  });
+
+  it('projects streamed node additions and final deletions as a diff tool', async () => {
+    class TestEventSource {
+      static instances: TestEventSource[] = [];
+      onopen: (() => void) | null = null;
+      onmessage: ((message: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      constructor(readonly url: string) {
+        TestEventSource.instances.push(this);
+      }
+
+      close(): void {}
+
+      emit(event: Record<string, unknown>): void {
+        this.onmessage?.({ data: JSON.stringify(event) });
+      }
+    }
+
+    vi.stubGlobal('EventSource', TestEventSource);
+    vi.mocked(fetch).mockResolvedValue(json(completedJob));
+    const api = new MindmapAgentApi();
+    await api.fetchJob('task_1');
+    const events: any[] = [];
+    const connection = api.connectEvents({
+      onEvent: (event) => events.push(event),
+      onResync: () => {},
+      onError: () => {},
+      onConnectionChange: () => {},
+    });
+
+    connection.subscribe('task_1');
+    const source = TestEventSource.instances[0];
+    source?.emit({
+      id: 1,
+      task_id: 'task_1',
+      kind: 'model_start',
+      created_at: '2026-08-28T08:00:00+00:00',
+      stage: 'editorial_draft',
+      message: '',
+      call_id: 'draft_1',
+      role: 'global_editor_draft',
+      model: 'qwen3.8-flash',
+      delta: '',
+    });
+    source?.emit({
+      id: 2,
+      task_id: 'task_1',
+      kind: 'model_delta',
+      created_at: '2026-08-28T08:00:01+00:00',
+      stage: 'editorial_draft',
+      message: '',
+      call_id: 'draft_1',
+      role: 'global_editor_draft',
+      model: 'qwen3.8-flash',
+      delta: '{"title":"新版","nodes":[{"id":"root","name":"课程"},',
+    });
+    source?.emit({
+      id: 3,
+      task_id: 'task_1',
+      kind: 'model_delta',
+      created_at: '2026-08-28T08:00:02+00:00',
+      stage: 'editorial_draft',
+      message: '',
+      call_id: 'draft_1',
+      role: 'global_editor_draft',
+      model: 'qwen3.8-flash',
+      delta: '{"id":"new","name":"新增节点"}]}',
+    });
+    source?.emit({
+      id: 4,
+      task_id: 'task_1',
+      kind: 'model_complete',
+      created_at: '2026-08-28T08:00:03+00:00',
+      stage: 'editorial_draft',
+      message: '',
+      call_id: 'draft_1',
+      role: 'global_editor_draft',
+      model: 'qwen3.8-flash',
+      delta: '',
+    });
+
+    const toolUses = events
+      .filter((event) => event.type === 'messageCreated')
+      .flatMap((event) => event.message.content)
+      .filter((part) => part.type === 'toolUse');
+    expect(toolUses).toContainEqual(expect.objectContaining({
+      toolName: 'MindmapNodeDiff',
+      defaultExpanded: true,
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'toolOutput',
+      outputChunk: '+ 新增节点',
+    }));
+    const nodeResult = events
+      .filter((event) => event.type === 'messageCreated')
+      .flatMap((event) => event.message.content)
+      .find(
+        (part) =>
+          part.type === 'toolResult'
+          && String(part.toolCallId).startsWith('node_diff_'),
+      );
+    expect(nodeResult?.output).toContain('+ 新增节点');
+    expect(nodeResult?.output).toContain('- 旧节点');
   });
 
   it('projects compaction as transcript activity instead of a tool call', async () => {
@@ -413,8 +521,12 @@ describe('MindmapAgentApi human loop', () => {
     });
 
     const snapshot = await new MindmapAgentApi().getSessionSnapshot('task_1');
+    const initialAssistant = snapshot.messages[1];
     const latestAssistant = snapshot.messages.at(-1);
-    const mediaResult = latestAssistant?.content.find(
+    const initialMediaResult = initialAssistant?.content.find(
+      (part) => part.type === 'toolResult' && JSON.stringify(part.output).includes('image_url'),
+    );
+    const latestMediaResult = latestAssistant?.content.find(
       (part) => part.type === 'toolResult' && JSON.stringify(part.output).includes('image_url'),
     );
 
@@ -425,7 +537,8 @@ describe('MindmapAgentApi human loop', () => {
     expect(snapshot.messages[2]?.content).toEqual([
       { type: 'text', text: '合并重复分支' },
     ]);
-    expect(JSON.stringify(mediaResult)).toContain('/api/jobs/task_1/export.png?v=2');
+    expect(JSON.stringify(initialMediaResult)).toContain('/api/jobs/task_1/export.png?v=1');
+    expect(JSON.stringify(latestMediaResult)).toContain('/api/jobs/task_1/export.png?v=2');
     expect(snapshot.session.usage.turnCount).toBe(2);
   });
 });
