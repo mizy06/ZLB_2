@@ -78,6 +78,7 @@ describe('useSlashMenu — update', () => {
 
   it('marks removed commands so hand-typed input cannot activate them', () => {
     expect(isRemovedSlashCommand('/GOAL')).toBe(true);
+    expect(isRemovedSlashCommand('/skill:GOAL')).toBe(true);
     expect(isRemovedSlashCommand('/swarm')).toBe(false);
   });
 

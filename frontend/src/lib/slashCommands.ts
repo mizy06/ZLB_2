@@ -21,6 +21,9 @@ export interface SlashCommand {
   acceptsInput?: boolean;
 }
 
+/** The prefix marking a slash item as a skill activation (`/skill:<name>`). */
+export const SKILL_COMMAND_PREFIX = 'skill:';
+
 /** Commands intentionally unavailable through the slash-command interface. */
 export const REMOVED_SLASH_COMMANDS = new Set([
   '/fork',
@@ -32,7 +35,13 @@ export const REMOVED_SLASH_COMMANDS = new Set([
 ]);
 
 export function isRemovedSlashCommand(name: string): boolean {
-  return REMOVED_SLASH_COMMANDS.has(name.toLowerCase());
+  const normalized = name.toLowerCase();
+  if (REMOVED_SLASH_COMMANDS.has(normalized)) return true;
+  const skillPrefix = `/${SKILL_COMMAND_PREFIX}`;
+  return (
+    normalized.startsWith(skillPrefix) &&
+    REMOVED_SLASH_COMMANDS.has(`/${normalized.slice(skillPrefix.length)}`)
+  );
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -68,9 +77,6 @@ export function parseSlash(input: string): { cmd: string; arg: string } | null {
     arg: input.slice(spaceIdx + 1),
   };
 }
-
-/** The prefix marking a slash item as a skill activation (`/skill:<name>`). */
-export const SKILL_COMMAND_PREFIX = 'skill:';
 
 /**
  * Strip the `skill:` prefix from a slash-command name (with or without the
