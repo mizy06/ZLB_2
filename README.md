@@ -20,13 +20,13 @@ editorial_ppt_vision
 
 ```text
 image:    zlb-mindmap-agent:local-20260831
-image ID:  sha256:b4ff4b115e30fa58441016b9d34698a92209cc067e23dbe1c4e01dac872b49d7
+image ID:  sha256:af47d23f9ac1b3a40600d5dc1ae4bdebb29d57df27196870d0514f569baf2e74
 user:     10001:10001
 pipeline: editorial_ppt_vision
 ```
 
 镜像标签中的 revision 为
-`4c2e205cb7c749f58d9a51e6129ed321114bfc17`。这是该次部署构建的镜像标识，
+`e639c5f8c71eeb0f66173c986b067ba6d8ee0a53`。这是该次部署构建的镜像标识，
 对应 `main` 的发布提交。
 
 本次发布从 Composer 的 slash-command 菜单移除了 `/fork`、`/undo`、
